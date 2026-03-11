@@ -18,13 +18,17 @@ type Config struct {
 }
 
 func Load() *Config {
-	godotenv.Load()
+	for _, f := range []string{".env", "../.env", "../../.env", "../../../.env"} {
+		if err := godotenv.Load(f); err == nil {
+			break
+		}
+	}
 	return &Config{
-		DBHost:       getEnv("USER_DB_HOST", "localhost"),
+		DBHost:       getEnv("USER_DB_HOST", "exteam1-database.postgres.database.azure.com"),
 		DBPort:       getEnv("USER_DB_PORT", "5432"),
-		DBUser:       getEnv("USER_DB_USER", "postgres"),
-		DBPassword:   getEnv("USER_DB_PASSWORD", "postgres"),
-		DBName:       getEnv("USER_DB_NAME", "user_db"),
+		DBUser:       getEnv("USER_DB_USER", "exteam1"),
+		DBPassword:   getEnv("USER_DB_PASSWORD", "Anajankovic03"),
+		DBName:       getEnv("USER_DB_NAME", "userservicedb"),
 		GRPCAddr:     getEnv("USER_GRPC_ADDR", ":50052"),
 		KafkaBrokers: getEnv("KAFKA_BROKERS", "localhost:9092"),
 		RedisAddr:    getEnv("REDIS_ADDR", "localhost:6379"),
@@ -39,7 +43,7 @@ func getEnv(key, fallback string) string {
 }
 
 func (c *Config) DSN() string {
-	sslmode := getEnv("USER_DB_SSLMODE", "disable")
+	sslmode := getEnv("USER_DB_SSLMODE", "require")
 	return "host=" + c.DBHost +
 		" port=" + c.DBPort +
 		" user=" + c.DBUser +

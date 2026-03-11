@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"time"
 
 	"google.golang.org/grpc"
 	"gorm.io/driver/postgres"
@@ -44,6 +45,11 @@ func main() {
 
 	repo := repository.NewEmployeeRepository(db)
 	empService := service.NewEmployeeService(repo, producer, redisCache)
+
+	if err := seedAdminUser(repo); err != nil {
+		log.Printf("warn: seed admin user: %v", err)
+	}
+
 	grpcHandler := handler.NewUserGRPCHandler(empService)
 
 	lis, err := net.Listen("tcp", cfg.GRPCAddr)
@@ -54,8 +60,39 @@ func main() {
 	s := grpc.NewServer()
 	pb.RegisterUserServiceServer(s, grpcHandler)
 
-	fmt.Printf("User service listening on %s\n", cfg.GRPCAddr)
+	fmt.Printf("user service listening on %s\n", cfg.GRPCAddr)
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("failed to serve: %v", err)
 	}
+}
+
+func seedAdminUser(repo *repository.EmployeeRepository) error {
+	if _, err := repo.GetByEmail("admin@admin.admin"); err == nil {
+		return nil // already exists
+	}
+
+	hash, err := service.HashPassword("AdminAdmin2026.!")
+	if err != nil {
+		return err
+	}
+
+	admin := &model.Employee{
+		FirstName:    "Admin",
+		LastName:     "Admin",
+		DateOfBirth:  time.Date(1990, 1, 1, 0, 0, 0, 0, time.UTC),
+		Gender:       "M",
+		Email:        "admin@admin.admin",
+		Phone:        "+38600000000",
+		Address:      "Admin Street 1",
+		Username:     "admin",
+		PasswordHash: hash,
+		Salt:         "",
+		Position:     "Administrator",
+		Department:   "IT",
+		Active:       true,
+		Role:         "EmployeeAdmin",
+		Activated:    true,
+	}
+
+	return repo.Create(admin)
 }
