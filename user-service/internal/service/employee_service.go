@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"regexp"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -14,8 +13,6 @@ import (
 	"github.com/exbanka/user-service/internal/model"
 	"github.com/exbanka/user-service/internal/repository"
 )
-
-var passwordRegex = regexp.MustCompile(`^(?=(?:.*[0-9]){2,})(?=.*[a-z])(?=.*[A-Z]).{8,32}$`)
 
 type EmployeeService struct {
 	repo     *repository.EmployeeRepository
@@ -114,8 +111,24 @@ func (s *EmployeeService) SetPassword(userID int64, hash string) error {
 }
 
 func ValidatePassword(password string) error {
-	if !passwordRegex.MatchString(password) {
-		return errors.New("password must be 8-32 chars with at least 2 digits, 1 uppercase and 1 lowercase letter")
+	if len(password) < 8 || len(password) > 32 {
+		return errors.New("password must be 8-32 characters")
+	}
+	digits := 0
+	hasUpper := false
+	hasLower := false
+	for _, c := range password {
+		switch {
+		case c >= '0' && c <= '9':
+			digits++
+		case c >= 'A' && c <= 'Z':
+			hasUpper = true
+		case c >= 'a' && c <= 'z':
+			hasLower = true
+		}
+	}
+	if digits < 2 || !hasUpper || !hasLower {
+		return errors.New("password must have at least 2 digits, 1 uppercase and 1 lowercase letter")
 	}
 	return nil
 }
