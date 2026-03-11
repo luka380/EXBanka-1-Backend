@@ -13,7 +13,11 @@ type Config struct {
 }
 
 func Load() *Config {
-	godotenv.Load()
+	for _, f := range []string{".env", "../.env", "../../.env", "../../../.env"} {
+		if err := godotenv.Load(f); err == nil {
+			break
+		}
+	}
 	return &Config{
 		HTTPAddr:     getEnv("GATEWAY_HTTP_ADDR", ":8080"),
 		AuthGRPCAddr: getEnv("AUTH_GRPC_ADDR", "localhost:50051"),
