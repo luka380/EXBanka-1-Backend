@@ -37,10 +37,11 @@ func getEnv(key, fallback string) string {
 }
 
 func (c *Config) DSN() string {
+	sslmode := getEnv("USER_DB_SSLMODE", "disable")
 	return "host=" + c.DBHost +
 		" port=" + c.DBPort +
 		" user=" + c.DBUser +
 		" password=" + c.DBPassword +
 		" dbname=" + c.DBName +
-		" sslmode=disable"
+		" sslmode=" + sslmode
 }

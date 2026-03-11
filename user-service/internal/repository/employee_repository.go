@@ -41,19 +41,23 @@ func (r *EmployeeRepository) SetPassword(userID int64, passwordHash string) erro
 func (r *EmployeeRepository) List(emailFilter, nameFilter, positionFilter string, page, pageSize int) ([]model.Employee, int64, error) {
 	var employees []model.Employee
 	var total int64
-	q := r.db.Model(&model.Employee{})
 
+	// Build base query with filters
+	base := r.db.Model(&model.Employee{})
 	if emailFilter != "" {
-		q = q.Where("email ILIKE ?", "%"+emailFilter+"%")
+		base = base.Where("email ILIKE ?", "%"+emailFilter+"%")
 	}
 	if nameFilter != "" {
-		q = q.Where("first_name ILIKE ? OR last_name ILIKE ?", "%"+nameFilter+"%", "%"+nameFilter+"%")
+		base = base.Where("first_name ILIKE ? OR last_name ILIKE ?", "%"+nameFilter+"%", "%"+nameFilter+"%")
 	}
 	if positionFilter != "" {
-		q = q.Where("position ILIKE ?", "%"+positionFilter+"%")
+		base = base.Where("position ILIKE ?", "%"+positionFilter+"%")
 	}
 
-	q.Count(&total)
+	// Count with separate session to avoid query mutation
+	if err := base.Session(&gorm.Session{}).Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
 
 	if page < 1 {
 		page = 1
@@ -63,6 +67,8 @@ func (r *EmployeeRepository) List(emailFilter, nameFilter, positionFilter string
 	}
 	offset := (page - 1) * pageSize
 
-	err := q.Offset(offset).Limit(pageSize).Find(&employees).Error
-	return employees, total, err
+	if err := base.Offset(offset).Limit(pageSize).Find(&employees).Error; err != nil {
+		return nil, 0, err
+	}
+	return employees, total, nil
 }

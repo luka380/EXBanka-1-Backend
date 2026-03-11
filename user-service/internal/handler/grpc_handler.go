@@ -2,10 +2,12 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"gorm.io/gorm"
 
 	pb "github.com/exbanka/contract/userpb"
 	"github.com/exbanka/user-service/internal/model"
@@ -97,6 +99,9 @@ func (h *UserGRPCHandler) UpdateEmployee(ctx context.Context, req *pb.UpdateEmpl
 
 	emp, err := h.empService.UpdateEmployee(req.Id, updates)
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, status.Errorf(codes.NotFound, "employee not found")
+		}
 		return nil, status.Errorf(codes.Internal, "failed to update: %v", err)
 	}
 	return toEmployeeResponse(emp), nil
