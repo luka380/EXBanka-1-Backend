@@ -4,5 +4,6 @@ use (
 	./api-gateway
 	./auth-service
 	./contract
+	./notification-service
 	./user-service
 )
