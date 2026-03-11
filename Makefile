@@ -15,12 +15,14 @@ build:
 	cd user-service && go build -o bin/user-service ./cmd
 	cd auth-service && go build -o bin/auth-service ./cmd
 	cd api-gateway && go build -o bin/api-gateway ./cmd
+	cd notification-service && go build -o bin/notification-service ./cmd
 
 tidy:
 	cd contract && go mod tidy
 	cd user-service && go mod tidy
 	cd auth-service && go mod tidy
 	cd api-gateway && go mod tidy
+	cd notification-service && go mod tidy
 
 docker-up:
 	docker compose up --build -d
@@ -32,5 +34,5 @@ docker-logs:
 	docker compose logs -f
 
 clean:
-	rm -f contract/authpb/*.go contract/userpb/*.go
-	rm -f user-service/bin/* auth-service/bin/* api-gateway/bin/*
+	rm -f contract/authpb/*.go contract/userpb/*.go contract/notificationpb/*.go
+	rm -f user-service/bin/* auth-service/bin/* api-gateway/bin/* notification-service/bin/*
