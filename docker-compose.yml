@@ -65,12 +65,15 @@ services:
       USER_DB_NAME: user_db
       USER_GRPC_ADDR: ":50052"
       KAFKA_BROKERS: kafka:9092
+      REDIS_ADDR: redis:6379
     ports:
       - "50052:50052"
     depends_on:
       user-db:
         condition: service_healthy
       kafka:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   auth-service:
@@ -89,6 +92,7 @@ services:
       JWT_SECRET: docker-test-secret-change-me
       JWT_ACCESS_EXPIRY: 15m
       JWT_REFRESH_EXPIRY: 168h
+      REDIS_ADDR: redis:6379
     ports:
       - "50051:50051"
     depends_on:
@@ -98,6 +102,8 @@ services:
         condition: service_healthy
       user-service:
         condition: service_started
+      redis:
+        condition: service_healthy
 
   api-gateway:
     build:
@@ -115,6 +121,37 @@ services:
       user-service:
         condition: service_started
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: notification-service/Dockerfile
+    environment:
+      NOTIFICATION_GRPC_ADDR: ":50053"
+      KAFKA_BROKERS: kafka:9092
+      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER}
+      SMTP_PASSWORD: ${SMTP_PASSWORD}
+      SMTP_FROM: ${SMTP_FROM}
+    ports:
+      - "50053:50053"
+    depends_on:
+      kafka:
+        condition: service_healthy
+
 volumes:
   user_db_data:
   auth_db_data:
+  redis_data:
