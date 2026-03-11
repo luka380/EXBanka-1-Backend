@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 
 	kafkamsg "github.com/exbanka/contract/kafka"
 	userpb "github.com/exbanka/contract/userpb"
+	"github.com/exbanka/auth-service/internal/cache"
 	kafkaprod "github.com/exbanka/auth-service/internal/kafka"
 	"github.com/exbanka/auth-service/internal/model"
 	"github.com/exbanka/auth-service/internal/repository"
@@ -23,6 +25,7 @@ type AuthService struct {
 	jwtService *JWTService
 	userClient userpb.UserServiceClient
 	producer   *kafkaprod.Producer
+	cache      *cache.RedisCache
 	refreshExp time.Duration
 }
 
@@ -31,6 +34,7 @@ func NewAuthService(
 	jwtService *JWTService,
 	userClient userpb.UserServiceClient,
 	producer *kafkaprod.Producer,
+	cache *cache.RedisCache,
 	refreshExp time.Duration,
 ) *AuthService {
 	return &AuthService{
@@ -38,6 +42,7 @@ func NewAuthService(
 		jwtService: jwtService,
 		userClient: userClient,
 		producer:   producer,
+		cache:      cache,
 		refreshExp: refreshExp,
 	}
 }
@@ -72,7 +77,35 @@ func (s *AuthService) Login(ctx context.Context, email, password string) (string
 }
 
 func (s *AuthService) ValidateToken(tokenString string) (*Claims, error) {
-	return s.jwtService.ValidateToken(tokenString)
+	cacheKey := "token:" + hashToken(tokenString)
+
+	// Try cache first
+	if s.cache != nil {
+		var cached Claims
+		if err := s.cache.Get(context.Background(), cacheKey, &cached); err == nil {
+			return &cached, nil
+		}
+	}
+
+	claims, err := s.jwtService.ValidateToken(tokenString)
+	if err != nil {
+		return nil, err
+	}
+
+	// Cache with TTL = remaining token lifetime
+	if s.cache != nil && claims.ExpiresAt != nil {
+		ttl := time.Until(claims.ExpiresAt.Time)
+		if ttl > 0 {
+			_ = s.cache.Set(context.Background(), cacheKey, claims, ttl)
+		}
+	}
+
+	return claims, nil
+}
+
+func hashToken(token string) string {
+	h := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(h[:])
 }
 
 func (s *AuthService) RefreshToken(ctx context.Context, refreshTokenStr string) (string, string, error) {

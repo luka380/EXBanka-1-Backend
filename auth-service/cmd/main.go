@@ -12,6 +12,7 @@ import (
 
 	authpb "github.com/exbanka/contract/authpb"
 	userpb "github.com/exbanka/contract/userpb"
+	"github.com/exbanka/auth-service/internal/cache"
 	"github.com/exbanka/auth-service/internal/config"
 	"github.com/exbanka/auth-service/internal/handler"
 	kafkaprod "github.com/exbanka/auth-service/internal/kafka"
@@ -45,9 +46,18 @@ func main() {
 	producer := kafkaprod.NewProducer(cfg.KafkaBrokers)
 	defer producer.Close()
 
+	var redisCache *cache.RedisCache
+	redisCache, err = cache.NewRedisCache(cfg.RedisAddr)
+	if err != nil {
+		log.Printf("warn: redis unavailable, running without cache: %v", err)
+	}
+	if redisCache != nil {
+		defer redisCache.Close()
+	}
+
 	tokenRepo := repository.NewTokenRepository(db)
 	jwtService := service.NewJWTService(cfg.JWTSecret, cfg.AccessExpiry)
-	authService := service.NewAuthService(tokenRepo, jwtService, userClient, producer, cfg.RefreshExpiry)
+	authService := service.NewAuthService(tokenRepo, jwtService, userClient, producer, redisCache, cfg.RefreshExpiry)
 	grpcHandler := handler.NewAuthGRPCHandler(authService)
 
 	lis, err := net.Listen("tcp", cfg.GRPCAddr)
