@@ -19,6 +19,7 @@ type Config struct {
 	JWTSecret     string
 	AccessExpiry  time.Duration
 	RefreshExpiry time.Duration
+	RedisAddr     string
 }
 
 func Load() *Config {
@@ -39,6 +40,7 @@ func Load() *Config {
 		JWTSecret:     getEnv("JWT_SECRET", "change-me"),
 		AccessExpiry:  accessExp,
 		RefreshExpiry: refreshExp,
+		RedisAddr:     getEnv("REDIS_ADDR", "localhost:6379"),
 	}
 }
 
