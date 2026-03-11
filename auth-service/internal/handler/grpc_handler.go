@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"log"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -56,7 +57,10 @@ func (h *AuthGRPCHandler) RefreshToken(ctx context.Context, req *pb.RefreshToken
 }
 
 func (h *AuthGRPCHandler) RequestPasswordReset(ctx context.Context, req *pb.PasswordResetRequest) (*pb.PasswordResetResponse, error) {
-	h.authService.RequestPasswordReset(ctx, req.Email)
+	if err := h.authService.RequestPasswordReset(ctx, req.Email); err != nil {
+		log.Printf("warn: password reset request failed for email (suppressed): %v", err)
+	}
+	// Always return success to not leak email existence
 	return &pb.PasswordResetResponse{Success: true}, nil
 }
 

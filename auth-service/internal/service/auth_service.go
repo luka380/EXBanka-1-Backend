@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -83,7 +84,9 @@ func (s *AuthService) RefreshToken(ctx context.Context, refreshTokenStr string) 
 		return "", "", errors.New("refresh token expired")
 	}
 
-	_ = s.tokenRepo.RevokeRefreshToken(refreshTokenStr)
+	if err := s.tokenRepo.RevokeRefreshToken(refreshTokenStr); err != nil {
+		return "", "", fmt.Errorf("failed to revoke old refresh token: %w", err)
+	}
 
 	userResp, err := s.userClient.GetEmployee(ctx, &userpb.GetEmployeeRequest{Id: rt.UserID})
 	if err != nil {
@@ -193,8 +196,12 @@ func (s *AuthService) ResetPassword(ctx context.Context, tokenStr, newPassword, 
 		return fmt.Errorf("failed to set password: %w", err)
 	}
 
-	_ = s.tokenRepo.MarkPasswordResetUsed(tokenStr)
-	_ = s.tokenRepo.RevokeAllForUser(prt.UserID)
+	if err := s.tokenRepo.MarkPasswordResetUsed(tokenStr); err != nil {
+		log.Printf("warn: failed to mark password reset token used (token may be replayable): %v", err)
+	}
+	if err := s.tokenRepo.RevokeAllForUser(prt.UserID); err != nil {
+		log.Printf("warn: failed to revoke all sessions after password reset: %v", err)
+	}
 
 	return nil
 }
@@ -228,7 +235,9 @@ func (s *AuthService) ActivateAccount(ctx context.Context, tokenStr, password, c
 		return fmt.Errorf("failed to set password: %w", err)
 	}
 
-	_ = s.tokenRepo.MarkActivationUsed(tokenStr)
+	if err := s.tokenRepo.MarkActivationUsed(tokenStr); err != nil {
+		log.Printf("warn: failed to mark activation token used (token may be replayable): %v", err)
+	}
 
 	user, _ := s.userClient.GetEmployee(ctx, &userpb.GetEmployeeRequest{Id: at.UserID})
 	if user != nil {
