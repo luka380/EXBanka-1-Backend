@@ -4,6 +4,8 @@ package kafka
 const (
 	TopicSendEmail = "notification.send-email"
 	TopicEmailSent = "notification.email-sent"
+	TopicSendPush  = "notification.send-push"
+	TopicPushSent  = "notification.push-sent"
 )
 
 type EmailType string
