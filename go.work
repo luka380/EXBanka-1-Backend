@@ -1,0 +1,8 @@
+go 1.23
+
+use (
+    ./contract
+    ./auth-service
+    ./user-service
+    ./api-gateway
+)
