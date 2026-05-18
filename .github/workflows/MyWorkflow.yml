@@ -2,7 +2,7 @@ name: MyWorkflow
 
 on:
   push:
-    branches: [Development, main, feature/*]
+    branches: [release]
 
 env:
   REGISTRY: ghcr.io
@@ -10,7 +10,6 @@ env:
 
 jobs:
   publish:
-    if: github.repository == 'luka380/EXBanka-1-Backend'
     name: Build ${{ matrix.service }}
     runs-on: ubuntu-latest
     permissions:
