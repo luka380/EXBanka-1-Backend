@@ -8,6 +8,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **After implementing any feature or change, update `Specification.md` to reflect what was added or modified.** This includes: new API routes (Section 17), new or changed entities (Section 18), new Kafka topics or message types (Section 19), new enum values (Section 20), new business rules (Section 21), new gRPC service definitions (Section 11), new permissions (Section 6), and any changes to the gateway client wiring (Section 3). The spec must always match the current state of the codebase.
 
+## Versioning Requirement
+
+**Every change to the backend MUST bump the version in the repo-root `VERSION` file. Do this automatically — never ask whether to bump it.** This is a hard requirement — not optional.
+
+- The repo-root `VERSION` file is the single source of truth for the backend's semantic version (`MAJOR.MINOR.PATCH`). It is served to clients at `GET /api/v3/version` and baked into docker images both as the `:<version>` image tag (CD) and into the api-gateway binary via `-ldflags` (so the endpoint reports the exact built version).
+- On **every** commit that changes backend behavior, bump `VERSION` using semantic versioning, with no prompt to the user:
+  - **PATCH** (`x.y.Z+1`) — bug fixes, refactors, docs, tests, internal changes with no API contract change.
+  - **MINOR** (`x.Y+1.0`) — new backward-compatible routes, fields, or features.
+  - **MAJOR** (`X+1.0.0`) — breaking changes to existing routes/contracts (requires the same explicit user authorization as any other breaking change per the API Versioning Compatibility Requirement).
+- Keep the default in `api-gateway/internal/version/version.go` (`var Version`) in sync with the `VERSION` file — both hold the same semver string. The `VERSION` file is authoritative; the Go default is the local-dev fallback when not built through the Dockerfile.
+- Bump `VERSION` as part of the same change that introduces the behavior — it is not a separate follow-up task, and it does not require asking.
+
 ## Repository Layout
 
 This is a Go workspace monorepo. Each service has its own self-contained directory at the repo root:

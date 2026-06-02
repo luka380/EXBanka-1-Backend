@@ -106,6 +106,7 @@ type Deps struct {
 // doesn't ripple into every router version.
 type Handlers struct {
 	Auth             *handler.AuthHandler
+	Version          *handler.VersionHandler
 	Employee         *handler.EmployeeHandler
 	Role             *handler.RoleHandler
 	Limit            *handler.LimitHandler
@@ -180,6 +181,7 @@ func NewHandlers(d Deps) *Handlers {
 	ownRouting, _ := strconv.ParseInt(d.OwnBankCode, 10, 64)
 	return &Handlers{
 		Auth:             handler.NewAuthHandler(d.AuthClient),
+		Version:          handler.NewVersionHandler(),
 		Employee:         handler.NewEmployeeHandler(d.UserClient, d.AuthClient),
 		Role:             handler.NewRoleHandler(d.UserClient),
 		Limit:            handler.NewLimitHandler(d.EmpLimitClient, d.ClientLimitClient),

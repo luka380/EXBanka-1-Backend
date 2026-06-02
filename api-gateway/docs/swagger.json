@@ -14874,6 +14874,29 @@
                 }
             }
         },
+        "/api/v3/version": {
+            "get": {
+                "description": "Returns the semantic version of the running backend. Public and unauthenticated, so front-end developers can confirm which backend build they are talking to.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "version"
+                ],
+                "summary": "Backend version",
+                "responses": {
+                    "200": {
+                        "description": "example: {\\\"version\\\": \\\"1.0.0\\\"}",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/v3/watchlist/{portfolio_id}": {
             "get": {
                 "security": [

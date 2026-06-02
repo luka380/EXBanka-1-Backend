@@ -65,6 +65,10 @@ func SetupV3(r *gin.Engine, h *Handlers) {
 		auth.POST("/resend-activation", h.Auth.ResendActivationEmail)
 	}
 
+	// ── Public version endpoint (no middleware) ──────────────────
+	// Lets front-end developers confirm which backend build is running.
+	v3.GET("/version", h.Version.GetVersion)
+
 	// ── Public exchange rate routes (no middleware) ──────────────
 	v3.GET("/exchange/rates", h.Exchange.ListExchangeRates)
 	v3.GET("/exchange/rates/:from/:to", h.Exchange.GetExchangeRate)

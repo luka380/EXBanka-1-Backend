@@ -10934,6 +10934,23 @@ paths:
       summary: Get the current stock data source and status
       tags:
       - Admin
+  /api/v3/version:
+    get:
+      description: Returns the semantic version of the running backend. Public and
+        unauthenticated, so front-end developers can confirm which backend build they
+        are talking to.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 'example: {\"version\": \"1.0.0\"}'
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Backend version
+      tags:
+      - version
   /api/v3/watchlist/{portfolio_id}:
     get:
       description: portfolio_id is in the form client-<n>, bank, or fund-<n>.

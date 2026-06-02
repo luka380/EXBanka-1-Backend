@@ -90,9 +90,10 @@ Access tokens expire after 15 minutes. Use the refresh token to obtain a new pai
 50. [Admin / Audit Logs (D4 — 2026-05-28)](#50-admin--audit-logs-d4--2026-05-28)
 51. [Dividends (E4 — 2026-05-28)](#51-dividends-e4--2026-05-28)
 52. [Cross-Bank Protocol](#cross-bank-protocol-cross-bank-protocol)
-53. [Error Response Format](#error-response-format)
-54. [Password Requirements](#password-requirements)
-55. [Notes for Frontend Developers](#notes-for-frontend-developers)
+53. [System Version](#53-system-version)
+54. [Error Response Format](#error-response-format)
+55. [Password Requirements](#password-requirements)
+56. [Notes for Frontend Developers](#notes-for-frontend-developers)
 
 ---
 
@@ -8629,6 +8630,25 @@ Peer-facing endpoint for cross-bank option discovery. `PeerAuth` middleware vali
 Population rule: `bestBid` is set for `sell_initiated` parents (buyers compete on premium upward); `bestAsk` is set for `buy_initiated` parents (sellers compete on premium downward). `activeChainsCount` is the count of negotiation chains in `open` or `countered` status against the listing.
 
 Each entry corresponds to one `OTCOffer` row on this bank with `status IN ('open','PENDING','COUNTERED')` AND `counterparty_owner_id IS NULL`. `Private=true` rows are dropped unless `PrivateToBankCode` equals the calling peer's bank code.
+
+---
+
+## 53. System Version
+
+Public endpoint — no authentication required.
+
+### GET /api/v3/version
+
+Returns the semantic version of the running backend, so front-end developers can confirm which backend build they are talking to. The version is the contents of the repo-root `VERSION` file, baked into the gateway binary at build time.
+
+**Authentication:** None (public)
+
+**Response 200:**
+```json
+{
+  "version": "1.0.0"
+}
+```
 
 ---
 
