@@ -2,7 +2,7 @@ name: MyWorkflow
 
 on:
   push:
-    branches: [release]
+    branches: [MyRelease]
 
 env:
   REGISTRY: ghcr.io
