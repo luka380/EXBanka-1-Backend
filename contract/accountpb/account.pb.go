@@ -3106,6 +3106,7 @@ type CommitIncomingRequest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	ReservationKey string                 `protobuf:"bytes,1,opt,name=reservation_key,json=reservationKey,proto3" json:"reservation_key,omitempty"`
 	IdempotencyKey string                 `protobuf:"bytes,2,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"` // saga step idempotency
+	Memo           string                 `protobuf:"bytes,3,opt,name=memo,proto3" json:"memo,omitempty"`                                           // optional ledger description (SI-TX NEW_TX message)
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -3150,6 +3151,13 @@ func (x *CommitIncomingRequest) GetReservationKey() string {
 func (x *CommitIncomingRequest) GetIdempotencyKey() string {
 	if x != nil {
 		return x.IdempotencyKey
+	}
+	return ""
+}
+
+func (x *CommitIncomingRequest) GetMemo() string {
+	if x != nil {
+		return x.Memo
 	}
 	return ""
 }
@@ -3885,10 +3893,11 @@ const file_account_account_proto_rawDesc = "" +
 	"\x0fidempotency_key\x18\x05 \x01(\tR\x0eidempotencyKey\"g\n" +
 	"\x17ReserveIncomingResponse\x12'\n" +
 	"\x0freservation_key\x18\x01 \x01(\tR\x0ereservationKey\x12#\n" +
-	"\rbalance_after\x18\x02 \x01(\tR\fbalanceAfter\"i\n" +
+	"\rbalance_after\x18\x02 \x01(\tR\fbalanceAfter\"}\n" +
 	"\x15CommitIncomingRequest\x12'\n" +
 	"\x0freservation_key\x18\x01 \x01(\tR\x0ereservationKey\x12'\n" +
-	"\x0fidempotency_key\x18\x02 \x01(\tR\x0eidempotencyKey\"=\n" +
+	"\x0fidempotency_key\x18\x02 \x01(\tR\x0eidempotencyKey\x12\x12\n" +
+	"\x04memo\x18\x03 \x01(\tR\x04memo\"=\n" +
 	"\x16CommitIncomingResponse\x12#\n" +
 	"\rbalance_after\x18\x01 \x01(\tR\fbalanceAfter\"j\n" +
 	"\x16ReleaseIncomingRequest\x12'\n" +

@@ -3,6 +3,7 @@ package handler_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	transactionpb "github.com/exbanka/contract/transactionpb"
 	"github.com/exbanka/transaction-service/internal/handler"
@@ -30,7 +31,7 @@ func newPeerTxHandlerWithOutRepo(t *testing.T) (*handler.PeerTxGRPCHandler, *rep
 	idemRepo := repository.NewPeerIdempotenceRepository(db)
 	outRepo := repository.NewOutboundPeerTxRepository(db)
 	exec := sitx.NewPostingExecutor(stub, 111)
-	h := handler.NewPeerTxGRPCHandler(idemRepo, exec, stub, outRepo, nil, nil, 111)
+	h := handler.NewPeerTxGRPCHandler(idemRepo, exec, stub, outRepo, nil, nil, 111, 5*time.Second)
 	return h, idemRepo, outRepo
 }
 
@@ -133,12 +134,17 @@ func TestGetTxStatus_SenderFailed(t *testing.T) {
 func TestGetTxStatus_ReceiverFound(t *testing.T) {
 	h, idemRepo, _ := newPeerTxHandlerWithOutRepo(t)
 
+	// txID is the INITIATOR's transactionId — what a peer doing CHECK_STATUS
+	// knows and queries by. We persist it in TxForeignID at NEW_TX time; the
+	// receiver-side TransactionID column holds our OWN fresh vote UUID, which the
+	// peer never sees. LookupByTransactionID correlates on tx_foreign_id.
 	txID := "peer-tx-uuid-receiver-001"
 	if err := idemRepo.Insert(&model.PeerIdempotenceRecord{
 		PeerBankCode:        "222",
 		LocallyGeneratedKey: "some-idem-key",
-		TransactionID:       txID,
-		ResponsePayloadJSON: `{"type":"YES","transaction_id":"` + txID + `"}`,
+		TransactionID:       "our-own-vote-uuid",
+		TxForeignID:         txID,
+		ResponsePayloadJSON: `{"type":"YES","transaction_id":"our-own-vote-uuid"}`,
 		DebitsJSON:          "[]",
 		OptionsJSON:         "[]",
 	}); err != nil {

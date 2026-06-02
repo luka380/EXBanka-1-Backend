@@ -26,6 +26,12 @@ type Config struct {
 	RedisAddr string
 
 	OwnBankCode string
+
+	// OwnBankName is the human-readable display name returned by the
+	// peer-facing GET /user/{rid}/{id} endpoint (SI-TX §3.7
+	// bankDisplayName). Falls back to OwnBankCode when OWN_BANK_NAME is
+	// unset.
+	OwnBankName string
 }
 
 func Load() *Config {
@@ -48,6 +54,8 @@ func Load() *Config {
 		RedisAddr: getEnv("REDIS_ADDR", "localhost:6379"),
 
 		OwnBankCode: getEnv("OWN_BANK_CODE", "111"),
+		// Default to the bank code when no display name is configured.
+		OwnBankName: getEnv("OWN_BANK_NAME", getEnv("OWN_BANK_CODE", "111")),
 	}
 }
 

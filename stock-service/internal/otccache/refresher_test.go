@@ -204,13 +204,10 @@ func TestRefresher_FetchPeer_HappyPath(t *testing.T) {
 			t.Errorf("missing X-Api-Key header: %v", r.Header)
 		}
 		_ = json.NewEncoder(w).Encode(contractsitx.PublicStocksResponse{
-			Stocks: []contractsitx.PublicStock{
-				{
-					OwnerID:       contractsitx.ForeignBankId{RoutingNumber: 222, ID: "client-3"},
-					Ticker:        "MSFT",
-					Amount:        50,
-					PricePerStock: decimal.NewFromFloat(200.5),
-					Currency:      "USD",
+			{
+				Stock: contractsitx.StockDescription{Ticker: "MSFT"},
+				Sellers: []contractsitx.PublicSeller{
+					{Seller: contractsitx.ForeignBankId{RoutingNumber: 222, ID: "client-3"}, Amount: 50},
 				},
 			},
 		})
@@ -235,9 +232,7 @@ func TestRefresher_FetchPeer_HappyPath(t *testing.T) {
 	if out[0].OwnerID != "client-3" {
 		t.Errorf("owner_id = %q want client-3", out[0].OwnerID)
 	}
-	if out[0].Currency != "USD" {
-		t.Errorf("currency=%s", out[0].Currency)
-	}
+	// §3.1 bare-array shape does not carry currency per seller — omit currency check.
 }
 
 // TestRefresher_FetchPeer_InactivePeer ensures inactive peers are skipped
@@ -322,13 +317,10 @@ func TestRefresher_FetchPeer_NilFullPeer(t *testing.T) {
 func TestRefresher_Refresh_WithReachablePeer(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(contractsitx.PublicStocksResponse{
-			Stocks: []contractsitx.PublicStock{
-				{
-					OwnerID:       contractsitx.ForeignBankId{RoutingNumber: 222, ID: "0"},
-					Ticker:        "GOOG",
-					Amount:        12,
-					PricePerStock: decimal.NewFromInt(2500),
-					Currency:      "USD",
+			{
+				Stock: contractsitx.StockDescription{Ticker: "GOOG"},
+				Sellers: []contractsitx.PublicSeller{
+					{Seller: contractsitx.ForeignBankId{RoutingNumber: 222, ID: "0"}, Amount: 12},
 				},
 			},
 		})

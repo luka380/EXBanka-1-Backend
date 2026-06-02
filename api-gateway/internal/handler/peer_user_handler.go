@@ -18,13 +18,14 @@ import (
 // OTC negotiations or transfer history. Returns 404 if rid is not our
 // own routing number.
 type PeerUserHandler struct {
-	clientClient clientpb.ClientServiceClient
-	userClient   userpb.UserServiceClient
-	ownRouting   int64
+	clientClient       clientpb.ClientServiceClient
+	userClient         userpb.UserServiceClient
+	ownRouting         int64
+	ownBankDisplayName string
 }
 
-func NewPeerUserHandler(c clientpb.ClientServiceClient, u userpb.UserServiceClient, ownRouting int64) *PeerUserHandler {
-	return &PeerUserHandler{clientClient: c, userClient: u, ownRouting: ownRouting}
+func NewPeerUserHandler(c clientpb.ClientServiceClient, u userpb.UserServiceClient, ownRouting int64, ownBankDisplayName string) *PeerUserHandler {
+	return &PeerUserHandler{clientClient: c, userClient: u, ownRouting: ownRouting, ownBankDisplayName: ownBankDisplayName}
 }
 
 // GetUser godoc
@@ -61,9 +62,8 @@ func (h *PeerUserHandler) GetUser(c *gin.Context) {
 			resp, lookupErr := h.clientClient.GetClient(c.Request.Context(), &clientpb.GetClientRequest{Id: clientID})
 			if lookupErr == nil && resp != nil {
 				c.JSON(http.StatusOK, gin.H{
-					"id":        gin.H{"routingNumber": h.ownRouting, "id": id},
-					"firstName": resp.GetFirstName(),
-					"lastName":  resp.GetLastName(),
+					"bankDisplayName": h.ownBankDisplayName,
+					"displayName":     resp.GetFirstName() + " " + resp.GetLastName(),
 				})
 				return
 			}
@@ -79,9 +79,8 @@ func (h *PeerUserHandler) GetUser(c *gin.Context) {
 			resp, lookupErr := h.userClient.GetEmployee(c.Request.Context(), &userpb.GetEmployeeRequest{Id: empID})
 			if lookupErr == nil && resp != nil {
 				c.JSON(http.StatusOK, gin.H{
-					"id":        gin.H{"routingNumber": h.ownRouting, "id": id},
-					"firstName": resp.GetFirstName(),
-					"lastName":  resp.GetLastName(),
+					"bankDisplayName": h.ownBankDisplayName,
+					"displayName":     resp.GetFirstName() + " " + resp.GetLastName(),
 				})
 				return
 			}

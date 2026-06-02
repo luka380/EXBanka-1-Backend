@@ -258,18 +258,20 @@ func (r *Refresher) fetchPeer(ctx context.Context, peer *transactionpb.PeerBank)
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, err
 	}
-	out := make([]Offer, 0, len(resp.Stocks))
-	for _, s := range resp.Stocks {
-		out = append(out, Offer{
-			Kind:         "remote",
-			BankCode:     peer.GetBankCode(),
-			OwnerID:      s.OwnerID.ID,
-			SecurityType: "stock",
-			Ticker:       s.Ticker,
-			Quantity:     s.Amount,
-			PricePerUnit: s.PricePerStock.String(),
-			Currency:     s.Currency,
-		})
+	// New §3.1 bare-array shape: each entry groups all sellers for a ticker.
+	// Flatten to one Offer per seller to keep the existing cache model.
+	out := make([]Offer, 0, len(resp))
+	for _, s := range resp {
+		for _, seller := range s.Sellers {
+			out = append(out, Offer{
+				Kind:         "remote",
+				BankCode:     peer.GetBankCode(),
+				OwnerID:      seller.Seller.ID,
+				SecurityType: "stock",
+				Ticker:       s.Stock.Ticker,
+				Quantity:     seller.Amount,
+			})
+		}
 	}
 	return out, nil
 }

@@ -73,3 +73,36 @@ func TestPeerIdempotenceRepo_DuplicateKeyRejected(t *testing.T) {
 		t.Fatalf("second insert: expected unique-constraint error")
 	}
 }
+
+func TestUpsertPending_ThenUpsertDone(t *testing.T) {
+	db := newIdemTestDB(t)
+	repo := repository.NewPeerIdempotenceRepository(db)
+	peer, idem := "222", "k-async-1"
+
+	// 1. UpsertPending creates a pending row.
+	if err := repo.UpsertPending(&model.PeerIdempotenceRecord{PeerBankCode: peer, LocallyGeneratedKey: idem, TxForeignID: "tx-1"}); err != nil {
+		t.Fatalf("UpsertPending: %v", err)
+	}
+	rec, found, _ := repo.Lookup(peer, idem)
+	if !found || rec.Status != "pending" {
+		t.Fatalf("want pending row, got found=%v status=%q", found, rec.Status)
+	}
+
+	// 2. UpsertDone overwrites pending -> done with the vote.
+	if err := repo.UpsertDone(&model.PeerIdempotenceRecord{PeerBankCode: peer, LocallyGeneratedKey: idem, TransactionID: "rx-uuid", ResponsePayloadJSON: `{"type":"YES"}`, TxForeignID: "tx-1"}); err != nil {
+		t.Fatalf("UpsertDone: %v", err)
+	}
+	rec, _, _ = repo.Lookup(peer, idem)
+	if rec.Status != "done" || rec.ResponsePayloadJSON != `{"type":"YES"}` {
+		t.Fatalf("want done+vote, got status=%q payload=%q", rec.Status, rec.ResponsePayloadJSON)
+	}
+
+	// 3. UpsertPending against an existing done row is a no-op (does NOT clobber).
+	if err := repo.UpsertPending(&model.PeerIdempotenceRecord{PeerBankCode: peer, LocallyGeneratedKey: idem, TxForeignID: "tx-1"}); err != nil {
+		t.Fatalf("UpsertPending(2): %v", err)
+	}
+	rec, _, _ = repo.Lookup(peer, idem)
+	if rec.Status != "done" || rec.ResponsePayloadJSON != `{"type":"YES"}` {
+		t.Fatalf("UpsertPending clobbered a done row: status=%q payload=%q", rec.Status, rec.ResponsePayloadJSON)
+	}
+}

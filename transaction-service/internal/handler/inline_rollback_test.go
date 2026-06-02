@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	accountpb "github.com/exbanka/contract/accountpb"
 	transactionpb "github.com/exbanka/contract/transactionpb"
@@ -48,7 +49,7 @@ func TestInitiateOutboundTx_PeerVotesNO_ReleaseFails_StaysPending(t *testing.T) 
 	peerLookup := func(_ context.Context, code string) (*sitx.PeerHTTPTarget, error) {
 		return &sitx.PeerHTTPTarget{BankCode: code, BaseURL: srv.URL, APIToken: "t", OwnRouting: 111, RoutingNumber: 222}, nil
 	}
-	h := handler.NewPeerTxGRPCHandler(idemRepo, exec, stub, outRepo, httpClient, handler.PeerLookupFunc(peerLookup), 111)
+	h := handler.NewPeerTxGRPCHandler(idemRepo, exec, stub, outRepo, httpClient, handler.PeerLookupFunc(peerLookup), 111, 5*time.Second)
 
 	resp, err := h.InitiateOutboundTx(context.Background(), &transactionpb.SiTxInitiateRequest{
 		FromAccountNumber: "111-A",

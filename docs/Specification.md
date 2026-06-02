@@ -2854,7 +2854,9 @@ On success the middleware sets `peer_bank_code` and `peer_routing_number` on the
 
 `OutboundReplayCron` (transaction-service): 30s tick. Scans `outbound_peer_txs` rows in `pending` whose `last_attempt_at` is older than 60s (or NULL — never attempted). 4-attempt cap; rows that exceed get marked `failed`. Receiver returns the same cached vote on every retry due to idempotence-key dedup.
 
-**Release on terminal failure (cron + inline parity):** because the sender's funds are HELD (reserve-then-settle) at initiation, every terminal non-committed outcome must lift that hold (no money ever left). On a peer **NO vote** *and* on **max-attempts-exceeded**, the cron first reverses the local effects (via `PeerTxGRPCHandler.ReverseOutboundLocal`, wired as the cron's `LocalReversalFunc`) before marking the row `rolled_back` / `failed`. The reversal dispatches by `tx_kind`: `transfer` releases the local outgoing hold with key `peer-out-release-<idem>`; OTC kinds delegate to `PostingExecutor.ReverseLocal`, which releases the local CREDIT reservation (`sitx-localrelease-<own>:<idem>`) and releases each local DEBIT hold (`sitx-localrelease-out-<own>:<idem>:<i>`). On peer **YES**, the commit path (inline, or the cron's `LocalCommitFunc` = `PeerTxGRPCHandler.CommitOutboundLocal`) settles the holds (`peer-out-settle-<idem>` / `sitx-localsettle-out-<own>:<idem>:<i>`). All keys match the inline dispatch path so the two never double-act. If a reversal/settle itself fails, the row is kept `pending` (via `MarkAttempt`) so a later tick retries it — money is never stranded in a terminal row. The `OutgoingReservationTimeoutCron` is the final backstop for holds whose peer never answers at all.
+**Release on terminal failure (cron + inline parity):** because the sender's funds are HELD (reserve-then-settle) at initiation, every terminal non-committed outcome must lift that hold (no money ever left). On a peer **NO vote** *and* on **max-attempts-exceeded**, the cron first reverses the local effects (via `PeerTxGRPCHandler.ReverseOutboundLocal`, wired as the cron's `LocalReversalFunc`) before marking the row `rolled_back` / `failed`. The reversal dispatches by `tx_kind`: `payment` (the simple-transfer kind `InitiateOutboundTx` actually sets) releases the single local outgoing hold with key `peer-out-release-<idem>`; OTC kinds (`transfer`/`otc-accept`/`otc-exercise` from `InitiateOutboundTxWithPostings`) delegate to `PostingExecutor.ReverseLocal`, which releases the local CREDIT reservation (`sitx-localrelease-<own>:<idem>`) and releases each local DEBIT hold (`sitx-localrelease-out-<own>:<idem>:<i>`). On peer **YES**, the commit path (inline, or the cron's `LocalCommitFunc` = `PeerTxGRPCHandler.CommitOutboundLocal`) settles the holds (`peer-out-settle-<idem>` / `sitx-localsettle-out-<own>:<idem>:<i>`). All keys match the inline dispatch path so the two never double-act. If a reversal/settle itself fails, the row is kept `pending` (via `MarkAttempt`) so a later tick retries it — money is never stranded in a terminal row.
+
+**ROLLBACK_TX to the peer on abandonment.** Whenever the sender terminally abandons a row it had already dispatched NEW_TX for (max-attempts `failed`, NO-vote `rolled_back`, inline NO-vote, or `PeerTxReconciler` resolving to `rolled_back`), it also sends a `ROLLBACK_TX` to the peer (shared `dispatchPeerRollback` / `PeerTxGRPCHandler.rollbackPeer`). This releases any reservation the peer placed when it voted YES — a benign incoming-credit hold on the transfer path, or a **real seller-share lock** on the OTC path. `HandleRollbackTx` is idempotent (release by key, no-op when there's no record or it already rolled back), so it is safe to send on every terminal non-committed transition and safe to retry. Best-effort: a dispatch failure is logged and the peer's `OutgoingReservationTimeoutCron` (money) is the final backstop for holds whose peer never answers at all.
 
 ### NoVote reason codes
 
@@ -2964,7 +2966,7 @@ Full cross-bank OTC option lifecycle: discovery → initiation → counter-offer
 |---|---|---|
 | POST | `/api/v3/me/peer-otc/negotiations` | Initiate. Buyer-side entry. Reads `buyerId` from the JWT, resolves the seller's bank via `PeerBankAdminService.ResolvePeerByBankCode`, HTTP-POSTs an `OtcOffer` to the peer's `/api/v3/negotiations`. Returns the seller-bank-assigned `ForeignBankId`. **Body REQUIRES `bidder_account_id`** (Fix #1, 2026-05-16): gateway validates ownership + active status + currency match (account.currency_code must equal premium.currency; no cross-bank FX). Account number is pinned into the SI-TX `OtcOffer.BuyerAccountNumber` so the seller's bank's posting executor uses this exact account on accept instead of resolving `client-<id>` to "first active account in this currency". |
 | GET | `/api/v3/me/otc/contracts` | Existing endpoint, now also returns `peer_contracts` and `peer_total` for cross-bank rows where the caller is a participant (CREDIT side = this bank holds the buyer; DEBIT side = this bank holds the seller). |
-| POST | `/api/v3/me/otc/contracts/peer/:id/exercise` | Exercise. Buyer-only (rejects when this bank's row is `direction=DEBIT`). Body is `{buyer_account_number}`. Dispatches the 4-posting exercise SI-TX (strike money buyer→seller + option markers carrying `intent=exercise`). |
+| POST | `/api/v3/me/otc/contracts/peer/:id/exercise` | Exercise. Buyer-only (rejects when this bank's row is `direction=DEBIT`). Body is `{buyer_account_number}`. Dispatches the 4-posting exercise SI-TX using the OPTION-pseudo-account form (see Exercise lifecycle below). |
 
 ### Client-facing peer-OTC negotiation routes (implemented 2026-05-15)
 
@@ -2995,7 +2997,7 @@ The auto-mirroring of counter/cancel onto the caller's local row is best-effort:
 
 - **`PeerOTCService`** (stock-service): 9 RPCs.
   - Negotiation lifecycle: `GetPublicStocks`, `CreateNegotiation`, `UpdateNegotiation`, `GetNegotiation`, `DeleteNegotiation`, `AcceptNegotiation`.
-  - SI-TX option leg materialisation (called by transaction-service): `RecordOptionContract` — dispatches on `intent` field, creates a `peer_option_contracts` row + locks seller's holdings on `accept`, transitions to `exercised` + runs role-specific stock ops on `exercise`. Idempotent on `(crossbank_tx_id, posting_index)`.
+  - SI-TX option leg materialisation (called by transaction-service): `RecordOptionContract` — dispatches on transaction SHAPE (OPTION-as-asset → accept; OPTION-as-pseudo-account with STOCK legs → exercise), creates a `peer_option_contracts` row + locks seller's holdings on accept, transitions to `exercised` + runs role-specific stock ops on exercise. Idempotent on `(crossbank_tx_id, posting_index)`.
   - SI-TX validation hooks (called by transaction-service): `CheckSellerCanDeliver` — NEW_TX-time pre-check that the seller has enough unreserved shares, drives `INSUFFICIENT_ASSET` `NoVote` so money never moves on a contract the seller can't fulfil.
   - Exercise dispatch (called by gateway): `InitiateOptionExercise` — composes the 4-posting exercise TX from a contract row and dispatches via `transaction-service.PeerTxService.InitiateOutboundTxWithPostings`.
 
@@ -3010,7 +3012,7 @@ The unified OTC offer view (local + cross-bank) is served by `stock-service`'s `
 `AcceptNegotiation` (stock-service handler) →
 1. Look up negotiation in `peer_otc_negotiations`.
 2. Resolve seller's local account number via `account-service.ListAccountsByClient` + premium currency match.
-3. Compose 4 postings — buyer DEBIT premium / seller CREDIT premium / seller DEBIT `OptionDescription` / buyer CREDIT `OptionDescription`. The `OptionDescription` JSON includes `negotiationId` for cross-bank reference.
+3. Compose 4 postings (OPTION-as-asset form) — buyer DEBIT premium / seller CREDIT premium / seller DEBIT `OptionDescription` / buyer CREDIT `OptionDescription`. The `OptionDescription` encodes the option asset; its `negotiationId` field provides the cross-bank reference.
 4. Call `transaction-service.PeerTxService.InitiateOutboundTxWithPostings` with `tx_kind="otc-accept"`.
 5. The SI-TX flow:
    - `posting_executor.Reserve` (NEW_TX) on each bank validates option-asset postings via `CheckSellerCanDeliver` for DEBIT direction → vote NO with `INSUFFICIENT_ASSET` if seller short.
@@ -3018,15 +3020,36 @@ The unified OTC offer view (local + cross-bank) is served by `stock-service`'s `
    - On COMMIT_TX, `materialiseOptions` calls `PeerOTCService.RecordOptionContract` per option leg → writes `peer_option_contracts` row + (DEBIT side) calls `HoldingReservationService.ReserveForPeerOptionContract` to lock seller's shares. If the seller-side lock fails (reservation error or unparseable `seller_id`), `RecordOptionContract` **returns an error** rather than reporting success — leaving an `active` contract with no holding reservation behind it (silent over-promise) is not allowed. The COMMIT then does not ack and retries; both the contract row (idempotent on `crossbank_tx_id, posting_index`) and the reservation (idempotent on `peer_option_contract_id`) are replay-safe, so the lock heals once shares are available.
 6. Negotiation status transitions to `accepted`.
 
+> **Concurrency & ownership guards (2026-05-30, found by adversarial testing).**
+> - **Accept and exercise are claimed atomically.** `AcceptNegotiation` does a compare-and-set `ongoing → accepted` on the negotiation, and `InitiateOptionExercise` does `active → exercising` on the contract, BEFORE dispatching the SI-TX; a concurrent second call loses the CAS and is rejected (409). Without this, two simultaneous accepts/exercises each charged the buyer (premium / strike) and reserved shares / minted contracts twice — the share legs are row-locked-idempotent but the money legs were not. On a synchronous dispatch failure the claim reverts (so the action stays retryable); the commit-side `recordOptionExercise`/`ExerciseBuyerCreditForPeerOption` accept the transient `exercising` state.
+> - **Sender/strike account ownership is enforced gateway-side.** `/me/payments` (cross-bank branch) and `/me/otc/contracts/peer/:id/exercise` resolve the caller-supplied account and call `enforceOwnership` before dispatch — a client cannot debit another client's account via a cross-bank payment or an exercise strike. (Negotiation bidder_account_id was already checked.)
+> - Business rejections from the dispatch (insufficient seller shares / insufficient buyer funds) preserve their gRPC code → the gateway returns 409, not 500.
+> - **The receiver validates an OTC exercise's MONEY legs against its own stored contract (forged-money defense, found 2026-05-30 round 3).** The interbank `/interbank` endpoint is peer-authenticated by a shared API key only, so a buggy/malicious peer can post arbitrary amounts. Previously the share quantity was trusted-from-the-stored-contract (`ConsumeForPeerOptionContract` uses `contract.Quantity`) but the strike money was trusted-from-the-posting — decoupled, enabling three thefts: **(a) forged-low strike** (seller delivers full shares for ~0 money), **(b) buyer-overcharge** (a forged-high strike DEBIT sent to the buyer's bank), **(c) replay** (a second exercise of an already-`exercised` contract debits the buyer the strike again while COMMIT no-ops on delivery). Fix: a new internal gRPC `PeerOTCService.ValidatePeerOptionMoneyLeg(negotiation_routing, negotiation_id, direction, tx_shape, ticker, quantity, strike_price, money_amount, currency) → (ok, reason)` loads the stored `peer_option_contract` by `(negotiation, direction)` and for an exercise-shape TX requires: contract status ∈ {active, exercising} (closes replay), `quantity`/`ticker`/`strike_price` match the stored contract, and `money_amount == StrikePrice × Quantity`. `posting_executor.Reserve` calls it in a **pre-pass before any reservation** for EVERY option leg on this bank's routing (DEBIT = we hold the seller, paired with the money CREDIT; CREDIT = we hold the buyer, paired with the money DEBIT — `pairedMoney` pairs by leg direction on own routing and reports the money leg's actual currency, robust to the participant-id-vs-account-number asymmetry between the two money legs); any mismatch / validator error → `UNACCEPTABLE_ASSET` NO vote with no hold placed. Receiver-side only — NO SI-TX wire-protocol change. **Accept-shape legs** (OPTION-as-asset) are validated too: the contract doesn't exist on the receiver yet, so the validator loads the stored **negotiation** by `foreign_id` (the UUID — unique per bank, identical on both; looked up without `peer_bank_code` because the validator runs on both the coordinator [own-routing peer code] and the receiver [counterparty code]) and requires terms (ticker/quantity/strike) to match the offer + premium == `offer.Premium` when the money leg is in the premium currency. **Residual (low severity):** a cross-currency BUYER premium is FX-converted at the live rate (not recomputable at vote time) so it is only checked > 0 — the SELLER always receives `offer.Premium` in its own currency, so the underpayment-victim side is always exact.
+
 #### Exercise (`/me/otc/contracts/peer/:id/exercise`)
 
 `PeerOTCGRPCHandler.InitiateOptionExercise` →
 1. Validate this bank holds the buyer side (`direction=CREDIT`) and contract is `active`.
-2. Compose 4 postings using the original contract terms — buyer DEBIT strike money / seller CREDIT strike / seller DEBIT option marker / buyer CREDIT option marker. The `OptionDescription` carries `intent="exercise"`.
+2. Compose 4 postings using the OPTION-pseudo-account form from the original contract terms:
+
+   **Exercise wire encoding (OPTION-pseudo-account form):**
+   | # | Account | Asset | Amount | Description |
+   |---|---|---|---|---|
+   | 1 | buyer `ACCOUNT` (buyer's money account number) | `MONAS` (strike currency) | −(strikePrice × quantity) | Buyer pays strike |
+   | 2 | `OPTION` pseudo-account `{type:"OPTION", id: negotiationId}` | `MONAS` (strike currency) | +(strikePrice × quantity) | Strike credited to seller via pseudo-account |
+   | 3 | `OPTION` pseudo-account `{type:"OPTION", id: negotiationId}` | `STOCK {ticker}` | −quantity | Underlying leaves pseudo-account |
+   | 4 | buyer `PERSON` (buyer participant id) | `STOCK {ticker}` | +quantity | Underlying delivered to buyer |
+
+   An **OPTION pseudo-account** is a `TxAccount` of `type="OPTION"` whose `id` is the `negotiationId` (`ForeignBankId`). It is NOT an `OptionDescription` asset — the STOCK legs are what distinguish this from an accept TX. The receiver identifies an exercise by **transaction shape**: OPTION-as-account with STOCK legs ⇒ exercise; OPTION-as-asset (`OptionDescription`) ⇒ accept. No `intent` flag is present on the wire.
+
+   **Receiver-side settlement rule:** a bank settles the OPTION pseudo-account legs of an exercise if and only if it holds the **seller-side** option contract for that `negotiationId` (ownership-by-contract, not routing-prefix). Vote `NO` reasons specific to option exercise: `OPTION_NEGOTIATION_NOT_FOUND` (no matching contract for the `negotiationId`), `OPTION_USED_OR_EXPIRED` (contract already exercised or `settlement_date` has passed), `OPTION_AMOUNT_INCORRECT` (strike money amount ≠ `strikePrice × quantity`).
+
 3. Dispatch via `InitiateOutboundTxWithPostings` (`tx_kind="otc-exercise"`).
 4. On COMMIT_TX, `RecordOptionContract`'s exercise branch:
    - DEBIT side: `ConsumeForPeerOptionContract` settles the reservation and decrements seller's holding. It is idempotent on a synthetic settlement txn id; a replay returns `AlreadySettled=true` so the handler **skips** the realised-`CapitalGain` write (which is not idempotent) and avoids double-counting P/L. Then `SetStatus(exercised)`.
    - CREDIT side: `ExerciseBuyerCreditForPeerOption` credits the buyer's holding **and** flips the contract to `status=exercised` in a single transaction, with the contract status read under a row lock as the idempotency guard. A replayed exercise (duplicate COMMIT_TX) finds `status=exercised` and is a no-op, so the buyer's shares are never double-credited. If the credit fails (or `buyer_id` is unparseable), it **returns an error and does not mark the contract exercised** — the buyer has paid the strike, so a silent failure would leave them paid-but-undelivered; the SI-TX exercise commit retries instead.
+
+**Option legs carry participant ids, money legs carry account numbers (fixed 2026-05-30).** `AcceptNegotiation` composes the buyer DEBIT premium leg with the buyer's pinned **account number** (`OtcOffer.BuyerAccountNumber`, so the executor debits the exact account) but the buyer CREDIT **option** leg with the buyer **participant id** (`row.BuyerID` = `client-<n>`). That participant id becomes the minted contract's `buyer_id`, which (a) the exercise CREDIT branch (`ExerciseBuyerCreditForPeerOption`) parses to resolve the owner and credit the buyer's holding (a scaffolding row with `security_id=0/listing_id=0` when the buyer's bank doesn't list the security), and (b) `ListByLocalParticipant` matches for the `/me/otc/contracts` listing. (Previously the option leg also used the account number — an unparseable `buyer_id` that broke exercise credit AND hid the contract from the buyer's listing.) The exercise composition's option legs likewise carry participant ids. **Inline commit atomicity:** `InitiateOutboundTxWithPostings` marks the row `committed` ONLY when local commit + settle + option-materialise + `PostCommitTx` all succeed; any failure leaves it `pending` so `OutboundReplayCron` retries via `CommitOutboundLocal`, which re-materialises the sender-side option legs (`PostingExecutor.ExtractOwnOptionItems`) — so a sender-side contract that failed to materialise inline is recoverable. Verified live on two stacks: a full accept→exercise round is clean on both sides (buyer pays premium+strike and receives the holding, contract `exercised` + listed; seller credited, shares delivered, reservation released, no orphans).
 
 #### Expiry (cron)
 
@@ -3049,7 +3072,17 @@ Defined in `contract/sitx/otc_types.go`. Spec-conforming shapes (per cohort spec
 - `ForeignBankId` — `(routingNumber, id)` tuple.
 - `OtcOffer` — `stock`, `settlementDate`, `pricePerUnit`, `premium`, `buyerId`, `sellerId`, `amount`, `lastModifiedBy`. (Internal storage is a flat-fielded variant; the gateway translates between the spec wire shape and internal gRPC.)
 - `OtcNegotiation` — `OtcOffer & {isOngoing: boolean}`.
-- `OptionDescription` — used as a posting `assetId` (JSON-encoded). Fields: `ticker`, `amount`, `strikePrice`, `currency`, `settlementDate`, `negotiationId`, plus a local extension `intent` (`""` / `"accept"` for accept TX, `"exercise"` for exercise TX). Cohort partners ignore the `intent` extension.
+- `OptionDescription` — used as a posting `assetId` (JSON-encoded) for the **accept** TX (OPTION-as-asset form). Spec-conforming nested shape:
+  ```
+  OptionDescription = {
+    negotiationId:   ForeignBankId,          // { routingNumber: number, id: string }
+    stock:           { ticker: string },
+    pricePerUnit:    { amount: number, currency: string },  // strike per share
+    settlementDate:  string,                 // ISO 8601
+    amount:          number                  // quantity (share count)
+  }
+  ```
+  The old flat fields (`ticker`, `strikePrice`, `currency` at top level) and the non-spec `intent` extension field were removed from the wire as of 2026-06-02 (see `docs/superpowers/specs/2026-06-02-sitx-option-wire-conformance-design.md`). Exercise TXs do NOT use `OptionDescription` — they use the OPTION-pseudo-account form (see Exercise lifecycle above). The accept-vs-exercise distinction is derived entirely from transaction shape, never from a wire `intent` flag.
 - `UserInformation` — response shape of `GET /user/{rid}/{id}`.
 - `PublicStocksResponse` + `PublicStock` — response shape of `GET /public-stock`.
 
@@ -3057,9 +3090,9 @@ Defined in `contract/sitx/otc_types.go`. Spec-conforming shapes (per cohort spec
 
 Per Celina 5 §"Plaćanja" (*"u celosti, ili ne uopšte"*):
 - NEW_TX-time pre-check: insufficient seller holdings → vote NO before any money moves.
-- Sender-debit-immediate is matched by sender-credit-back on NO vote.
-- Receiver-side DEBIT postings perform immediate `UpdateBalance(-X)` with idempotency keys; on ROLLBACK_TX, each persisted `DebitsJSON` entry is credited back.
+- Money DEBIT legs are **reserve-then-settle** (not immediate-debit): the hold dips AvailableBalance at NEW_TX, settles Balance at COMMIT_TX, and is released on NO/ROLLBACK/timeout — both the sender's own leg (`peer-out:<idem>`) and receiver-side legs (per-posting `DebitsJSON` keys).
 - Option contract materialisation happens at COMMIT_TX (never at NEW_TX), so a rolled-back TX leaves no contract row.
+- **Exercise does not re-reserve seller shares.** The NEW_TX-time share hold (`ReserveSellerSharesForNewTx`) fires only for accept-shape TXs (OPTION-as-asset / `OptionDescription` postings); an exercise-shape TX (OPTION-pseudo-account with STOCK legs) skips the reserve (the shares were already held at accept and are consumed at COMMIT by `RecordOptionContract`) — otherwise the exercise would orphan a second hold that permanently locks the shares.
 - Holding reservations use composite-unique indexes for idempotent retry.
 
 ### Out of scope

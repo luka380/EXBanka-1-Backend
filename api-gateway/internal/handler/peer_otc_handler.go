@@ -1,13 +1,16 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
 	"regexp"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 
 	stockpb "github.com/exbanka/contract/stockpb"
+	"github.com/exbanka/contract/sitx"
 )
 
 // PeerOTCHandler serves the peer-facing OTC routes under /api/v3/cross-bank-protocol:
@@ -47,17 +50,38 @@ func (h *PeerOTCHandler) GetPublicStocks(c *gin.Context) {
 		handleGRPCError(c, err)
 		return
 	}
-	out := make([]gin.H, 0, len(resp.GetStocks()))
+	// §3.1 wire shape: bare array, sellers grouped by ticker.
+	// The gRPC layer returns one PeerPublicStock per (owner, ticker) row;
+	// aggregate into a map keyed by ticker to produce the spec shape.
+	type seller struct {
+		Seller gin.H `json:"seller"`
+		Amount int64 `json:"amount"`
+	}
+	type publicStock struct {
+		Stock   gin.H    `json:"stock"`
+		Sellers []seller `json:"sellers"`
+	}
+	grouped := make(map[string]*publicStock)
+	order := make([]string, 0)
 	for _, s := range resp.GetStocks() {
-		out = append(out, gin.H{
-			"ownerId":       gin.H{"routingNumber": s.GetOwnerId().GetRoutingNumber(), "id": s.GetOwnerId().GetId()},
-			"ticker":        s.GetTicker(),
-			"amount":        s.GetAmount(),
-			"pricePerStock": s.GetPricePerStock(),
-			"currency":      s.GetCurrency(),
+		ticker := s.GetTicker()
+		if _, ok := grouped[ticker]; !ok {
+			grouped[ticker] = &publicStock{
+				Stock:   gin.H{"ticker": ticker},
+				Sellers: nil,
+			}
+			order = append(order, ticker)
+		}
+		grouped[ticker].Sellers = append(grouped[ticker].Sellers, seller{
+			Seller: gin.H{"routingNumber": s.GetOwnerId().GetRoutingNumber(), "id": s.GetOwnerId().GetId()},
+			Amount: s.GetAmount(),
 		})
 	}
-	c.JSON(http.StatusOK, gin.H{"stocks": out})
+	out := make([]publicStock, 0, len(order))
+	for _, ticker := range order {
+		out = append(out, *grouped[ticker])
+	}
+	c.JSON(http.StatusOK, out)
 }
 
 // GetPublicOptionOffers godoc
@@ -104,10 +128,13 @@ type peerForeignBankIdReq struct {
 	ID            string `json:"id"`
 }
 
-// peerMonetaryValueReq is the SI-TX MonetaryValue on the wire.
+// peerMonetaryValueReq is the SI-TX MonetaryValue on the wire. Per
+// SI-TX §2.5 the amount is a JSON number; DecimalNumber parses a number
+// (and tolerates a quoted string from peers that still quote) without
+// float64 rounding.
 type peerMonetaryValueReq struct {
-	Currency string `json:"currency"`
-	Amount   string `json:"amount"`
+	Currency string             `json:"currency"`
+	Amount   sitx.DecimalNumber `json:"amount"`
 }
 
 // peerStockDescriptionReq is the SI-TX StockDescription on the wire.
@@ -391,9 +418,9 @@ func offerReqToProto(o peerOtcOfferReq) *stockpb.PeerOtcOffer {
 	return &stockpb.PeerOtcOffer{
 		Ticker:          o.Stock.Ticker,
 		Amount:          o.Amount,
-		PricePerStock:   o.PricePerUnit.Amount,
+		PricePerStock:   o.PricePerUnit.Amount.Decimal.String(),
 		Currency:        o.PricePerUnit.Currency,
-		Premium:         o.Premium.Amount,
+		Premium:         o.Premium.Amount.Decimal.String(),
 		PremiumCurrency: o.Premium.Currency,
 		SettlementDate:  o.SettlementDate,
 		LastModifiedBy: &stockpb.PeerForeignBankId{
@@ -402,6 +429,18 @@ func offerReqToProto(o peerOtcOfferReq) *stockpb.PeerOtcOffer {
 		},
 		BuyerAccountNumber: o.BuyerAccountNumber,
 	}
+}
+
+// numJSON renders a decimal-string monetary amount as a bare JSON
+// number token (SI-TX §2.5 requires monetary amounts to be JSON numbers,
+// not quoted strings). encoding/json and gin emit json.RawMessage
+// verbatim, so the validated decimal string lands unquoted. A malformed
+// or empty string degrades to 0 rather than producing invalid JSON.
+func numJSON(s string) json.RawMessage {
+	if _, err := decimal.NewFromString(s); err != nil || s == "" {
+		return json.RawMessage("0")
+	}
+	return json.RawMessage(s)
 }
 
 // protoOfferToJSON renders the internal flat-fielded gRPC PeerOtcOffer
@@ -415,8 +454,8 @@ func protoOfferToJSON(o *stockpb.PeerOtcOffer) gin.H {
 	out := gin.H{
 		"stock":          gin.H{"ticker": o.GetTicker()},
 		"settlementDate": o.GetSettlementDate(),
-		"pricePerUnit":   gin.H{"amount": o.GetPricePerStock(), "currency": o.GetCurrency()},
-		"premium":        gin.H{"amount": o.GetPremium(), "currency": o.GetPremiumCurrency()},
+		"pricePerUnit":   gin.H{"amount": numJSON(o.GetPricePerStock()), "currency": o.GetCurrency()},
+		"premium":        gin.H{"amount": numJSON(o.GetPremium()), "currency": o.GetPremiumCurrency()},
 		"amount":         o.GetAmount(),
 		"lastModifiedBy": gin.H{"routingNumber": o.GetLastModifiedBy().GetRoutingNumber(), "id": o.GetLastModifiedBy().GetId()},
 	}

@@ -104,7 +104,7 @@ func TestOutboundReplayCron_NewTxNetworkError_MarksAttempt(t *testing.T) {
 		IdempotenceKey: "cron-net",
 		PeerBankCode:   "222",
 		TxKind:         "transfer",
-		PostingsJSON:   `[{"routingNumber":111,"accountId":"A","assetId":"RSD","amount":"10","direction":"DEBIT"},{"routingNumber":222,"accountId":"B","assetId":"RSD","amount":"10","direction":"CREDIT"}]`,
+		PostingsJSON:   `[{"routingNumber":111,"accountType":"ACCOUNT","accountId":"A","assetType":"MONAS","assetId":"RSD","amount":"10","direction":"DEBIT"},{"routingNumber":222,"accountType":"ACCOUNT","accountId":"B","assetType":"MONAS","assetId":"RSD","amount":"10","direction":"CREDIT"}]`,
 		Status:         "pending",
 	}
 	_ = repo.Create(row)
@@ -132,7 +132,7 @@ func TestOutboundReplayCron_CommitFails_MarksAttempt(t *testing.T) {
 			body := string(buf[:n])
 			if contains(body, "NEW_TX") {
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(`{"type":"YES"}`))
+				_, _ = w.Write([]byte(`{"vote":"YES"}`))
 				return
 			}
 			w.WriteHeader(http.StatusInternalServerError)
@@ -148,7 +148,7 @@ func TestOutboundReplayCron_CommitFails_MarksAttempt(t *testing.T) {
 		IdempotenceKey: "cron-cf",
 		PeerBankCode:   "222",
 		TxKind:         "transfer",
-		PostingsJSON:   `[{"routingNumber":111,"accountId":"A","assetId":"RSD","amount":"10","direction":"DEBIT"},{"routingNumber":222,"accountId":"B","assetId":"RSD","amount":"10","direction":"CREDIT"}]`,
+		PostingsJSON:   `[{"routingNumber":111,"accountType":"ACCOUNT","accountId":"A","assetType":"MONAS","assetId":"RSD","amount":"10","direction":"DEBIT"},{"routingNumber":222,"accountType":"ACCOUNT","accountId":"B","assetType":"MONAS","assetId":"RSD","amount":"10","direction":"CREDIT"}]`,
 		Status:         "pending",
 	}
 	_ = repo.Create(row)

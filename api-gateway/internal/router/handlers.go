@@ -10,8 +10,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/exbanka/api-gateway/internal/handler"
 	grpcclients "github.com/exbanka/api-gateway/internal/grpc"
+	"github.com/exbanka/api-gateway/internal/handler"
 	gatewaykafka "github.com/exbanka/api-gateway/internal/kafka"
 	"github.com/exbanka/api-gateway/internal/middleware"
 	accountpb "github.com/exbanka/contract/accountpb"
@@ -85,6 +85,11 @@ type Deps struct {
 	// (Phase 3 Task 11 of the SI-TX refactor; see docs/superpowers/specs/
 	// 2026-04-29-celina5-sitx-refactor-design.md).
 	OwnBankCode string
+
+	// OwnBankName is the human-readable display name surfaced by the
+	// peer-facing GET /user/{rid}/{id} endpoint as bankDisplayName
+	// (SI-TX §3.7). Falls back to OwnBankCode when unset.
+	OwnBankName string
 
 	// AdminCronClients is the per-service pool of AdminCron gRPC clients
 	// (C9 — 2026-05-28). A nil entry means the service was unreachable at
@@ -213,7 +218,7 @@ func NewHandlers(d Deps) *Handlers {
 		PeerBankAdmin:    handler.NewPeerBankAdminHandler(d.PeerBankAdminClient),
 		PeerAuthMW:       middleware.PeerAuth(d.PeerBanks, d.PeerNonces, 5*time.Minute),
 		PeerOTC:          handler.NewPeerOTCHandler(d.PeerOTCClient),
-		PeerUser:         handler.NewPeerUserHandler(d.ClientClient, d.UserClient, ownRouting),
+		PeerUser:         handler.NewPeerUserHandler(d.ClientClient, d.UserClient, ownRouting, d.OwnBankName),
 		PeerOTCInitiate:  handler.NewPeerOTCInitiateHandler(d.PeerBankAdminClient, d.PeerOTCClient, d.AccountClient, ownRouting, d.OwnBankCode),
 		AdminCron:        handler.NewAdminCronHandler(d.AdminCronClients, d.AuditProducer),
 		AdminAudit:       handler.NewAdminAuditHandler(d.AccountClient, d.CardClient, d.ClientClient, d.CreditClient, d.UserClient, d.NotificationClient, d.TxClient),

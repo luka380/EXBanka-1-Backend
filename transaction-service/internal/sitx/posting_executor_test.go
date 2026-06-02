@@ -8,9 +8,62 @@ import (
 	accountpb "github.com/exbanka/contract/accountpb"
 	contractsitx "github.com/exbanka/contract/sitx"
 	"github.com/exbanka/transaction-service/internal/sitx"
-	"github.com/shopspring/decimal"
 	"google.golang.org/grpc"
 )
+
+// money builds a MONAS InternalPosting (magnitude-string amount). acct is the
+// account number ("ACCOUNT") or a participant id like "client-7" ("PERSON").
+func money(rn int64, acct, currency string, amount int64, dir string) contractsitx.InternalPosting {
+	accType := "ACCOUNT"
+	if len(acct) >= 7 && acct[:7] == "client-" {
+		accType = "PERSON"
+	}
+	return contractsitx.InternalPosting{
+		RoutingNumber: rn,
+		AccountType:   accType,
+		AccountID:     acct,
+		AssetType:     "MONAS",
+		AssetID:       currency,
+		Amount:        decimalStr(amount),
+		Direction:     dir,
+	}
+}
+
+// option builds an OPTION InternalPosting; the option-description JSON lives in
+// AssetID and the participant id (a PERSON) in AccountID.
+func option(rn int64, acct, optDescJSON string, amount int64, dir string) contractsitx.InternalPosting {
+	return contractsitx.InternalPosting{
+		RoutingNumber: rn,
+		AccountType:   "PERSON",
+		AccountID:     acct,
+		AssetType:     "OPTION",
+		AssetID:       optDescJSON,
+		Amount:        decimalStr(amount),
+		Direction:     dir,
+	}
+}
+
+func decimalStr(n int64) string {
+	if n < 0 {
+		n = -n
+	}
+	// Plain integer magnitude string (matches what the gateway sends).
+	return itoa(n)
+}
+
+func itoa(n int64) string {
+	if n == 0 {
+		return "0"
+	}
+	var b [20]byte
+	i := len(b)
+	for n > 0 {
+		i--
+		b[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(b[i:])
+}
 
 type stubAccountClient struct {
 	getAccountFn func(ctx context.Context, in *accountpb.GetAccountByNumberRequest, opts ...grpc.CallOption) (*accountpb.AccountResponse, error)
@@ -91,9 +144,9 @@ func TestPostingExecutor_HappyPath_ReservesCredit(t *testing.T) {
 	}
 
 	exec := sitx.NewPostingExecutor(stub, 111)
-	postings := []contractsitx.Posting{
-		{RoutingNumber: 222, AccountID: "222000001", AssetID: "RSD", Amount: decimal.NewFromInt(100), Direction: contractsitx.DirectionDebit},
-		{RoutingNumber: 111, AccountID: "111000001", AssetID: "RSD", Amount: decimal.NewFromInt(100), Direction: contractsitx.DirectionCredit},
+	postings := []contractsitx.InternalPosting{
+		money(222, "222000001", "RSD", 100, contractsitx.DirectionDebit),
+		money(111, "111000001", "RSD", 100, contractsitx.DirectionCredit),
 	}
 	res := exec.Reserve(context.Background(), postings, "222", "idem-1")
 	if res.Vote.Type != contractsitx.VoteYes {
@@ -111,9 +164,9 @@ func TestPostingExecutor_NoSuchAccount(t *testing.T) {
 		},
 	}
 	exec := sitx.NewPostingExecutor(stub, 111)
-	postings := []contractsitx.Posting{
-		{RoutingNumber: 111, AccountID: "111-bogus", AssetID: "RSD", Amount: decimal.NewFromInt(100), Direction: contractsitx.DirectionCredit},
-		{RoutingNumber: 222, AccountID: "222000001", AssetID: "RSD", Amount: decimal.NewFromInt(100), Direction: contractsitx.DirectionDebit},
+	postings := []contractsitx.InternalPosting{
+		money(111, "111-bogus", "RSD", 100, contractsitx.DirectionCredit),
+		money(222, "222000001", "RSD", 100, contractsitx.DirectionDebit),
 	}
 	res := exec.Reserve(context.Background(), postings, "222", "idem-2")
 	if res.Vote.Type != contractsitx.VoteNo {
@@ -149,9 +202,9 @@ func TestPostingExecutor_DebitOnOurRouting_ReservesOutgoing(t *testing.T) {
 		},
 	}
 	exec := sitx.NewPostingExecutor(stub, 111)
-	postings := []contractsitx.Posting{
-		{RoutingNumber: 111, AccountID: "111-A", AssetID: "RSD", Amount: decimal.NewFromInt(100), Direction: contractsitx.DirectionDebit},
-		{RoutingNumber: 222, AccountID: "222-B", AssetID: "RSD", Amount: decimal.NewFromInt(100), Direction: contractsitx.DirectionCredit},
+	postings := []contractsitx.InternalPosting{
+		money(111, "111-A", "RSD", 100, contractsitx.DirectionDebit),
+		money(222, "222-B", "RSD", 100, contractsitx.DirectionCredit),
 	}
 	res := exec.Reserve(context.Background(), postings, "222", "idem-3")
 	if res.Vote.Type != contractsitx.VoteYes {
@@ -185,9 +238,9 @@ func TestPostingExecutor_NoSuchAsset_CurrencyMismatch(t *testing.T) {
 		},
 	}
 	exec := sitx.NewPostingExecutor(stub, 111)
-	postings := []contractsitx.Posting{
-		{RoutingNumber: 222, AccountID: "222-A", AssetID: "EUR", Amount: decimal.NewFromInt(100), Direction: contractsitx.DirectionDebit},
-		{RoutingNumber: 111, AccountID: "111-B", AssetID: "EUR", Amount: decimal.NewFromInt(100), Direction: contractsitx.DirectionCredit},
+	postings := []contractsitx.InternalPosting{
+		money(222, "222-A", "EUR", 100, contractsitx.DirectionDebit),
+		money(111, "111-B", "EUR", 100, contractsitx.DirectionCredit),
 	}
 	res := exec.Reserve(context.Background(), postings, "222", "idem-4")
 	if res.Vote.Type != contractsitx.VoteNo {

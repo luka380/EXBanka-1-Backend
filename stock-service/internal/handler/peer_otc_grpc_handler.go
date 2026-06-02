@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"strconv"
 	"strings"
@@ -713,18 +714,33 @@ func (h *PeerOTCGRPCHandler) AcceptNegotiation(ctx context.Context, req *stockpb
 		return nil, status.Errorf(codes.Internal, "decode offer: %v", err)
 	}
 
+	// Atomically claim the negotiation for acceptance (ongoing → accepted) BEFORE
+	// composing/dispatching the option-formation SI-TX. This serialises concurrent
+	// accepts of the same negotiation: only one wins the compare-and-set and
+	// dispatches; the loser is rejected. Without it, two simultaneous accepts each
+	// charged the buyer the premium, reserved the seller's shares again, and minted
+	// a duplicate contract. On a synchronous dispatch failure we revert the claim
+	// (accepted → ongoing) so the negotiation can be re-accepted.
+	claimed, cerr := h.negRepo.CompareAndSetStatus(req.GetPeerBankCode(), req.GetNegotiationId().GetId(), "ongoing", "accepted")
+	if cerr != nil {
+		return nil, status.Errorf(codes.Internal, "claim negotiation: %v", cerr)
+	}
+	if !claimed {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"negotiation %s is not acceptable (already accepted/cancelled or an accept is in progress)", req.GetNegotiationId().GetId())
+	}
+
 	// Compose the 4 postings:
 	// 1. Buyer debits premium (in premium currency)
 	// 2. Seller credits premium
 	// 3. Seller debits 1× OptionDescription (asset)
 	// 4. Buyer credits 1× OptionDescription
 	optDesc := contractsitx.OptionDescription{
-		Ticker:         offer.Ticker,
-		Amount:         offer.Amount,
-		StrikePrice:    offer.PricePerStock,
-		Currency:       offer.Currency,
-		SettlementDate: offer.SettlementDate,
 		NegotiationID:  contractsitx.ForeignBankId{RoutingNumber: h.ownRouting, ID: row.ForeignID},
+		Stock:          contractsitx.StockDescription{Ticker: offer.Ticker},
+		PricePerUnit:   contractsitx.MonetaryValue{Amount: contractsitx.DecimalNumber{Decimal: offer.PricePerStock}, Currency: offer.Currency},
+		SettlementDate: offer.SettlementDate,
+		Amount:         offer.Amount,
 	}
 	optDescJSON, err := json.Marshal(optDesc)
 	if err != nil {
@@ -746,11 +762,29 @@ func (h *PeerOTCGRPCHandler) AcceptNegotiation(ctx context.Context, req *stockpb
 	if offer.BuyerAccountNumber != "" {
 		buyerAccountID = offer.BuyerAccountNumber
 	}
+	// Money legs (premium) carry account numbers — the buyer's pinned account
+	// for the DEBIT (so the executor debits the exact account), and the seller's
+	// participant id for the CREDIT (executor resolves to any active currency
+	// account). Option-asset legs carry PARTICIPANT ids ("client-<n>") on BOTH
+	// sides: that id becomes the peer_option_contract's buyer_id/seller_id, which
+	// must be parseable as a participant for the exercise share-credit and for
+	// the /me/otc/contracts listing (ListByLocalParticipant matches buyer_id =
+	// "client-<principal>"). Using the buyer account number on the option leg
+	// (the old bug) left an unparseable buyer_id — exercise couldn't credit the
+	// buyer and the contract was invisible in their listing.
+	// Type tags (SI-TX §3.6) — the downstream executor detects an option leg via
+	// AssetType=="OPTION" (not by sniffing the asset_id prefix) and the outbound
+	// wire builder uses AccountType/AssetType to construct the spec account/asset
+	// tagged unions. The two premium legs carry MONAS; the two option legs OPTION.
+	// AccountType is derived from the AccountId form: a raw 18-digit bank account
+	// number → ACCOUNT, a "client-N"/"employee-N" participant id → PERSON. Only the
+	// premium DEBIT (posting 0) may carry an account number (the buyer's pinned
+	// account when BuyerAccountNumber is set); all other legs carry participant ids.
 	postings := []*transactionpb.SiTxPosting{
-		{RoutingNumber: row.BuyerRoutingNumber, AccountId: buyerAccountID, AssetId: offer.PremiumCurrency, Amount: premium, Direction: contractsitx.DirectionDebit},
-		{RoutingNumber: row.SellerRoutingNumber, AccountId: row.SellerID, AssetId: offer.PremiumCurrency, Amount: premium, Direction: contractsitx.DirectionCredit},
-		{RoutingNumber: row.SellerRoutingNumber, AccountId: row.SellerID, AssetId: optAssetID, Amount: "1", Direction: contractsitx.DirectionDebit},
-		{RoutingNumber: row.BuyerRoutingNumber, AccountId: buyerAccountID, AssetId: optAssetID, Amount: "1", Direction: contractsitx.DirectionCredit},
+		{RoutingNumber: row.BuyerRoutingNumber, AccountId: buyerAccountID, AccountType: accountTypeFor(buyerAccountID), AssetId: offer.PremiumCurrency, AssetType: contractsitx.AssetTypeMonas, Amount: premium, Direction: contractsitx.DirectionDebit},
+		{RoutingNumber: row.SellerRoutingNumber, AccountId: row.SellerID, AccountType: accountTypeFor(row.SellerID), AssetId: offer.PremiumCurrency, AssetType: contractsitx.AssetTypeMonas, Amount: premium, Direction: contractsitx.DirectionCredit},
+		{RoutingNumber: row.SellerRoutingNumber, AccountId: row.SellerID, AccountType: accountTypeFor(row.SellerID), AssetId: optAssetID, AssetType: contractsitx.AssetTypeOption, Amount: "1", Direction: contractsitx.DirectionDebit},
+		{RoutingNumber: row.BuyerRoutingNumber, AccountId: row.BuyerID, AccountType: accountTypeFor(row.BuyerID), AssetId: optAssetID, AssetType: contractsitx.AssetTypeOption, Amount: "1", Direction: contractsitx.DirectionCredit},
 	}
 
 	resp, err := h.peerTx.InitiateOutboundTxWithPostings(ctx, &transactionpb.SiTxInitiateWithPostingsRequest{
@@ -759,16 +793,22 @@ func (h *PeerOTCGRPCHandler) AcceptNegotiation(ctx context.Context, req *stockpb
 		TxKind:       "otc-accept",
 	})
 	if err != nil {
+		// Dispatch failed — release the acceptance claim (accepted → ongoing) so
+		// the negotiation can be re-accepted after the cause is resolved.
+		if _, rerr := h.negRepo.CompareAndSetStatus(req.GetPeerBankCode(), req.GetNegotiationId().GetId(), "accepted", "ongoing"); rerr != nil {
+			log.Printf("WARN: peer-otc accept: failed to revert claim for %s/%s after dispatch error: %v",
+				req.GetPeerBankCode(), req.GetNegotiationId().GetId(), rerr)
+		}
+		// Preserve the underlying gRPC code so a business rejection (e.g. seller
+		// has insufficient shares → FailedPrecondition INSUFFICIENT_ASSET) surfaces
+		// as 409 at the gateway, not a misleading 500 internal_error.
+		if st, ok := status.FromError(err); ok {
+			return nil, status.Errorf(st.Code(), "dispatch: %v", err)
+		}
 		return nil, status.Errorf(codes.Internal, "dispatch: %v", err)
 	}
-
-	if uerr := h.negRepo.UpdateStatus(req.GetPeerBankCode(), req.GetNegotiationId().GetId(), "accepted"); uerr != nil {
-		// Status update failure is non-fatal — the TX has already been
-		// dispatched and the negotiation is functionally accepted.
-		// Background sweep can reconcile.
-		log.Printf("WARN: peer-otc accept status update failed for %s/%s: %v",
-			req.GetPeerBankCode(), req.GetNegotiationId().GetId(), uerr)
-	}
+	// Negotiation was already claimed as "accepted" before dispatch (the
+	// concurrency guard); no post-dispatch status update needed.
 
 	// Seller-side notification: this bank is the SELLER's bank (the
 	// inbound /accept lands here because the buyer's bank POSTed). The
@@ -791,6 +831,29 @@ func (h *PeerOTCGRPCHandler) AcceptNegotiation(ctx context.Context, req *stockpb
 		TransactionId: resp.GetTransactionId(),
 		Status:        resp.GetStatus(),
 	}, nil
+}
+
+// accountTypeFor classifies a SI-TX posting AccountId into its §2.7 account-type
+// tag. A raw bank account number (all digits, >=15 long — own-bank numbers are 18
+// digits) is an "ACCOUNT"; anything else (a "client-<n>"/"employee-<n>" participant
+// id) is a "PERSON". The accept flow never emits OPTION-typed accounts.
+func accountTypeFor(accountID string) string {
+	if len(accountID) >= 15 && isAllDigits(accountID) {
+		return contractsitx.AccountTypeAccount
+	}
+	return contractsitx.AccountTypePerson
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func protoToOffer(p *stockpb.PeerOtcOffer) contractsitx.OtcOffer {
@@ -893,10 +956,10 @@ func (h *PeerOTCGRPCHandler) RecordOptionContract(ctx context.Context, req *stoc
 		BuyerID:                  req.GetBuyerId().GetId(),
 		SellerRoutingNumber:      req.GetSellerId().GetRoutingNumber(),
 		SellerID:                 req.GetSellerId().GetId(),
-		Ticker:                   opt.Ticker,
+		Ticker:                   opt.Stock.Ticker,
 		Quantity:                 opt.Amount,
-		StrikePrice:              opt.StrikePrice,
-		Currency:                 opt.Currency,
+		StrikePrice:              opt.PricePerUnit.Amount.Decimal,
+		Currency:                 opt.PricePerUnit.Currency,
 		SettlementDate:           opt.SettlementDate,
 		Direction:                req.GetDirection(),
 		Status:                   "active",
@@ -1014,6 +1077,176 @@ func (h *PeerOTCGRPCHandler) CheckSellerCanDeliver(ctx context.Context, req *sto
 	}, nil
 }
 
+// ValidatePeerOptionMoneyLeg verifies, at NEW_TX (vote) time, that the money a
+// sender proposes for an option leg equals THIS bank's own stored terms — never
+// trusting the posting amount. For an exercise leg it loads the stored
+// peer_option_contract by (negotiation_id, direction) and requires the paired
+// money to equal StrikePrice*Quantity (and ticker/quantity/strike to match).
+// Closes the forged-strike theft: a peer crafting an exercise that delivers the
+// full (trusted) contract.Quantity of shares while crediting the seller an
+// under-stated strike. ok=false → the caller (posting executor) votes NO.
+//
+// Accept-intent legs are not yet enforced here (premium validation against the
+// stored negotiation is a follow-up of the same class, lower severity); they
+// return ok=true so accept behaviour is unchanged.
+func (h *PeerOTCGRPCHandler) ValidatePeerOptionMoneyLeg(ctx context.Context, req *stockpb.ValidatePeerOptionMoneyLegRequest) (*stockpb.ValidatePeerOptionMoneyLegResponse, error) {
+	if req.GetNegotiationId() == "" || req.GetDirection() == "" {
+		return nil, status.Error(codes.InvalidArgument, "negotiation_id and direction are required")
+	}
+	deny := func(reason string) (*stockpb.ValidatePeerOptionMoneyLegResponse, error) {
+		log.Printf("ValidatePeerOptionMoneyLeg DENY (neg=%d/%s dir=%s intent=%s): %s",
+			req.GetNegotiationRouting(), req.GetNegotiationId(), req.GetDirection(), req.GetIntent(), reason)
+		return &stockpb.ValidatePeerOptionMoneyLegResponse{Ok: false, Reason: reason}, nil
+	}
+
+	money, err := decimal.NewFromString(req.GetMoneyAmount())
+	if err != nil {
+		return deny("unparseable money_amount: " + req.GetMoneyAmount())
+	}
+
+	if !strings.EqualFold(req.GetIntent(), "exercise") {
+		// ACCEPT intent: the contract doesn't exist on the receiver yet (minted at
+		// COMMIT), so validate the PREMIUM money against the stored NEGOTIATION.
+		// Look up by foreign_id alone (the negotiation UUID, identical on both
+		// banks and unique per bank) — NOT by peer_bank_code: this validator runs on
+		// both the coordinator (sees its OWN routing as the peer code) and the
+		// receiver (sees the counterparty), so the peer_bank_code is unreliable here.
+		neg, nerr := h.negRepo.GetByForeignID(req.GetNegotiationId())
+		if nerr != nil {
+			if errors.Is(nerr, gorm.ErrRecordNotFound) {
+				return deny("no stored negotiation for peer/id")
+			}
+			return nil, status.Errorf(codes.Internal, "lookup negotiation: %v", nerr)
+		}
+		var offer contractsitx.OtcOffer
+		if jerr := json.Unmarshal([]byte(neg.OfferJSON), &offer); jerr != nil {
+			return nil, status.Errorf(codes.Internal, "decode offer: %v", jerr)
+		}
+		// Option terms must match the agreed negotiation (rejects forged ticker/
+		// quantity/strike regardless of currency).
+		if req.GetQuantity() != offer.Amount {
+			return deny(fmt.Sprintf("quantity %d != negotiated %d", req.GetQuantity(), offer.Amount))
+		}
+		if req.GetTicker() != "" && !strings.EqualFold(req.GetTicker(), offer.Ticker) {
+			return deny(fmt.Sprintf("ticker %q != negotiated %q", req.GetTicker(), offer.Ticker))
+		}
+		if req.GetStrikePrice() != "" {
+			if sp, e := decimal.NewFromString(req.GetStrikePrice()); e == nil && !sp.Equal(offer.PricePerStock) {
+				return deny(fmt.Sprintf("strike %s != negotiated %s", sp, offer.PricePerStock))
+			}
+		}
+		// Premium money check. The seller ALWAYS receives offer.Premium in
+		// offer.PremiumCurrency (no FX on the seller's receipt), so when the money
+		// leg is in the premium currency we require an exact match — this covers the
+		// seller side of every trade and the buyer side of a same-currency trade.
+		//
+		// KNOWN RESIDUAL — cross-currency BUYER premium (low severity). When the
+		// money leg currency != offer.PremiumCurrency, the buyer paid an FX-converted
+		// premium (offer.Premium converted to the buyer's currency at the live rate at
+		// accept-compose time). The receiver can't reproduce that exact amount here
+		// (re-running the conversion would drift against the rate used at compose and
+		// REJECT legitimate accepts), so we only reject a non-positive amount and let
+		// any positive value through. This is bounded: the SELLER side is always exact
+		// (the underpayment victim), and the option TERMS (ticker/quantity/strike) are
+		// validated above regardless of currency — so the worst case is a buyer's own
+		// bank accepting an FX-mispriced premium debit, not seller theft or wrong terms.
+		// Exercise (the strike) has NO such residual: this codebase never FX-converts
+		// the strike, so it is exactly validated in every currency.
+		// TODO(crossbank-otc): close this by converting offer.Premium via
+		// exchange-service into req.currency and comparing within a small tolerance
+		// band (to absorb rate drift between accept-compose and this vote-time check).
+		if strings.EqualFold(req.GetCurrency(), offer.PremiumCurrency) {
+			if !money.Equal(offer.Premium) {
+				return deny(fmt.Sprintf("premium %s != negotiated %s", money, offer.Premium))
+			}
+		} else if money.LessThanOrEqual(decimal.Zero) {
+			return deny("cross-currency premium must be positive")
+		}
+		return &stockpb.ValidatePeerOptionMoneyLegResponse{Ok: true}, nil
+	}
+
+	contract, err := h.peerOptionRepo.GetByNegotiationAndDirection(req.GetNegotiationRouting(), req.GetNegotiationId(), req.GetDirection())
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return deny("no stored contract for negotiation/direction")
+		}
+		return nil, status.Errorf(codes.Internal, "lookup contract: %v", err)
+	}
+	// Replay/double-exercise defense: only an exercisable contract may move money.
+	// "active" (unclaimed) and "exercising" (buyer-side claim) are the valid
+	// pre-exercise states; an already-"exercised" (or expired/cancelled) contract
+	// must NOT vote YES — otherwise a forged second exercise debits the buyer the
+	// strike again while COMMIT's materialise no-ops (no delivery), double-charging
+	// the buyer. Mirrors recordOptionExercise's COMMIT-time guard, but at vote time
+	// so no money is ever reserved for the replay.
+	if contract.Status != "active" && contract.Status != "exercising" {
+		return deny("contract not exercisable, status=" + contract.Status)
+	}
+	if req.GetQuantity() != contract.Quantity {
+		return deny(fmt.Sprintf("quantity %d != stored %d", req.GetQuantity(), contract.Quantity))
+	}
+	if req.GetTicker() != "" && !strings.EqualFold(req.GetTicker(), contract.Ticker) {
+		return deny(fmt.Sprintf("ticker %q != stored %q", req.GetTicker(), contract.Ticker))
+	}
+	if req.GetCurrency() != "" && !strings.EqualFold(req.GetCurrency(), contract.Currency) {
+		return deny(fmt.Sprintf("currency %q != stored %q", req.GetCurrency(), contract.Currency))
+	}
+	if req.GetStrikePrice() != "" {
+		if sp, e := decimal.NewFromString(req.GetStrikePrice()); e == nil && !sp.Equal(contract.StrikePrice) {
+			return deny(fmt.Sprintf("per-unit strike %s != stored %s", sp, contract.StrikePrice))
+		}
+	}
+	// The crux: the money moved for an exercise MUST equal the agreed
+	// StrikePrice * Quantity from THIS bank's stored contract.
+	expected := contract.StrikePrice.Mul(decimal.NewFromInt(contract.Quantity))
+	if !money.Equal(expected) {
+		return deny(fmt.Sprintf("strike money %s != stored %s (%s x %d)", money, expected, contract.StrikePrice, contract.Quantity))
+	}
+	return &stockpb.ValidatePeerOptionMoneyLegResponse{Ok: true}, nil
+}
+
+// LookupPeerOptionContract returns the SELLER-side (DEBIT) peer_option_contract
+// this bank holds for a negotiationId, with the stored terms the
+// transaction-service executor needs to recognise and settle an OPTION
+// pseudo-account exercise leg. The exercise wire pins the OPTION pseudo-account
+// id to the negotiationId (spec §2.7.2), whose routingNumber is the
+// negotiation's bank — NOT necessarily the seller's. So the executor decides
+// ownership of a pseudo-account leg by asking each candidate bank "do you hold
+// the SELLER side of this negotiation?" via this RPC: found=true means this bank
+// is the settling (seller) bank and should process the leg; found=false means a
+// different bank owns it and this bank must SKIP the leg (see the option
+// wire-conformance design §3.3.1). Always the DEBIT row — the seller side.
+// Read-only; no status mutation here (the gates + settlement run in the executor
+// + RecordOptionContract).
+func (h *PeerOTCGRPCHandler) LookupPeerOptionContract(_ context.Context, req *stockpb.LookupPeerOptionContractRequest) (*stockpb.LookupPeerOptionContractResponse, error) {
+	if h.peerOptionRepo == nil {
+		return nil, status.Error(codes.Unimplemented, "peer option repo not wired")
+	}
+	if req.GetNegotiationId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "negotiation_id is required")
+	}
+	contract, err := h.peerOptionRepo.GetByNegotiationAndDirection(
+		req.GetNegotiationRoutingNumber(), req.GetNegotiationId(), contractsitx.DirectionDebit,
+	)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// No seller-side row → this bank does not hold the seller side.
+			return &stockpb.LookupPeerOptionContractResponse{Found: false}, nil
+		}
+		return nil, status.Errorf(codes.Internal, "lookup contract: %v", err)
+	}
+	return &stockpb.LookupPeerOptionContractResponse{
+		Found:          true,
+		SellerId:       contract.SellerID,
+		Ticker:         contract.Ticker,
+		StrikePrice:    contract.StrikePrice.String(),
+		Quantity:       contract.Quantity,
+		Currency:       contract.Currency,
+		SettlementDate: contract.SettlementDate,
+		Status:         contract.Status,
+	}, nil
+}
+
 // ReserveSellerSharesForNewTx places a real HOLD on the seller's shares at
 // SI-TX NEW_TX (vote) time, keyed on crossbank_tx_id. Unlike
 // CheckSellerCanDeliver this increments reserved_quantity so the shares cannot
@@ -1126,7 +1359,10 @@ func (h *PeerOTCGRPCHandler) recordOptionExercise(ctx context.Context, req *stoc
 	if contract.Status == "exercised" {
 		return &stockpb.RecordOptionContractResponse{ContractId: contract.ID}, nil
 	}
-	if contract.Status != "active" {
+	// "active" (seller/DEBIT side, never claimed) and "exercising" (buyer/CREDIT
+	// side, claimed at InitiateOptionExercise to serialise concurrent exercises)
+	// are both valid pre-exercise states.
+	if contract.Status != "active" && contract.Status != "exercising" {
 		return nil, status.Errorf(codes.FailedPrecondition, "cannot exercise contract in status %q", contract.Status)
 	}
 
@@ -1209,16 +1445,17 @@ func (h *PeerOTCGRPCHandler) recordOptionExercise(ctx context.Context, req *stoc
 	return &stockpb.RecordOptionContractResponse{ContractId: contract.ID}, nil
 }
 
-// InitiateOptionExercise builds the 4-posting Transaction for an
-// exercise (strike money buyer→seller + option markers carrying
-// intent=exercise) and dispatches it via transaction-service. Called
-// by the gateway when the buyer hits POST /api/v3/me/otc/contracts/peer/:id/exercise.
+// InitiateOptionExercise builds the 4-posting exercise Transaction in the spec
+// pseudo-account form (MONAS strike: buyer account -> OPTION pseudo-account;
+// STOCK: OPTION pseudo-account -> buyer PERSON record) and dispatches it via
+// transaction-service. No OPTION asset or intent is carried on the wire.
+// Called by the gateway when the buyer hits POST /api/v3/me/otc/contracts/peer/:id/exercise.
 //
 // Validates: contract exists on this bank, this bank holds the buyer
-// side (so this bank is the IB), contract is active, settlement date
-// is in the future. The strike-money currency-account on the seller's
-// bank is left to that bank to resolve via the executor's seller-id-
-// to-account lookup at NEW_TX time.
+// side (so this bank is the IB), contract is active. The CompareAndSetStatus
+// claim (active → exercising) guards against double-exercise races; on any
+// synchronous dispatch failure the claim is reverted (exercising → active)
+// so the buyer can retry.
 func (h *PeerOTCGRPCHandler) InitiateOptionExercise(ctx context.Context, req *stockpb.InitiateOptionExerciseRequest) (*stockpb.InitiateOptionExerciseResponse, error) {
 	if req.GetPeerOptionContractId() == 0 || req.GetBuyerAccountNumber() == "" {
 		return nil, status.Error(codes.InvalidArgument, "peer_option_contract_id and buyer_account_number are required")
@@ -1233,43 +1470,49 @@ func (h *PeerOTCGRPCHandler) InitiateOptionExercise(ctx context.Context, req *st
 	if contract.Direction != contractsitx.DirectionCredit {
 		return nil, status.Error(codes.FailedPrecondition, "this bank does not hold the buyer side of the contract; only the buyer's bank can initiate exercise")
 	}
-	if contract.Status != "active" {
-		return nil, status.Errorf(codes.FailedPrecondition, "contract status %q is not exercisable", contract.Status)
+	// Atomically claim the contract for exercise (active → exercising). This is
+	// the concurrency guard: of two simultaneous exercise attempts only one wins
+	// the compare-and-set, so only one exercise SI-TX is ever dispatched and the
+	// buyer is charged the strike exactly once. Without it, both attempts pass a
+	// non-locked status read and each settles strike money — a double charge
+	// (the share delivery is idempotent, but the money leg was not). On any
+	// synchronous dispatch failure below we revert exercising → active so the
+	// buyer can retry (e.g. after funding their account).
+	claimed, cerr := h.peerOptionRepo.CompareAndSetStatus(contract.ID, "active", "exercising")
+	if cerr != nil {
+		return nil, status.Errorf(codes.Internal, "claim contract for exercise: %v", cerr)
+	}
+	if !claimed {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"contract status %q is not exercisable (already exercised, expired, or an exercise is already in progress)", contract.Status)
 	}
 
 	strikeAmount := contract.StrikePrice.Mul(decimal.NewFromInt(contract.Quantity)).String()
+	qty := strconv.FormatInt(contract.Quantity, 10)
 
-	// Build the OptionDescription that goes into the option-marker
-	// postings, with intent="exercise" so each receiving bank's
-	// RecordOptionContract dispatches to the exercise branch.
-	optDesc := contractsitx.OptionDescription{
-		Ticker:         contract.Ticker,
-		Amount:         contract.Quantity,
-		StrikePrice:    contract.StrikePrice,
-		Currency:       contract.Currency,
-		SettlementDate: contract.SettlementDate,
-		NegotiationID:  contractsitx.ForeignBankId{RoutingNumber: contract.NegotiationRoutingNumber, ID: contract.NegotiationID},
-		Intent:         "exercise",
-	}
-	optDescJSON, err := json.Marshal(optDesc)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "marshal option description: %v", err)
-	}
-	optAssetID := string(optDescJSON)
-
-	// 4 postings:
-	//  1. Buyer DEBIT strike money (currency)
-	//  2. Seller CREDIT strike money (currency)
-	//  3. Seller DEBIT option (marker)
-	//  4. Buyer CREDIT option (marker)
-	// Currency postings carry account numbers; option postings carry
-	// participant ids (the executor resolves via ListAccountsByClient
-	// at NEW_TX time).
+	// Build the spec pseudo-account postings for option exercise.
+	// The spec expresses exercise as a transaction between the buyer and an
+	// OPTION pseudo-account (AccountType=OPTION, AccountId=negotiationId):
+	//  1. strike MONAS leaves the buyer's currency account  (DEBIT)
+	//  2. strike MONAS arrives at the OPTION pseudo-account (CREDIT — seller bank credits the seller)
+	//  3. STOCK leaves the OPTION pseudo-account            (DEBIT — seller bank releases reserved shares)
+	//  4. STOCK arrives at the buyer PERSON record          (CREDIT — buyer bank credits the holding)
+	negRouting := contract.NegotiationRoutingNumber
+	negID := contract.NegotiationID
 	postings := []*transactionpb.SiTxPosting{
-		{RoutingNumber: contract.BuyerRoutingNumber, AccountId: req.GetBuyerAccountNumber(), AssetId: contract.Currency, Amount: strikeAmount, Direction: contractsitx.DirectionDebit},
-		{RoutingNumber: contract.SellerRoutingNumber, AccountId: contract.SellerID, AssetId: contract.Currency, Amount: strikeAmount, Direction: contractsitx.DirectionCredit},
-		{RoutingNumber: contract.SellerRoutingNumber, AccountId: contract.SellerID, AssetId: optAssetID, Amount: "1", Direction: contractsitx.DirectionDebit},
-		{RoutingNumber: contract.BuyerRoutingNumber, AccountId: contract.BuyerID, AssetId: optAssetID, Amount: "1", Direction: contractsitx.DirectionCredit},
+		// 1. Buyer pays strike (MONAS, from the pinned buyer account).
+		{RoutingNumber: contract.BuyerRoutingNumber, AccountId: req.GetBuyerAccountNumber(), AccountType: contractsitx.AccountTypeAccount, AssetId: contract.Currency, AssetType: contractsitx.AssetTypeMonas, Amount: strikeAmount, Direction: contractsitx.DirectionDebit},
+		// The OPTION pseudo-account's id IS the negotiationId (spec §2.7.2), so its
+		// routingNumber is the negotiation's routing — NOT necessarily the seller's
+		// bank. The receiver claims these pseudo-account legs by matching the stored
+		// contract (ownership-by-contract), not by routing-prefix; see the option
+		// wire-conformance design doc §3.3.1. Do not change to SellerRoutingNumber.
+		// 2. Strike arrives at the option pseudo-account (seller bank credits the seller).
+		{RoutingNumber: negRouting, AccountId: negID, AccountType: contractsitx.AccountTypeOption, AssetId: contract.Currency, AssetType: contractsitx.AssetTypeMonas, Amount: strikeAmount, Direction: contractsitx.DirectionCredit},
+		// 3. Underlying leaves the option pseudo-account (seller bank releases reserved shares).
+		{RoutingNumber: negRouting, AccountId: negID, AccountType: contractsitx.AccountTypeOption, AssetId: contract.Ticker, AssetType: contractsitx.AssetTypeStock, Amount: qty, Direction: contractsitx.DirectionDebit},
+		// 4. Underlying arrives at the buyer (buyer bank credits the holding).
+		{RoutingNumber: contract.BuyerRoutingNumber, AccountId: contract.BuyerID, AccountType: contractsitx.AccountTypePerson, AssetId: contract.Ticker, AssetType: contractsitx.AssetTypeStock, Amount: qty, Direction: contractsitx.DirectionCredit},
 	}
 
 	resp, err := h.peerTx.InitiateOutboundTxWithPostings(ctx, &transactionpb.SiTxInitiateWithPostingsRequest{
@@ -1278,6 +1521,18 @@ func (h *PeerOTCGRPCHandler) InitiateOptionExercise(ctx context.Context, req *st
 		TxKind:       "otc-exercise",
 	})
 	if err != nil {
+		// Dispatch failed synchronously (e.g. buyer can't afford the strike →
+		// INSUFFICIENT_ASSET) — release the exercise claim so the contract is
+		// exercisable again after the buyer funds their account.
+		if _, rerr := h.peerOptionRepo.CompareAndSetStatus(contract.ID, "exercising", "active"); rerr != nil {
+			log.Printf("WARN: peer-option contract %d: failed to revert exercise claim after dispatch error: %v", contract.ID, rerr)
+		}
+		// Preserve the underlying gRPC code (FailedPrecondition for a business
+		// rejection like insufficient funds) instead of masking it as Internal,
+		// so the gateway returns 409 not 500.
+		if st, ok := status.FromError(err); ok {
+			return nil, status.Errorf(st.Code(), "dispatch exercise: %v", err)
+		}
 		return nil, status.Errorf(codes.Internal, "dispatch exercise: %v", err)
 	}
 	return &stockpb.InitiateOptionExerciseResponse{

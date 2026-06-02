@@ -7090,34 +7090,134 @@ Remove a peer bank.
 
 ### POST /api/v3/cross-bank-protocol/interbank
 
-Receives the SI-TX `Message<Type>` envelope from peer banks. Phase 3 implementation is fully wired: `NEW_TX` validates postings (UNBALANCED_TX check + per-posting account/asset/active checks), reserves credit-postings via `account-service.ReserveIncoming`, and emits `TransactionVote`. `COMMIT_TX` finalises reservations; `ROLLBACK_TX` releases them. Idempotence-key replay returns the cached vote.
+Receives the SI-TX `Message<Type>` envelope from peer banks. Fully wired: `NEW_TX` validates postings (UNBALANCED_TX check + per-posting account/asset/active checks), reserves credit-postings via `account-service.ReserveIncoming`, and emits a `TransactionVote`. `COMMIT_TX` finalises reservations; `ROLLBACK_TX` releases them. Idempotence-key replay returns the cached vote.
 
 **Authentication:** Hybrid `PeerAuth` middleware. Either:
 - `X-Api-Key: <token>` — looked up against `peer_banks.api_token_plaintext` via the internal `ResolvePeerByAPIToken` RPC.
 - `X-Bank-Code: <code>` + `X-Bank-Signature: <hex SHA-256>` + `X-Timestamp: <RFC3339, ±5min>` + `X-Nonce: <single-use>` — verified against `peer_banks.hmac_inbound_key` via `ResolvePeerByBankCode`.
 
-**Request Body:** SI-TX `Message<Type>` envelope. Shape verbatim from the cohort spec at https://arsen.srht.site/si-tx-proto/.
+#### Envelope: `Message<Type>`
+
+Every inbound message is wrapped in the same envelope. Shape verbatim from the cohort SI-TX-Proto spec.
+
+| Field | Type | Notes |
+|---|---|---|
+| `idempotenceKey` | `{ "routingNumber": int, "locallyGeneratedKey": string }` | Each message (NEW_TX, COMMIT_TX, ROLLBACK_TX) carries its OWN unique idempotence key. Replaying the same key returns the cached result. |
+| `messageType` | string | `"NEW_TX"` \| `"COMMIT_TX"` \| `"ROLLBACK_TX"` |
+| `message` | object | The message body — its shape depends on `messageType` (see below). |
+
+> COMMIT_TX / ROLLBACK_TX correlate back to the original NEW_TX via the `transactionId` field in their body, **not** via the envelope's `idempotenceKey` (which is unique per message).
+
+#### `messageType: "NEW_TX"` — message is a `Transaction`
+
+| Field | Type | Notes |
+|---|---|---|
+| `postings` | `Posting[]` | The legs of the transaction. Must net to zero per asset (else `UNBALANCED_TX`). |
+| `transactionId` | `{ "routingNumber": int, "id": string }` | Identifies this transaction; COMMIT/ROLLBACK reference it. |
+| `message` | string | Free-text description. |
+| `callNumber` | string (optional) | Serbian payment reference / model-and-call-number. |
+| `paymentCode` | string | Serbian payment code (e.g. `"289"`). |
+| `paymentPurpose` | string | Payment purpose text. |
+
+**`Posting`** = `{ "account": TxAccount, "amount": number, "asset": Asset }`
+
+- `amount` is a **SIGNED** JSON number: **negative** = credit / the asset *leaves* this account; **positive** = debit / the asset *arrives* at this account.
+
+**`TxAccount`** — tagged union on `type`:
+
+| `type` | Shape |
+|---|---|
+| `PERSON` | `{ "type": "PERSON", "id": { "routingNumber": int, "id": string } }` |
+| `ACCOUNT` | `{ "type": "ACCOUNT", "num": string }` (18-digit account number) |
+| `OPTION` | `{ "type": "OPTION", "id": { "routingNumber": int, "id": string } }` |
+
+**`Asset`** — tagged union on `type`:
+
+| `type` | Shape |
+|---|---|
+| `MONAS` | `{ "type": "MONAS", "asset": { "currency": string } }` |
+| `STOCK` | `{ "type": "STOCK", "asset": { "ticker": string } }` |
+| `OPTION` | `{ "type": "OPTION", "asset": <OptionDescription> }` |
+
+**Example NEW_TX body** (the canonical "coffee" transfer — 260 RSD from a peer's `ACCOUNT` to one of ours):
 
 ```json
 {
   "idempotenceKey": {
-    "routingNumber": 222,
-    "locallyGeneratedKey": "abc-123"
+    "routingNumber": 111,
+    "locallyGeneratedKey": "k-coffee-1"
   },
   "messageType": "NEW_TX",
   "message": {
     "postings": [
-      {"routingNumber": 222, "accountId": "222000001", "assetId": "RSD", "amount": "100.00", "direction": "DEBIT"},
-      {"routingNumber": 111, "accountId": "111000001", "assetId": "RSD", "amount": "100.00", "direction": "CREDIT"}
-    ]
+      {
+        "account": { "type": "ACCOUNT", "num": "444000100182503611" },
+        "amount": -260,
+        "asset": { "type": "MONAS", "asset": { "currency": "RSD" } }
+      },
+      {
+        "account": { "type": "ACCOUNT", "num": "111000141215476411" },
+        "amount": 260,
+        "asset": { "type": "MONAS", "asset": { "currency": "RSD" } }
+      }
+    ],
+    "transactionId": { "routingNumber": 111, "id": "k-coffee-1" },
+    "message": "coffee",
+    "paymentCode": "289",
+    "paymentPurpose": "debt"
   }
 }
 ```
 
-**Responses:**
-- **200 OK** for `NEW_TX` — body is a `TransactionVote` (`{type: "YES", transactionId: "..."}` or `{type: "NO", noVotes: [...]}` with one or more of the 8 SI-TX reasons: `UNBALANCED_TX`, `NO_SUCH_ACCOUNT`, `NO_SUCH_ASSET`, `UNACCEPTABLE_ASSET`, `INSUFFICIENT_ASSET`, `OPTION_AMOUNT_INCORRECT`, `OPTION_USED_OR_EXPIRED`, `OPTION_NEGOTIATION_NOT_FOUND`).
-- **204 No Content** for `COMMIT_TX` / `ROLLBACK_TX` (both idempotent).
-- **401 Unauthorized** with empty body when auth fails (constant-time compare; no info leak).
+**NEW_TX response — `200 OK` with a `TransactionVote`:**
+
+- YES vote: `{ "vote": "YES" }`
+- NO vote: `{ "vote": "NO", "reasons": [ { "reason": <code>, "posting": <the full offending Posting> } ] }`
+
+Each NO reason echoes back the **entire offending `Posting`** (not an index). Reason codes:
+
+`UNBALANCED_TX`, `NO_SUCH_ACCOUNT`, `NO_SUCH_ASSET`, `UNACCEPTABLE_ASSET`, `INSUFFICIENT_ASSET`, `OPTION_AMOUNT_INCORRECT`, `OPTION_USED_OR_EXPIRED`, `OPTION_NEGOTIATION_NOT_FOUND`.
+
+**Example NO vote:**
+
+```json
+{
+  "vote": "NO",
+  "reasons": [
+    {
+      "reason": "INSUFFICIENT_ASSET",
+      "posting": {
+        "account": { "type": "ACCOUNT", "num": "111000141215476411" },
+        "amount": 260,
+        "asset": { "type": "MONAS", "asset": { "currency": "RSD" } }
+      }
+    }
+  ]
+}
+```
+
+#### `messageType: "COMMIT_TX"` / `"ROLLBACK_TX"` — message is `{ transactionId }`
+
+```json
+{
+  "idempotenceKey": { "routingNumber": 111, "locallyGeneratedKey": "k-coffee-commit-1" },
+  "messageType": "COMMIT_TX",
+  "message": { "transactionId": { "routingNumber": 111, "id": "k-coffee-1" } }
+}
+```
+
+`COMMIT_TX` finalises the reservation made by the matching `NEW_TX`; `ROLLBACK_TX` releases it. Both are idempotent and both respond **204 No Content** with an empty body.
+
+#### Responses
+
+- **200 OK** — `NEW_TX` final vote (`TransactionVote` body).
+- **204 No Content** — `COMMIT_TX` / `ROLLBACK_TX` final, empty body.
+- **202 Accepted** — peer accepted the message but the result is not yet final; the sender should retry later.
+- **401 Unauthorized** — empty body when auth fails (constant-time compare; no info leak).
+
+> **Sender semantics:** `202` = peer accepted, retry later; `200` = final (vote); `204` = final, empty.
+
+> **Receiver-side 202 (async):** For a `NEW_TX` whose local reserve exceeds `SITX_RECEIVE_SYNC_DEADLINE` (transaction-service, default `5s`), the receiver returns **202 Accepted** with an empty body and finishes the reserve in the background. The sender retransmits the same idempotence key; once the reserve completes, the retransmit returns **200** with the vote. `COMMIT_TX` / `ROLLBACK_TX` are always processed synchronously (**204**).
 
 ---
 
@@ -7160,20 +7260,25 @@ Peer-facing OTC discovery — returns stock holdings on this bank flagged for OT
 
 **Authentication:** PeerAuth (X-Api-Key or HMAC bundle).
 
-**Response 200:**
+**Response 200:** A **BARE JSON array** (no `{ "stocks": ... }` wrapper). Each element groups all public sellers of one ticker. There is **no** price or currency on this endpoint — it is a discovery surface only; pricing is negotiated per-offer.
+
 ```json
-{
-  "stocks": [
-    {
-      "ownerId": {"routingNumber": 111, "id": "client-7"},
-      "ticker": "AAPL",
-      "amount": 50,
-      "pricePerStock": "180.50",
-      "currency": "USD"
-    }
-  ]
-}
+[
+  {
+    "stock": { "ticker": "AAPL" },
+    "sellers": [
+      { "seller": { "routingNumber": 111, "id": "client-3" }, "amount": 50 },
+      { "seller": { "routingNumber": 111, "id": "client-9" }, "amount": 20 }
+    ]
+  }
+]
 ```
+
+| Field | Type | Notes |
+|---|---|---|
+| `stock.ticker` | string | The security symbol. |
+| `sellers[].seller` | `{ "routingNumber": int, "id": string }` | The seller's `ForeignBankId`. |
+| `sellers[].amount` | int | Quantity this seller has flagged public for that ticker. |
 
 ---
 
@@ -7183,14 +7288,14 @@ Peer initiates a cross-bank OTC negotiation against a publicly-listed holding on
 
 **Authentication:** PeerAuth.
 
-**Request Body:** SI-TX `OtcOffer` payload — verbatim from the cohort spec at <https://arsen.srht.site/si-tx-proto/>. The body IS the `OtcOffer`; there is no wrapping object.
+**Request Body:** SI-TX `OtcOffer` payload — verbatim from the cohort spec at <https://arsen.srht.site/si-tx-proto/>. The body IS the `OtcOffer`; there is no wrapping object. Per SI-TX §2.5 the monetary `amount` fields are JSON **numbers** (the gateway also tolerates a quoted string for peers that still quote).
 
 ```json
 {
   "stock":          { "ticker": "AAPL" },
   "settlementDate": "2026-12-31T00:00:00Z",
-  "pricePerUnit":   { "amount": "180.50", "currency": "USD" },
-  "premium":        { "amount": "700",    "currency": "USD" },
+  "pricePerUnit":   { "amount": 180.50, "currency": "USD" },
+  "premium":        { "amount": 700,    "currency": "USD" },
   "buyerId":        { "routingNumber": 222, "id": "client-1" },
   "sellerId":       { "routingNumber": 111, "id": "client-1" },
   "amount":         50,
@@ -7228,14 +7333,14 @@ Read a negotiation's current state.
 
 **Authentication:** PeerAuth.
 
-**Response 200:** SI-TX `OtcNegotiation` = `OtcOffer & { isOngoing: boolean }`.
+**Response 200:** SI-TX `OtcNegotiation` = `OtcOffer & { isOngoing: boolean }`. Monetary `amount` fields are JSON **numbers** per SI-TX §2.5.
 
 ```json
 {
   "stock":          { "ticker": "AAPL" },
   "settlementDate": "2026-12-31T00:00:00Z",
-  "pricePerUnit":   { "amount": "180.50", "currency": "USD" },
-  "premium":        { "amount": "700",    "currency": "USD" },
+  "pricePerUnit":   { "amount": 180.50, "currency": "USD" },
+  "premium":        { "amount": 700,    "currency": "USD" },
   "buyerId":        { "routingNumber": 222, "id": "client-1" },
   "sellerId":       { "routingNumber": 111, "id": "client-1" },
   "amount":         50,
@@ -7282,14 +7387,16 @@ Returns identity info for a counterparty user. Peers call this when displaying u
 - `rid` — must match `OWN_BANK_CODE`'s routing number; otherwise 404 (we don't proxy lookups across banks).
 - `id` — `client-<n>` or `employee-<n>` format; routes to client-service or user-service accordingly.
 
-**Response 200:**
+**Response 200:** (SI-TX §3.7 shape)
 ```json
 {
-  "id":        {"routingNumber": 111, "id": "client-7"},
-  "firstName": "Marko",
-  "lastName":  "Marković"
+  "bankDisplayName": "EXBanka",
+  "displayName":     "Marko Marković"
 }
 ```
+
+- `bankDisplayName` — this bank's human-readable name, from `OWN_BANK_NAME` (falls back to `OWN_BANK_CODE` when unset).
+- `displayName` — the user's first + last name, space-joined.
 
 **Response 404:** Foreign rid or unknown user id.
 
@@ -8156,9 +8263,67 @@ No funds or shares are unwound — none are reserved at listing-creation time; r
 
 #### GET /api/v3/otc/options/:id/negotiations
 
-List every negotiation chain against a listing (any status). Used by the listing's poster to see all incoming bids, and by bidders to see what competing counter-bids look like.
+List every negotiation chain against a listing (any status). Used by the listing's poster to see all incoming bids.
+
+**Authentication:** Any JWT + `ResolveIdentity`. **Restricted audience:** only the listing's poster (a client whose `principal_id` matches the offer's initiator) or an employee holding the `otc.read.all` permission may call this. A competing bidder — or any other client — receives **403**; bidders see only their own chain via `GET /api/v3/me/otc/options/negotiations`.
 
 **Response 200:** `{ "negotiations": [OTCNegotiationResponse...], "total": int }`.
+
+**Response 403:** Caller is neither the listing's poster nor a permission-gated employee.
+
+---
+
+#### GET /api/v3/otc/options/:id/timeline
+
+Cross-chain interaction timeline for an offer: the offer plus **every** negotiation chain's revisions, merged into a single stream sorted ascending by `created_at`. This is the offer-owner "front page" view — one call returns the whole offer's history across all bidders, so the frontend never needs to fan out per chain. Each entry carries its chain's `negotiation_id` and bidder identity, so the client can render one flat timeline or regroup into per-bidder swimlanes.
+
+**Authentication:** Any JWT + `ResolveIdentity`. **Restricted audience:** identical to `GET /api/v3/otc/options/:id/negotiations` — listing poster or employee with `otc.read.all` only. Competing bidders receive **403**.
+
+**Path:** `:id` — the parent OTCOffer listing id.
+
+**Response 200:**
+
+```json
+{
+  "offer": { /* OTCOfferResponse */ },
+  "timeline": [
+    {
+      "negotiation_id":           100,
+      "bidder_owner_type":        "client",
+      "bidder_owner_id":          7,
+      "revision_number":          1,
+      "action":                   "BID",
+      "quantity":                 "10",
+      "strike_price":             "150.00",
+      "premium":                  "5.00",
+      "settlement_date":          "2026-07-01T00:00:00Z",
+      "action_by_principal_type": "client",
+      "action_by_principal_id":   7,
+      "created_at":               "2026-06-01T12:00:00Z"
+    },
+    {
+      "negotiation_id":           100,
+      "bidder_owner_type":        "client",
+      "bidder_owner_id":          7,
+      "revision_number":          2,
+      "action":                   "COUNTER",
+      "quantity":                 "10",
+      "strike_price":             "155.00",
+      "premium":                  "7.00",
+      "settlement_date":          "2026-07-01T00:00:00Z",
+      "action_by_principal_type": "client",
+      "action_by_principal_id":   1,
+      "created_at":               "2026-06-01T12:05:00Z"
+    }
+  ]
+}
+```
+
+Entries are ordered by `created_at ASC`; ties break by `(negotiation_id, revision_number)` for deterministic ordering.
+
+**Response 403:** Caller is neither the listing's poster nor a permission-gated employee.
+
+**Response 404:** Offer not found.
 
 ---
 
@@ -8316,13 +8481,15 @@ POST /api/v3/me/peer-otc/negotiations
   "seller_id":         "client-7",
   "stock":             { "ticker": "AAPL" },
   "settlement_date":   "2027-08-01T00:00:00Z",
-  "price_per_unit":    { "amount": "175", "currency": "USD" },
-  "premium":           { "amount": "40",  "currency": "USD" },
+  "price_per_unit":    { "amount": 175, "currency": "USD" },
+  "premium":           { "amount": 40,  "currency": "USD" },
   "amount":            2,
   "bidder_account_id": 13,                                   ← REQUIRED (Fix #1, 2026-05-16)
   "parent_offer_id":   { "routingNumber": 111, "id": "42" }  ← optional
 }
 ```
+
+The `price_per_unit.amount` and `premium.amount` fields are JSON **numbers** (SI-TX §2.5); the gateway also tolerates a quoted decimal string for backward compatibility. They are re-serialized to the seller's bank as JSON numbers in the outbound `OtcOffer`.
 
 **`bidder_account_id` (Fix #1, 2026-05-16).** REQUIRED. The buyer's account that pays the premium on accept. Gateway validates: (a) account exists and belongs to caller; (b) account is `active`; (c) **account currency matches `premium.currency`**. Cross-bank SI-TX has no FX (postings must balance per asset_id across banks, so converting on the buyer's side would break conservation) — open an account in the offer's currency or pick one. The resolved 18-digit account number is threaded into the SI-TX `OtcOffer` as `buyerAccountNumber` so the seller's bank uses this exact account for the buyer-debit posting on accept, instead of resolving `client-<id>` to "first active account in this currency" (which was non-deterministic and silently failed when the buyer had no matching account).
 

@@ -98,8 +98,10 @@ func (s *IncomingReservationService) ReserveIncoming(
 }
 
 // CommitIncoming finalizes a pending reservation by crediting the account
-// and writing a ledger entry. Idempotent on reservation_key.
-func (s *IncomingReservationService) CommitIncoming(ctx context.Context, key string) (*model.Account, error) {
+// and writing a ledger entry. Idempotent on reservation_key. memo, when
+// non-empty, becomes the ledger entry Description (the SI-TX NEW_TX message);
+// otherwise a default inter-bank credit description is used.
+func (s *IncomingReservationService) CommitIncoming(ctx context.Context, key, memo string) (*model.Account, error) {
 	res, err := s.resRepo.GetByKey(key)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -137,13 +139,17 @@ func (s *IncomingReservationService) CommitIncoming(ctx context.Context, key str
 		if saveRes.RowsAffected == 0 {
 			return shared.ErrOptimisticLock
 		}
+		description := memo
+		if description == "" {
+			description = fmt.Sprintf("Inter-bank credit (tx=%s)", res.ReservationKey)
+		}
 		entry := &model.LedgerEntry{
 			AccountNumber:  res.AccountNumber,
 			EntryType:      "credit",
 			Amount:         res.Amount,
 			BalanceBefore:  before,
 			BalanceAfter:   acct.Balance,
-			Description:    fmt.Sprintf("Inter-bank credit (tx=%s)", res.ReservationKey),
+			Description:    description,
 			ReferenceID:    res.ReservationKey,
 			ReferenceType:  "interbank_credit",
 			IdempotencyKey: "incoming-" + res.ReservationKey,

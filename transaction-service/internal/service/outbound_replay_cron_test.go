@@ -3,7 +3,6 @@ package service_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -42,7 +41,7 @@ func TestOutboundReplayCron_RetriesPendingRow_OnYESCommits(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&probe)
 		if probe["messageType"] == contractsitx.MessageTypeNewTx {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"type":"YES"}`))
+			_, _ = w.Write([]byte(`{"vote":"YES"}`))
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -54,7 +53,7 @@ func TestOutboundReplayCron_RetriesPendingRow_OnYESCommits(t *testing.T) {
 		IdempotenceKey: "cron-1",
 		PeerBankCode:   "222",
 		TxKind:         "transfer",
-		PostingsJSON:   `[{"routingNumber":111,"accountId":"111-A","assetId":"RSD","amount":"100","direction":"DEBIT"},{"routingNumber":222,"accountId":"222-B","assetId":"RSD","amount":"100","direction":"CREDIT"}]`,
+		PostingsJSON:   `[{"routingNumber":111,"accountType":"ACCOUNT","accountId":"111-A","assetType":"MONAS","assetId":"RSD","amount":"100","direction":"DEBIT"},{"routingNumber":222,"accountType":"ACCOUNT","accountId":"222-B","assetType":"MONAS","assetId":"RSD","amount":"100","direction":"CREDIT"}]`,
 		Status:         "pending",
 	}
 	if err := repo.Create(row); err != nil {
@@ -86,7 +85,7 @@ func TestOutboundReplayCron_OTCRow_InvokesLocalCommitBeforePostCommit(t *testing
 		_ = json.NewDecoder(r.Body).Decode(&probe)
 		if probe["messageType"] == contractsitx.MessageTypeNewTx {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"type":"YES"}`))
+			_, _ = w.Write([]byte(`{"vote":"YES"}`))
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -98,7 +97,7 @@ func TestOutboundReplayCron_OTCRow_InvokesLocalCommitBeforePostCommit(t *testing
 		IdempotenceKey: "otc-row-1",
 		PeerBankCode:   "222",
 		TxKind:         "otc-accept",
-		PostingsJSON:   `[{"routingNumber":111,"accountId":"111-A","assetId":"RSD","amount":"100","direction":"DEBIT"},{"routingNumber":111,"accountId":"111-B","assetId":"AAPL","amount":"50","direction":"CREDIT"}]`,
+		PostingsJSON:   `[{"routingNumber":111,"accountType":"ACCOUNT","accountId":"111-A","assetType":"MONAS","assetId":"RSD","amount":"100","direction":"DEBIT"},{"routingNumber":111,"accountType":"ACCOUNT","accountId":"111-B","assetType":"STOCK","assetId":"AAPL","amount":"50","direction":"CREDIT"}]`,
 		Status:         "pending",
 	}
 	if err := repo.Create(row); err != nil {
@@ -138,7 +137,7 @@ func TestOutboundReplayCron_OTCRow_InvokesLocalCommitBeforePostCommit(t *testing
 func TestOutboundReplayCron_PeerVotesNO_MarksRolledBack(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"type":"NO","noVotes":[{"reason":"INSUFFICIENT_ASSET"}]}`))
+		_, _ = w.Write([]byte(`{"vote":"NO","reasons":[{"reason":"INSUFFICIENT_ASSET"}]}`))
 	}))
 	defer srv.Close()
 
@@ -169,12 +168,26 @@ func TestOutboundReplayCron_PeerVotesNO_MarksRolledBack(t *testing.T) {
 	}
 }
 
-func TestOutboundReplayCron_MaxAttemptsExceeded_MarksFailed(t *testing.T) {
+func TestOutboundReplayCron_MaxAttemptsExceeded_MarksFailedAndRollsBackPeer(t *testing.T) {
+	// Capture message types the peer receives so we can assert a ROLLBACK_TX
+	// is dispatched: A exhausted retries after the peer may have voted YES on a
+	// prior NEW_TX, so it must tell the peer to release any reservation.
+	var gotRollback bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var probe map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&probe)
+		if probe["messageType"] == contractsitx.MessageTypeRollbackTx {
+			gotRollback = true
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
 	_, repo := newCronTestDB(t)
 	row := &model.OutboundPeerTx{
 		IdempotenceKey: "cron-fail",
 		PeerBankCode:   "222",
-		TxKind:         "transfer",
+		TxKind:         "payment",
 		PostingsJSON:   `[]`,
 		Status:         "pending",
 		AttemptCount:   4,
@@ -183,7 +196,7 @@ func TestOutboundReplayCron_MaxAttemptsExceeded_MarksFailed(t *testing.T) {
 
 	httpClient := sitx.NewPeerHTTPClient(http.DefaultClient)
 	peerLookup := func(ctx context.Context, code string) (*sitx.PeerHTTPTarget, error) {
-		return nil, errors.New("should not be called")
+		return &sitx.PeerHTTPTarget{BankCode: code, BaseURL: srv.URL, APIToken: "tok", OwnRouting: 111, RoutingNumber: 222}, nil
 	}
 	cron := service.NewOutboundReplayCron(repo, httpClient, peerLookup, nilRegistry()).
 		WithMinRetryGap(0).WithMaxAttempts(4)
@@ -192,5 +205,8 @@ func TestOutboundReplayCron_MaxAttemptsExceeded_MarksFailed(t *testing.T) {
 	got, _ := repo.GetByIdempotenceKey("cron-fail")
 	if got.Status != "failed" {
 		t.Errorf("expected failed, got %s", got.Status)
+	}
+	if !gotRollback {
+		t.Errorf("expected ROLLBACK_TX dispatched to peer on terminal failure")
 	}
 }

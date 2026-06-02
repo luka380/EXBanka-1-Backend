@@ -12,6 +12,8 @@ import (
 
 	contractsitx "github.com/exbanka/contract/sitx"
 	stockpb "github.com/exbanka/contract/stockpb"
+	transactionpb "github.com/exbanka/contract/transactionpb"
+	"github.com/exbanka/stock-service/internal/handler"
 	"github.com/exbanka/stock-service/internal/model"
 	"github.com/exbanka/stock-service/internal/service"
 )
@@ -231,12 +233,11 @@ func TestPeerOTC_RecordOptionContract_AcceptIntent(t *testing.T) {
 	h.SetHoldingReserver(reserver)
 
 	optDesc := contractsitx.OptionDescription{
-		Ticker:         "AAPL",
-		Amount:         5,
-		StrikePrice:    decimal.NewFromInt(100),
-		Currency:       "USD",
-		SettlementDate: "2026-12-31",
 		NegotiationID:  contractsitx.ForeignBankId{RoutingNumber: 222, ID: "neg-1"},
+		Stock:          contractsitx.StockDescription{Ticker: "AAPL"},
+		PricePerUnit:   contractsitx.MonetaryValue{Amount: contractsitx.DecimalNumber{Decimal: decimal.NewFromInt(100)}, Currency: "USD"},
+		SettlementDate: "2026-12-31",
+		Amount:         5,
 	}
 	optJSON, _ := json.Marshal(optDesc)
 
@@ -274,9 +275,11 @@ func TestPeerOTC_RecordOptionContract_AcceptIntent_CreditDirection_NoReserveCall
 	h.SetHoldingReserver(reserver)
 
 	optDesc := contractsitx.OptionDescription{
-		Ticker: "MSFT", Amount: 1, StrikePrice: decimal.NewFromInt(50), Currency: "USD",
-		SettlementDate: "2026-12-31",
 		NegotiationID:  contractsitx.ForeignBankId{RoutingNumber: 222, ID: "neg-2"},
+		Stock:          contractsitx.StockDescription{Ticker: "MSFT"},
+		PricePerUnit:   contractsitx.MonetaryValue{Amount: contractsitx.DecimalNumber{Decimal: decimal.NewFromInt(50)}, Currency: "USD"},
+		SettlementDate: "2026-12-31",
+		Amount:         1,
 	}
 	optJSON, _ := json.Marshal(optDesc)
 	_, err := h.RecordOptionContract(context.Background(), &stockpb.RecordOptionContractRequest{
@@ -309,9 +312,11 @@ func TestPeerOTC_RecordOptionContract_ReserveFails_ReturnsError(t *testing.T) {
 	h.SetHoldingReserver(reserver)
 
 	optDesc := contractsitx.OptionDescription{
-		Ticker: "AAPL", Amount: 5, StrikePrice: decimal.NewFromInt(100), Currency: "USD",
-		SettlementDate: "2026-12-31",
 		NegotiationID:  contractsitx.ForeignBankId{RoutingNumber: 222, ID: "neg-rf"},
+		Stock:          contractsitx.StockDescription{Ticker: "AAPL"},
+		PricePerUnit:   contractsitx.MonetaryValue{Amount: contractsitx.DecimalNumber{Decimal: decimal.NewFromInt(100)}, Currency: "USD"},
+		SettlementDate: "2026-12-31",
+		Amount:         5,
 	}
 	optJSON, _ := json.Marshal(optDesc)
 	_, err := h.RecordOptionContract(context.Background(), &stockpb.RecordOptionContractRequest{
@@ -340,9 +345,11 @@ func TestPeerOTC_RecordOptionContract_UnparseableSeller_ReturnsError(t *testing.
 	h.SetHoldingReserver(reserver)
 
 	optDesc := contractsitx.OptionDescription{
-		Ticker: "AAPL", Amount: 5, StrikePrice: decimal.NewFromInt(100), Currency: "USD",
-		SettlementDate: "2026-12-31",
 		NegotiationID:  contractsitx.ForeignBankId{RoutingNumber: 222, ID: "neg-bad"},
+		Stock:          contractsitx.StockDescription{Ticker: "AAPL"},
+		PricePerUnit:   contractsitx.MonetaryValue{Amount: contractsitx.DecimalNumber{Decimal: decimal.NewFromInt(100)}, Currency: "USD"},
+		SettlementDate: "2026-12-31",
+		Amount:         5,
 	}
 	optJSON, _ := json.Marshal(optDesc)
 	_, err := h.RecordOptionContract(context.Background(), &stockpb.RecordOptionContractRequest{
@@ -419,9 +426,11 @@ func TestPeerOTC_RecordOptionContract_ExerciseIntent_DebitConsumesReservation(t 
 
 	// Step 1: record an active contract on DEBIT direction.
 	optDesc := contractsitx.OptionDescription{
-		Ticker: "AAPL", Amount: 10, StrikePrice: decimal.NewFromInt(100), Currency: "USD",
-		SettlementDate: "2026-12-31",
 		NegotiationID:  contractsitx.ForeignBankId{RoutingNumber: 222, ID: "neg-x"},
+		Stock:          contractsitx.StockDescription{Ticker: "AAPL"},
+		PricePerUnit:   contractsitx.MonetaryValue{Amount: contractsitx.DecimalNumber{Decimal: decimal.NewFromInt(100)}, Currency: "USD"},
+		SettlementDate: "2026-12-31",
+		Amount:         10,
 	}
 	optJSON, _ := json.Marshal(optDesc)
 	_, _ = h.RecordOptionContract(context.Background(), &stockpb.RecordOptionContractRequest{
@@ -457,9 +466,11 @@ func TestPeerOTC_RecordOptionContract_ExerciseIntent_CreditCreditsBuyer(t *testi
 
 	// Step 1: record active contract CREDIT direction.
 	optDesc := contractsitx.OptionDescription{
-		Ticker: "AAPL", Amount: 7, StrikePrice: decimal.NewFromInt(100), Currency: "USD",
-		SettlementDate: "2026-12-31",
 		NegotiationID:  contractsitx.ForeignBankId{RoutingNumber: 222, ID: "neg-c"},
+		Stock:          contractsitx.StockDescription{Ticker: "AAPL"},
+		PricePerUnit:   contractsitx.MonetaryValue{Amount: contractsitx.DecimalNumber{Decimal: decimal.NewFromInt(100)}, Currency: "USD"},
+		SettlementDate: "2026-12-31",
+		Amount:         7,
 	}
 	optJSON, _ := json.Marshal(optDesc)
 	_, _ = h.RecordOptionContract(context.Background(), &stockpb.RecordOptionContractRequest{
@@ -521,9 +532,11 @@ func TestPeerOTC_RecordOptionContract_ExerciseIntent_BuyerCreditFails_ReturnsErr
 	h.SetHoldingReserver(reserver)
 
 	optDesc := contractsitx.OptionDescription{
-		Ticker: "AAPL", Amount: 10, StrikePrice: decimal.NewFromInt(150), Currency: "USD",
-		SettlementDate: "2026-12-31",
 		NegotiationID:  contractsitx.ForeignBankId{RoutingNumber: 222, ID: "neg-credit-fail"},
+		Stock:          contractsitx.StockDescription{Ticker: "AAPL"},
+		PricePerUnit:   contractsitx.MonetaryValue{Amount: contractsitx.DecimalNumber{Decimal: decimal.NewFromInt(150)}, Currency: "USD"},
+		SettlementDate: "2026-12-31",
+		Amount:         10,
 	}
 	optJSON, _ := json.Marshal(optDesc)
 	// Seed an active CREDIT-direction contract (this bank holds the buyer).
@@ -583,9 +596,11 @@ func TestPeerOTC_InitiateOptionExercise_HappyPath(t *testing.T) {
 
 	// Seed an active CREDIT-direction contract (this bank holds the buyer).
 	optDesc := contractsitx.OptionDescription{
-		Ticker: "AAPL", Amount: 10, StrikePrice: decimal.NewFromInt(150), Currency: "USD",
-		SettlementDate: "2026-12-31",
 		NegotiationID:  contractsitx.ForeignBankId{RoutingNumber: 222, ID: "neg-init"},
+		Stock:          contractsitx.StockDescription{Ticker: "AAPL"},
+		PricePerUnit:   contractsitx.MonetaryValue{Amount: contractsitx.DecimalNumber{Decimal: decimal.NewFromInt(150)}, Currency: "USD"},
+		SettlementDate: "2026-12-31",
+		Amount:         10,
 	}
 	optJSON, _ := json.Marshal(optDesc)
 	resp, _ := h.RecordOptionContract(context.Background(), &stockpb.RecordOptionContractRequest{
@@ -618,6 +633,92 @@ func TestPeerOTC_InitiateOptionExercise_HappyPath(t *testing.T) {
 	}
 }
 
+// seedActiveBuyerContract records an active CREDIT-direction contract and
+// returns its id (helper for the exercise concurrency tests).
+func seedActiveBuyerContract(t *testing.T, h *handler.PeerOTCGRPCHandler, neg string) uint64 {
+	t.Helper()
+	optDesc := contractsitx.OptionDescription{
+		NegotiationID:  contractsitx.ForeignBankId{RoutingNumber: 222, ID: neg},
+		Stock:          contractsitx.StockDescription{Ticker: "AAPL"},
+		PricePerUnit:   contractsitx.MonetaryValue{Amount: contractsitx.DecimalNumber{Decimal: decimal.NewFromInt(150)}, Currency: "USD"},
+		SettlementDate: "2026-12-31",
+		Amount:         10,
+	}
+	optJSON, _ := json.Marshal(optDesc)
+	resp, err := h.RecordOptionContract(context.Background(), &stockpb.RecordOptionContractRequest{
+		CrossbankTxId:         "tx-" + neg,
+		PostingIndex:          0,
+		BuyerId:               &stockpb.PeerForeignBankId{RoutingNumber: 111, Id: "client-7"},
+		SellerId:              &stockpb.PeerForeignBankId{RoutingNumber: 222, Id: "client-99"},
+		Direction:             contractsitx.DirectionCredit,
+		OptionDescriptionJson: string(optJSON),
+	})
+	if err != nil {
+		t.Fatalf("seed contract: %v", err)
+	}
+	return resp.GetContractId()
+}
+
+// TestPeerOTC_InitiateOptionExercise_SecondExerciseRejected verifies the
+// concurrency guard: once a contract is claimed for exercise (active →
+// exercising), a second exercise attempt is rejected instead of dispatching a
+// second strike-money payment (the double-charge bug).
+func TestPeerOTC_InitiateOptionExercise_SecondExerciseRejected(t *testing.T) {
+	h, _, peerTx, _ := newPeerOtcHandler(t)
+	h.SetHoldingReserver(&fakeReserver{})
+	cid := seedActiveBuyerContract(t, h, "neg-concurrent")
+
+	if _, err := h.InitiateOptionExercise(context.Background(), &stockpb.InitiateOptionExerciseRequest{
+		PeerOptionContractId: cid, BuyerAccountNumber: "BUYER-ACCT-1",
+	}); err != nil {
+		t.Fatalf("first exercise: %v", err)
+	}
+	dispatches := 0
+	if peerTx.gotReq != nil {
+		dispatches = 1
+	}
+	// Second attempt must be rejected (contract now "exercising"), NOT dispatched.
+	peerTx.gotReq = nil
+	_, err := h.InitiateOptionExercise(context.Background(), &stockpb.InitiateOptionExerciseRequest{
+		PeerOptionContractId: cid, BuyerAccountNumber: "BUYER-ACCT-1",
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("expected FailedPrecondition on second exercise, got %v", err)
+	}
+	if peerTx.gotReq != nil {
+		t.Errorf("second exercise must NOT dispatch a strike-money TX (double charge)")
+	}
+	if dispatches != 1 {
+		t.Errorf("expected exactly 1 dispatch from the first exercise")
+	}
+}
+
+// TestPeerOTC_InitiateOptionExercise_DispatchFailureRevertsClaim verifies that a
+// synchronous dispatch failure (e.g. buyer can't afford the strike) releases the
+// exercise claim (exercising → active), preserves the gRPC code (FailedPrecondition,
+// not Internal), and leaves the contract retryable.
+func TestPeerOTC_InitiateOptionExercise_DispatchFailureRevertsClaim(t *testing.T) {
+	h, _, peerTx, _ := newPeerOtcHandler(t)
+	h.SetHoldingReserver(&fakeReserver{})
+	cid := seedActiveBuyerContract(t, h, "neg-revert")
+
+	peerTx.err = status.Error(codes.FailedPrecondition, "local reserve failed: INSUFFICIENT_ASSET")
+	_, err := h.InitiateOptionExercise(context.Background(), &stockpb.InitiateOptionExerciseRequest{
+		PeerOptionContractId: cid, BuyerAccountNumber: "BUYER-ACCT-1",
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition (code preserved), got %v", err)
+	}
+	// Claim reverted → a retry (now funded) must succeed.
+	peerTx.err = nil
+	peerTx.resp = &transactionpb.SiTxInitiateResponse{TransactionId: "tx-retry", Status: "pending"}
+	if _, rerr := h.InitiateOptionExercise(context.Background(), &stockpb.InitiateOptionExerciseRequest{
+		PeerOptionContractId: cid, BuyerAccountNumber: "BUYER-ACCT-1",
+	}); rerr != nil {
+		t.Errorf("retry after revert should succeed, got %v", rerr)
+	}
+}
+
 func TestPeerOTC_InitiateOptionExercise_NotFound(t *testing.T) {
 	h, _, _, _ := newPeerOtcHandler(t)
 	_, err := h.InitiateOptionExercise(context.Background(), &stockpb.InitiateOptionExerciseRequest{
@@ -644,9 +745,11 @@ func TestPeerOTC_InitiateOptionExercise_WrongDirection(t *testing.T) {
 
 	// Seed an active DEBIT-direction contract (this bank does NOT hold the buyer).
 	optDesc := contractsitx.OptionDescription{
-		Ticker: "AAPL", Amount: 10, StrikePrice: decimal.NewFromInt(150), Currency: "USD",
-		SettlementDate: "2026-12-31",
 		NegotiationID:  contractsitx.ForeignBankId{RoutingNumber: 222, ID: "neg-d"},
+		Stock:          contractsitx.StockDescription{Ticker: "AAPL"},
+		PricePerUnit:   contractsitx.MonetaryValue{Amount: contractsitx.DecimalNumber{Decimal: decimal.NewFromInt(150)}, Currency: "USD"},
+		SettlementDate: "2026-12-31",
+		Amount:         10,
 	}
 	optJSON, _ := json.Marshal(optDesc)
 	resp, _ := h.RecordOptionContract(context.Background(), &stockpb.RecordOptionContractRequest{
@@ -767,4 +870,182 @@ func TestPeerOTC_SetHoldingReserver(t *testing.T) {
 	// no panic, that's the whole assertion. Following call would error
 	// because of missing fields, but tests the setter line.
 	_, _ = h.RecordOptionContract(context.Background(), &stockpb.RecordOptionContractRequest{})
+}
+
+// ---------------------------------------------------------------------------
+// TestInitiateOptionExercise_SpecPseudoAccountForm
+// ---------------------------------------------------------------------------
+
+// TestInitiateOptionExercise_SpecPseudoAccountForm verifies that the exercise
+// builder emits the spec pseudo-account form: MONAS (strike) from the buyer
+// account to the OPTION pseudo-account, then STOCK from the OPTION
+// pseudo-account to the buyer's PERSON record.
+//
+//	leg0: buyer ACCOUNT  --MONAS RSD DEBIT--> (pays strike)
+//	leg1: OPTION neg-1   --MONAS RSD CREDIT-> (seller bank credits seller)
+//	leg2: OPTION neg-1   --STOCK WMT DEBIT--> (seller bank releases shares)
+//	leg3: buyer PERSON   --STOCK WMT CREDIT-> (buyer bank credits holding)
+//
+// 500 = StrikePrice(50) × Quantity(10).
+func TestInitiateOptionExercise_SpecPseudoAccountForm(t *testing.T) {
+	h, db, peerTx, _ := newPeerOtcHandler(t) // ownRouting = 111
+
+	// Seed an active CREDIT-direction contract directly so we can control
+	// every field value (Ticker, StrikePrice, Quantity, NegotiationID, …)
+	// without going through the RecordOptionContract / OptionDescription
+	// JSON path.
+	if err := db.Create(&model.PeerOptionContract{
+		CrossbankTxID:            "seed:spec-1",
+		PostingIndex:             0,
+		NegotiationRoutingNumber: 111,
+		NegotiationID:            "neg-1",
+		BuyerRoutingNumber:       111,
+		BuyerID:                  "client-1",
+		SellerRoutingNumber:      222,
+		SellerID:                 "seller-1",
+		Ticker:                   "WMT",
+		Quantity:                 10,
+		StrikePrice:              decimal.NewFromInt(50),
+		Currency:                 "RSD",
+		SettlementDate:           "2028-01-01",
+		Direction:                contractsitx.DirectionCredit, // buyer side
+		Status:                   "active",
+	}).Error; err != nil {
+		t.Fatalf("seed contract: %v", err)
+	}
+
+	// Retrieve the auto-assigned ID.
+	var contract model.PeerOptionContract
+	if err := db.Where("negotiation_id = ?", "neg-1").First(&contract).Error; err != nil {
+		t.Fatalf("load seeded contract: %v", err)
+	}
+
+	peerTx.resp = &transactionpb.SiTxInitiateResponse{TransactionId: "tx-spec-1", Status: "initiated"}
+
+	_, err := h.InitiateOptionExercise(context.Background(), &stockpb.InitiateOptionExerciseRequest{
+		PeerOptionContractId: contract.ID,
+		BuyerAccountNumber:   "111000117810858011",
+	})
+	if err != nil {
+		t.Fatalf("InitiateOptionExercise: %v", err)
+	}
+
+	if peerTx.gotReq == nil {
+		t.Fatal("InitiateOutboundTxWithPostings was not called")
+	}
+
+	if peerTx.gotReq.GetTxKind() != "otc-exercise" {
+		t.Errorf("tx_kind: want otc-exercise, got %q", peerTx.gotReq.GetTxKind())
+	}
+	if peerTx.gotReq.GetPeerBankCode() != "222" {
+		t.Errorf("peer_bank_code: want 222 (seller routing), got %q", peerTx.gotReq.GetPeerBankCode())
+	}
+
+	postings := peerTx.gotReq.GetPostings()
+	if got := len(postings); got != 4 {
+		t.Fatalf("expected 4 postings, got %d", got)
+	}
+
+	// leg0: buyer ACCOUNT pays strike MONAS
+	p0 := postings[0]
+	if p0.GetRoutingNumber() != 111 {
+		t.Errorf("leg0 routing: want 111, got %d", p0.GetRoutingNumber())
+	}
+	if p0.GetAccountType() != "ACCOUNT" {
+		t.Errorf("leg0 account_type: want ACCOUNT, got %q", p0.GetAccountType())
+	}
+	if p0.GetAccountId() != "111000117810858011" {
+		t.Errorf("leg0 account_id: want 111000117810858011, got %q", p0.GetAccountId())
+	}
+	if p0.GetAssetType() != "MONAS" {
+		t.Errorf("leg0 asset_type: want MONAS, got %q", p0.GetAssetType())
+	}
+	if p0.GetAssetId() != "RSD" {
+		t.Errorf("leg0 asset_id: want RSD, got %q", p0.GetAssetId())
+	}
+	if p0.GetAmount() != "500" {
+		t.Errorf("leg0 amount: want 500, got %q", p0.GetAmount())
+	}
+	if p0.GetDirection() != "DEBIT" {
+		t.Errorf("leg0 direction: want DEBIT, got %q", p0.GetDirection())
+	}
+
+	// leg1: OPTION pseudo-account receives strike MONAS
+	p1 := postings[1]
+	if p1.GetRoutingNumber() != 111 {
+		t.Errorf("leg1 routing: want 111, got %d", p1.GetRoutingNumber())
+	}
+	if p1.GetAccountType() != "OPTION" {
+		t.Errorf("leg1 account_type: want OPTION, got %q", p1.GetAccountType())
+	}
+	if p1.GetAccountId() != "neg-1" {
+		t.Errorf("leg1 account_id: want neg-1, got %q", p1.GetAccountId())
+	}
+	if p1.GetAssetType() != "MONAS" {
+		t.Errorf("leg1 asset_type: want MONAS, got %q", p1.GetAssetType())
+	}
+	if p1.GetAssetId() != "RSD" {
+		t.Errorf("leg1 asset_id: want RSD, got %q", p1.GetAssetId())
+	}
+	if p1.GetAmount() != "500" {
+		t.Errorf("leg1 amount: want 500, got %q", p1.GetAmount())
+	}
+	if p1.GetDirection() != "CREDIT" {
+		t.Errorf("leg1 direction: want CREDIT, got %q", p1.GetDirection())
+	}
+
+	// leg2: OPTION pseudo-account releases STOCK (shares leave)
+	p2 := postings[2]
+	if p2.GetRoutingNumber() != 111 {
+		t.Errorf("leg2 routing: want 111, got %d", p2.GetRoutingNumber())
+	}
+	if p2.GetAccountType() != "OPTION" {
+		t.Errorf("leg2 account_type: want OPTION, got %q", p2.GetAccountType())
+	}
+	if p2.GetAccountId() != "neg-1" {
+		t.Errorf("leg2 account_id: want neg-1, got %q", p2.GetAccountId())
+	}
+	if p2.GetAssetType() != "STOCK" {
+		t.Errorf("leg2 asset_type: want STOCK, got %q", p2.GetAssetType())
+	}
+	if p2.GetAssetId() != "WMT" {
+		t.Errorf("leg2 asset_id: want WMT, got %q", p2.GetAssetId())
+	}
+	if p2.GetAmount() != "10" {
+		t.Errorf("leg2 amount: want 10, got %q", p2.GetAmount())
+	}
+	if p2.GetDirection() != "DEBIT" {
+		t.Errorf("leg2 direction: want DEBIT, got %q", p2.GetDirection())
+	}
+
+	// leg3: buyer PERSON receives STOCK
+	p3 := postings[3]
+	if p3.GetRoutingNumber() != 111 {
+		t.Errorf("leg3 routing: want 111, got %d", p3.GetRoutingNumber())
+	}
+	if p3.GetAccountType() != "PERSON" {
+		t.Errorf("leg3 account_type: want PERSON, got %q", p3.GetAccountType())
+	}
+	if p3.GetAccountId() != "client-1" {
+		t.Errorf("leg3 account_id: want client-1, got %q", p3.GetAccountId())
+	}
+	if p3.GetAssetType() != "STOCK" {
+		t.Errorf("leg3 asset_type: want STOCK, got %q", p3.GetAssetType())
+	}
+	if p3.GetAssetId() != "WMT" {
+		t.Errorf("leg3 asset_id: want WMT, got %q", p3.GetAssetId())
+	}
+	if p3.GetAmount() != "10" {
+		t.Errorf("leg3 amount: want 10, got %q", p3.GetAmount())
+	}
+	if p3.GetDirection() != "CREDIT" {
+		t.Errorf("leg3 direction: want CREDIT, got %q", p3.GetDirection())
+	}
+
+	// Negative: no posting may carry AssetType OPTION.
+	for i, p := range postings {
+		if p.GetAssetType() == "OPTION" {
+			t.Errorf("posting %d carries AssetType OPTION — spec pseudo-account form must not use OPTION asset markers", i)
+		}
+	}
 }

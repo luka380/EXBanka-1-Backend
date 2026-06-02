@@ -267,7 +267,7 @@ func (h *AccountGRPCHandler) CommitIncoming(ctx context.Context, req *pb.CommitI
 }
 
 func (h *AccountGRPCHandler) executeCommitIncoming(ctx context.Context, req *pb.CommitIncomingRequest) (*pb.CommitIncomingResponse, error) {
-	acct, err := h.incomingReservation.CommitIncoming(ctx, req.ReservationKey)
+	acct, err := h.incomingReservation.CommitIncoming(ctx, req.ReservationKey, req.GetMemo())
 	if err != nil {
 		if s, ok := status.FromError(err); ok {
 			return nil, s.Err()

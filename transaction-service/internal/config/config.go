@@ -28,6 +28,10 @@ type Config struct {
 	InterbankReconcileMaxRetries int
 	InterbankReconcileStaleAfter time.Duration
 
+	// Receiver-side 202-async deadline: how long HandleNewTx waits for the
+	// background reserve worker before returning HTTP 202 (pending).
+	InterbankReceiveSyncDeadline time.Duration
+
 	// Per-peer endpoint + HMAC keys.
 	OwnBankCode        string
 	Peer222BaseURL     string
@@ -62,6 +66,7 @@ func Load() *Config {
 		InterbankReconcileInterval:   getDuration("INTERBANK_RECONCILE_INTERVAL", 60*time.Second),
 		InterbankReconcileMaxRetries: getInt("INTERBANK_RECONCILE_MAX_RETRIES", 10),
 		InterbankReconcileStaleAfter: getDuration("INTERBANK_RECONCILE_STALE_AFTER", 24*time.Hour),
+		InterbankReceiveSyncDeadline: getDuration("SITX_RECEIVE_SYNC_DEADLINE", 5*time.Second),
 
 		OwnBankCode:        getEnv("OWN_BANK_CODE", "111"),
 		Peer222BaseURL:     getEnv("PEER_222_BASE_URL", ""),

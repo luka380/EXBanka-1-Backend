@@ -19,6 +19,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	accountpb "github.com/exbanka/contract/accountpb"
+	"github.com/exbanka/contract/sitx"
 	stockpb "github.com/exbanka/contract/stockpb"
 	transactionpb "github.com/exbanka/contract/transactionpb"
 )
@@ -66,12 +67,15 @@ type initiateNegotiationRequest struct {
 	} `json:"stock"`
 	SettlementDate string `json:"settlement_date"`
 	PricePerUnit   struct {
-		Amount   string `json:"amount"`
-		Currency string `json:"currency"`
+		// SI-TX §2.5 — monetary amount is a JSON number on the wire.
+		// DecimalNumber parses a number (and tolerates a quoted string)
+		// and re-serializes to the peer as a JSON number.
+		Amount   sitx.DecimalNumber `json:"amount"`
+		Currency string             `json:"currency"`
 	} `json:"price_per_unit"`
 	Premium struct {
-		Amount   string `json:"amount"`
-		Currency string `json:"currency"`
+		Amount   sitx.DecimalNumber `json:"amount"`
+		Currency string             `json:"currency"`
 	} `json:"premium"`
 	Amount int64 `json:"amount"`
 
@@ -122,6 +126,17 @@ func (h *PeerOTCInitiateHandler) CreatePeerNegotiation(c *gin.Context) {
 	}
 	if req.Premium.Currency == "" {
 		apiError(c, http.StatusBadRequest, ErrValidation, "premium.currency is required")
+		return
+	}
+	// Premium and strike (price_per_unit) must be positive — a negative/zero
+	// value would otherwise create a negotiation that only fails at accept/exercise
+	// time when the money leg is rejected. Validate up front.
+	if req.Premium.Amount.Decimal.Sign() <= 0 {
+		apiError(c, http.StatusBadRequest, ErrValidation, "premium.amount must be a positive number")
+		return
+	}
+	if req.PricePerUnit.Amount.Decimal.Sign() <= 0 {
+		apiError(c, http.StatusBadRequest, ErrValidation, "price_per_unit.amount must be a positive number")
 		return
 	}
 	if req.SellerBankCode == h.ownBankCode {
@@ -299,9 +314,9 @@ func (h *PeerOTCInitiateHandler) CreatePeerNegotiation(c *gin.Context) {
 		mirrorOffer := &stockpb.PeerOtcOffer{
 			Ticker:             req.Stock.Ticker,
 			Amount:             req.Amount,
-			PricePerStock:      req.PricePerUnit.Amount,
+			PricePerStock:      req.PricePerUnit.Amount.Decimal.String(),
 			Currency:           req.PricePerUnit.Currency,
-			Premium:            req.Premium.Amount,
+			Premium:            req.Premium.Amount.Decimal.String(),
 			PremiumCurrency:    req.Premium.Currency,
 			SettlementDate:     req.SettlementDate,
 			LastModifiedBy:     &stockpb.PeerForeignBankId{RoutingNumber: h.ownRouting, Id: buyerID},
@@ -540,12 +555,14 @@ func parseCounterOfferBody(body []byte) (*stockpb.PeerOtcOffer, bool) {
 		} `json:"stock"`
 		Amount       int64 `json:"amount"`
 		PricePerUnit struct {
-			Amount   string `json:"amount"`
-			Currency string `json:"currency"`
+			// SI-TX §2.5 — JSON number; DecimalNumber tolerates a quoted
+			// string from callers/peers that still quote.
+			Amount   sitx.DecimalNumber `json:"amount"`
+			Currency string             `json:"currency"`
 		} `json:"pricePerUnit"`
 		Premium struct {
-			Amount   string `json:"amount"`
-			Currency string `json:"currency"`
+			Amount   sitx.DecimalNumber `json:"amount"`
+			Currency string             `json:"currency"`
 		} `json:"premium"`
 		SettlementDate string `json:"settlementDate"`
 		LastModifiedBy struct {
@@ -562,9 +579,9 @@ func parseCounterOfferBody(body []byte) (*stockpb.PeerOtcOffer, bool) {
 	return &stockpb.PeerOtcOffer{
 		Ticker:          w.Stock.Ticker,
 		Amount:          w.Amount,
-		PricePerStock:   w.PricePerUnit.Amount,
+		PricePerStock:   w.PricePerUnit.Amount.Decimal.String(),
 		Currency:        w.PricePerUnit.Currency,
-		Premium:         w.Premium.Amount,
+		Premium:         w.Premium.Amount.Decimal.String(),
 		PremiumCurrency: w.Premium.Currency,
 		SettlementDate:  w.SettlementDate,
 		LastModifiedBy:  &stockpb.PeerForeignBankId{RoutingNumber: w.LastModifiedBy.RoutingNumber, Id: w.LastModifiedBy.ID},

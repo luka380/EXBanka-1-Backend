@@ -40,10 +40,14 @@ func TestPeerUser_OwnEmployee_Found(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status: %d body=%s", w.Code, w.Body.String())
 	}
+	// §3.7 response shape: {bankDisplayName, displayName}.
 	var got map[string]any
 	_ = json.Unmarshal(w.Body.Bytes(), &got)
-	if got["firstName"] != "Ana" {
-		t.Errorf("got %+v", got)
+	if got["bankDisplayName"] != testBankDisplayName {
+		t.Errorf("bankDisplayName: got %v, want %q (body=%+v)", got["bankDisplayName"], testBankDisplayName, got)
+	}
+	if got["displayName"] != "Ana An" {
+		t.Errorf("displayName: got %v, want %q (body=%+v)", got["displayName"], "Ana An", got)
 	}
 }
 

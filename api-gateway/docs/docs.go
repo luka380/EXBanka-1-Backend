@@ -14242,7 +14242,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Used by the listing's poster to see all incoming bids. Returns chains in any status (active + terminal).",
+                "description": "Used by the listing's poster to see all incoming bids. Returns chains in any status (active + terminal). Restricted to the listing's poster or an employee holding otc.read.all; competing bidders receive 403 and see only their own chain via GET /api/v3/me/otc/options/negotiations.",
                 "produces": [
                     "application/json"
                 ],
@@ -14262,6 +14262,62 @@ const docTemplate = `{
                 "responses": {
                     "200": {
                         "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "caller is neither the poster nor a permission-gated employee",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v3/otc/options/{id}/timeline": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns the offer plus every negotiation chain's revisions merged into one chronological stream (oldest first). Each entry carries its chain's negotiation_id and bidder identity so the frontend can render a single timeline or regroup into per-bidder swimlanes. Restricted to the listing's poster or an employee holding otc.read.all; competing bidders receive 403.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "OTCOptions"
+                ],
+                "summary": "Cross-chain interaction timeline for an OTC option offer",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "parent OTCOffer listing id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "caller is neither the poster nor a permission-gated employee",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "offer not found",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -15817,67 +15873,7 @@ const docTemplate = `{
             }
         },
         "handler.initiateNegotiationRequest": {
-            "type": "object",
-            "properties": {
-                "amount": {
-                    "type": "integer"
-                },
-                "bidder_account_id": {
-                    "description": "Fix #1 (2026-05-16) — the buyer's bank account that pays the\npremium on accept. REQUIRED. Gateway validates the account belongs\nto the caller and its currency matches premium.currency (no\ncross-bank FX in SI-TX yet). The resolved account number is\nthreaded through to the seller's bank in the OtcOffer wire payload\nas buyerAccountNumber so the seller's bank's posting executor\nuses this exact account (no \"first active USD account\" guesswork).",
-                    "type": "integer"
-                },
-                "parent_offer_id": {
-                    "description": "Phase 10 — optional cross-bank cascade-cancel grouping key. When\nthe bidder discovered this listing via /public-option-offers,\nthey pass the listing's (routingNumber, id) here so the seller's\nbank can group sibling chains and cascade-cancel them on accept.\nFree-form bidders (no discovery) leave this unset; they're never\npart of a sibling group.",
-                    "type": "object",
-                    "properties": {
-                        "id": {
-                            "type": "string"
-                        },
-                        "routingNumber": {
-                            "type": "integer"
-                        }
-                    }
-                },
-                "premium": {
-                    "type": "object",
-                    "properties": {
-                        "amount": {
-                            "type": "string"
-                        },
-                        "currency": {
-                            "type": "string"
-                        }
-                    }
-                },
-                "price_per_unit": {
-                    "type": "object",
-                    "properties": {
-                        "amount": {
-                            "type": "string"
-                        },
-                        "currency": {
-                            "type": "string"
-                        }
-                    }
-                },
-                "seller_bank_code": {
-                    "type": "string"
-                },
-                "seller_id": {
-                    "type": "string"
-                },
-                "settlement_date": {
-                    "type": "string"
-                },
-                "stock": {
-                    "type": "object",
-                    "properties": {
-                        "ticker": {
-                            "type": "string"
-                        }
-                    }
-                }
-            }
+            "type": "object"
         },
         "handler.investRequest": {
             "type": "object",
@@ -15961,60 +15957,8 @@ const docTemplate = `{
                 }
             }
         },
-        "handler.peerForeignBankIdReq": {
-            "type": "object",
-            "properties": {
-                "id": {
-                    "type": "string"
-                },
-                "routingNumber": {
-                    "type": "integer"
-                }
-            }
-        },
-        "handler.peerMonetaryValueReq": {
-            "type": "object",
-            "properties": {
-                "amount": {
-                    "type": "string"
-                },
-                "currency": {
-                    "type": "string"
-                }
-            }
-        },
         "handler.peerOtcOfferReq": {
-            "type": "object",
-            "properties": {
-                "amount": {
-                    "type": "integer"
-                },
-                "buyerAccountNumber": {
-                    "description": "Fix #1 (2026-05-16) — the buyer's 18-digit account number,\noptionally pinned by the buyer's bank so the seller's bank uses\nthis exact account for the buyer-debit posting on accept.\nEmpty string ⇒ legacy path (participant-id resolution).",
-                    "type": "string"
-                },
-                "buyerId": {
-                    "$ref": "#/definitions/handler.peerForeignBankIdReq"
-                },
-                "lastModifiedBy": {
-                    "$ref": "#/definitions/handler.peerForeignBankIdReq"
-                },
-                "premium": {
-                    "$ref": "#/definitions/handler.peerMonetaryValueReq"
-                },
-                "pricePerUnit": {
-                    "$ref": "#/definitions/handler.peerMonetaryValueReq"
-                },
-                "sellerId": {
-                    "$ref": "#/definitions/handler.peerForeignBankIdReq"
-                },
-                "settlementDate": {
-                    "type": "string"
-                },
-                "stock": {
-                    "$ref": "#/definitions/handler.peerStockDescriptionReq"
-                }
-            }
+            "type": "object"
         },
         "handler.peerStockDescriptionReq": {
             "type": "object",

@@ -87,6 +87,14 @@ func TestPeerOTCInitiate_Success(t *testing.T) {
 		var got map[string]any
 		require.NoError(t, json.Unmarshal(body, &got))
 		require.Equal(t, "AAPL", got["stock"].(map[string]any)["ticker"])
+		// SI-TX §2.5 — outbound monetary amounts MUST be JSON numbers
+		// even though the local client supplied them as quoted strings.
+		require.NotContains(t, string(body), `"amount":"180"`, "pricePerUnit.amount must not be quoted")
+		require.NotContains(t, string(body), `"amount":"700"`, "premium.amount must not be quoted")
+		_, ppuNum := got["pricePerUnit"].(map[string]any)["amount"].(float64)
+		require.True(t, ppuNum, "pricePerUnit.amount must decode as a JSON number")
+		_, premNum := got["premium"].(map[string]any)["amount"].(float64)
+		require.True(t, premNum, "premium.amount must decode as a JSON number")
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"routingNumber":222,"id":"neg-7"}`))
 	}))

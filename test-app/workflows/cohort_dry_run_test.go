@@ -59,7 +59,11 @@ func TestCohortDryRun(t *testing.T) {
 			switch head.MessageType {
 			case "NEW_TX":
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(`{"type":"YES","transactionId":"mock-tx-1"}`))
+				// SI-TX TransactionVote is {"vote":"YES"} (spec §2.12.1); the
+				// vote carries no transactionId. The old {"type":"YES"} shape
+				// would parse to an empty vote and the gateway would treat it
+				// as not-YES.
+				_, _ = w.Write([]byte(`{"vote":"YES"}`))
 			case "COMMIT_TX", "ROLLBACK_TX":
 				w.WriteHeader(http.StatusNoContent)
 			default:

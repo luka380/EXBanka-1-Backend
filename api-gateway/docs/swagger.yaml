@@ -648,58 +648,6 @@ definitions:
         type: integer
     type: object
   handler.initiateNegotiationRequest:
-    properties:
-      amount:
-        type: integer
-      bidder_account_id:
-        description: |-
-          Fix #1 (2026-05-16) — the buyer's bank account that pays the
-          premium on accept. REQUIRED. Gateway validates the account belongs
-          to the caller and its currency matches premium.currency (no
-          cross-bank FX in SI-TX yet). The resolved account number is
-          threaded through to the seller's bank in the OtcOffer wire payload
-          as buyerAccountNumber so the seller's bank's posting executor
-          uses this exact account (no "first active USD account" guesswork).
-        type: integer
-      parent_offer_id:
-        description: |-
-          Phase 10 — optional cross-bank cascade-cancel grouping key. When
-          the bidder discovered this listing via /public-option-offers,
-          they pass the listing's (routingNumber, id) here so the seller's
-          bank can group sibling chains and cascade-cancel them on accept.
-          Free-form bidders (no discovery) leave this unset; they're never
-          part of a sibling group.
-        properties:
-          id:
-            type: string
-          routingNumber:
-            type: integer
-        type: object
-      premium:
-        properties:
-          amount:
-            type: string
-          currency:
-            type: string
-        type: object
-      price_per_unit:
-        properties:
-          amount:
-            type: string
-          currency:
-            type: string
-        type: object
-      seller_bank_code:
-        type: string
-      seller_id:
-        type: string
-      settlement_date:
-        type: string
-      stock:
-        properties:
-          ticker:
-            type: string
-        type: object
     type: object
   handler.investRequest:
     properties:
@@ -754,45 +702,7 @@ definitions:
       reason:
         type: string
     type: object
-  handler.peerForeignBankIdReq:
-    properties:
-      id:
-        type: string
-      routingNumber:
-        type: integer
-    type: object
-  handler.peerMonetaryValueReq:
-    properties:
-      amount:
-        type: string
-      currency:
-        type: string
-    type: object
   handler.peerOtcOfferReq:
-    properties:
-      amount:
-        type: integer
-      buyerAccountNumber:
-        description: |-
-          Fix #1 (2026-05-16) — the buyer's 18-digit account number,
-          optionally pinned by the buyer's bank so the seller's bank uses
-          this exact account for the buyer-debit posting on accept.
-          Empty string ⇒ legacy path (participant-id resolution).
-        type: string
-      buyerId:
-        $ref: '#/definitions/handler.peerForeignBankIdReq'
-      lastModifiedBy:
-        $ref: '#/definitions/handler.peerForeignBankIdReq'
-      premium:
-        $ref: '#/definitions/handler.peerMonetaryValueReq'
-      pricePerUnit:
-        $ref: '#/definitions/handler.peerMonetaryValueReq'
-      sellerId:
-        $ref: '#/definitions/handler.peerForeignBankIdReq'
-      settlementDate:
-        type: string
-      stock:
-        $ref: '#/definitions/handler.peerStockDescriptionReq'
     type: object
   handler.peerStockDescriptionReq:
     properties:
@@ -10591,7 +10501,9 @@ paths:
   /api/v3/otc/options/{id}/negotiations:
     get:
       description: Used by the listing's poster to see all incoming bids. Returns
-        chains in any status (active + terminal).
+        chains in any status (active + terminal). Restricted to the listing's poster
+        or an employee holding otc.read.all; competing bidders receive 403 and see
+        only their own chain via GET /api/v3/me/otc/options/negotiations.
       parameters:
       - description: parent OTCOffer listing id
         in: path
@@ -10606,9 +10518,50 @@ paths:
           schema:
             additionalProperties: true
             type: object
+        "403":
+          description: caller is neither the poster nor a permission-gated employee
+          schema:
+            additionalProperties: true
+            type: object
       security:
       - BearerAuth: []
       summary: List every negotiation chain against a given OTC option listing
+      tags:
+      - OTCOptions
+  /api/v3/otc/options/{id}/timeline:
+    get:
+      description: Returns the offer plus every negotiation chain's revisions merged
+        into one chronological stream (oldest first). Each entry carries its chain's
+        negotiation_id and bidder identity so the frontend can render a single timeline
+        or regroup into per-bidder swimlanes. Restricted to the listing's poster or
+        an employee holding otc.read.all; competing bidders receive 403.
+      parameters:
+      - description: parent OTCOffer listing id
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: caller is neither the poster nor a permission-gated employee
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: offer not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Cross-chain interaction timeline for an OTC option offer
       tags:
       - OTCOptions
   /api/v3/otc/stocks/{id}/sell:

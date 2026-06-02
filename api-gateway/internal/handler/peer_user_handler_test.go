@@ -21,10 +21,14 @@ import (
 func setupPeerUserRouter(cc clientpb.ClientServiceClient, uc userpb.UserServiceClient, ownRouting int64) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	h := handler.NewPeerUserHandler(cc, uc, ownRouting)
+	h := handler.NewPeerUserHandler(cc, uc, ownRouting, testBankDisplayName)
 	r.GET("/user/:rid/:id", h.GetUser)
 	return r
 }
+
+// testBankDisplayName is the configured OWN_BANK_NAME used in the
+// peer-user tests; the §3.7 response must echo it as bankDisplayName.
+const testBankDisplayName = "EXBanka Test"
 
 func TestPeerUser_OwnClient_Found(t *testing.T) {
 	cc := &stubClientClient{
@@ -43,10 +47,14 @@ func TestPeerUser_OwnClient_Found(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status: %d body=%s", w.Code, w.Body.String())
 	}
+	// §3.7 response shape: {bankDisplayName, displayName}.
 	var got map[string]any
 	_ = json.Unmarshal(w.Body.Bytes(), &got)
-	if got["firstName"] != "Marko" {
-		t.Errorf("got %+v", got)
+	if got["bankDisplayName"] != testBankDisplayName {
+		t.Errorf("bankDisplayName: got %v, want %q (body=%+v)", got["bankDisplayName"], testBankDisplayName, got)
+	}
+	if got["displayName"] != "Marko Marković" {
+		t.Errorf("displayName: got %v, want %q (body=%+v)", got["displayName"], "Marko Marković", got)
 	}
 }
 

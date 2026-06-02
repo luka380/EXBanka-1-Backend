@@ -270,18 +270,30 @@ message SiTxIdempotenceKey {
   string locally_generated_key = 2;
 }
 
+message SiTxForeignBankId {
+  int64 routing_number = 1;
+  string id = 2;
+}
+
 message SiTxPosting {
   int64 routing_number = 1;
   string account_id = 2;
   string asset_id = 3;
-  string amount = 4; // decimal as string
-  string direction = 5; // DEBIT | CREDIT
+  string amount = 4;     // decimal as string (magnitude, non-negative)
+  string direction = 5;  // DEBIT | CREDIT (internal effect)
+  string account_type = 6; // PERSON | ACCOUNT | OPTION
+  string asset_type = 7;   // MONAS | STOCK | OPTION
 }
 
 message SiTxNewTxRequest {
   SiTxIdempotenceKey idempotence_key = 1;
   string peer_bank_code = 2;
   repeated SiTxPosting postings = 3;
+  SiTxForeignBankId transaction_id = 4;
+  string message = 5;
+  string payment_code = 6;
+  string payment_purpose = 7;
+  string call_number = 8;
 }
 
 message SiTxNoVote {
@@ -294,18 +306,19 @@ message SiTxVoteResponse {
   string type = 1; // YES | NO
   repeated SiTxNoVote no_votes = 2;
   string transaction_id = 3; // opaque receiver-side id, set on YES
+  bool pending = 4; // receiver still processing (HTTP 202); type/no_votes unset
 }
 
 message SiTxCommitRequest {
   SiTxIdempotenceKey idempotence_key = 1;
   string peer_bank_code = 2;
-  string transaction_id = 3;
+  SiTxForeignBankId transaction_id = 3;
 }
 
 message SiTxRollbackRequest {
   SiTxIdempotenceKey idempotence_key = 1;
   string peer_bank_code = 2;
-  string transaction_id = 3;
+  SiTxForeignBankId transaction_id = 3;
 }
 
 message SiTxAckResponse {

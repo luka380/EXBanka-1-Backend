@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	accountpb "github.com/exbanka/contract/accountpb"
 	contractsitx "github.com/exbanka/contract/sitx"
@@ -64,6 +65,12 @@ func (handlerHoldingChecker) ReserveSellerSharesForNewTx(ctx context.Context, in
 func (handlerHoldingChecker) ReleaseSellerSharesForNewTx(ctx context.Context, in *stockpb.ReleaseSellerSharesRequest, opts ...grpc.CallOption) (*stockpb.ReleaseSellerSharesResponse, error) {
 	return &stockpb.ReleaseSellerSharesResponse{}, nil
 }
+func (handlerHoldingChecker) ValidatePeerOptionMoneyLeg(ctx context.Context, in *stockpb.ValidatePeerOptionMoneyLegRequest, opts ...grpc.CallOption) (*stockpb.ValidatePeerOptionMoneyLegResponse, error) {
+	return &stockpb.ValidatePeerOptionMoneyLegResponse{Ok: true}, nil
+}
+func (handlerHoldingChecker) LookupPeerOptionContract(ctx context.Context, in *stockpb.LookupPeerOptionContractRequest, opts ...grpc.CallOption) (*stockpb.LookupPeerOptionContractResponse, error) {
+	return &stockpb.LookupPeerOptionContractResponse{Found: false}, nil
+}
 
 // TestHandleNewTx_MissingIdempotenceKey_400 verifies the missing-key
 // validation branch.
@@ -95,6 +102,7 @@ func TestHandleCommitTx_MissingKey_400(t *testing.T) {
 	h, _, _ := newPeerTxHandler(t)
 	_, err := h.HandleCommitTx(context.Background(), &transactionpb.SiTxCommitRequest{
 		IdempotenceKey: &transactionpb.SiTxIdempotenceKey{RoutingNumber: 222, LocallyGeneratedKey: ""},
+		TransactionId:  &transactionpb.SiTxForeignBankId{RoutingNumber: 222, Id: ""},
 		PeerBankCode:   "",
 	})
 	if err == nil || status.Code(err) != codes.InvalidArgument {
@@ -108,6 +116,7 @@ func TestHandleCommitTx_NoNewTxRecord_404(t *testing.T) {
 	h, _, _ := newPeerTxHandler(t)
 	_, err := h.HandleCommitTx(context.Background(), &transactionpb.SiTxCommitRequest{
 		IdempotenceKey: &transactionpb.SiTxIdempotenceKey{RoutingNumber: 222, LocallyGeneratedKey: "ghost"},
+		TransactionId:  &transactionpb.SiTxForeignBankId{RoutingNumber: 222, Id: "ghost"},
 		PeerBankCode:   "222",
 	})
 	if err == nil || status.Code(err) != codes.NotFound {
@@ -124,9 +133,10 @@ func TestHandleCommitTx_AfterNoVote_FailedPrecondition(t *testing.T) {
 	_, err := h.HandleNewTx(context.Background(), &transactionpb.SiTxNewTxRequest{
 		IdempotenceKey: &transactionpb.SiTxIdempotenceKey{RoutingNumber: 222, LocallyGeneratedKey: "no-vote"},
 		PeerBankCode:   "222",
+		TransactionId:  &transactionpb.SiTxForeignBankId{RoutingNumber: 222, Id: "no-vote"},
 		Postings: []*transactionpb.SiTxPosting{
-			{RoutingNumber: 222, AccountId: "A", AssetId: "RSD", Amount: "100", Direction: "DEBIT"},
-			{RoutingNumber: 111, AccountId: "B", AssetId: "RSD", Amount: "50", Direction: "CREDIT"},
+			{RoutingNumber: 222, AccountType: "ACCOUNT", AccountId: "A", AssetType: "MONAS", AssetId: "RSD", Amount: "100", Direction: "DEBIT"},
+			{RoutingNumber: 111, AccountType: "ACCOUNT", AccountId: "B", AssetType: "MONAS", AssetId: "RSD", Amount: "50", Direction: "CREDIT"},
 		},
 	})
 	if err != nil {
@@ -134,6 +144,7 @@ func TestHandleCommitTx_AfterNoVote_FailedPrecondition(t *testing.T) {
 	}
 	_, err = h.HandleCommitTx(context.Background(), &transactionpb.SiTxCommitRequest{
 		IdempotenceKey: &transactionpb.SiTxIdempotenceKey{RoutingNumber: 222, LocallyGeneratedKey: "no-vote"},
+		TransactionId:  &transactionpb.SiTxForeignBankId{RoutingNumber: 222, Id: "no-vote"},
 		PeerBankCode:   "222",
 	})
 	if err == nil || status.Code(err) != codes.FailedPrecondition {
@@ -152,9 +163,10 @@ func TestHandleCommitTx_NotFoundOnAccount_Benign(t *testing.T) {
 	_, err := h.HandleNewTx(context.Background(), &transactionpb.SiTxNewTxRequest{
 		IdempotenceKey: &transactionpb.SiTxIdempotenceKey{RoutingNumber: 222, LocallyGeneratedKey: "k-nf"},
 		PeerBankCode:   "222",
+		TransactionId:  &transactionpb.SiTxForeignBankId{RoutingNumber: 222, Id: "k-nf"},
 		Postings: []*transactionpb.SiTxPosting{
-			{RoutingNumber: 222, AccountId: "222000001", AssetId: "RSD", Amount: "100", Direction: "DEBIT"},
-			{RoutingNumber: 111, AccountId: "111000001", AssetId: "RSD", Amount: "100", Direction: "CREDIT"},
+			{RoutingNumber: 222, AccountType: "ACCOUNT", AccountId: "222000001", AssetType: "MONAS", AssetId: "RSD", Amount: "100", Direction: "DEBIT"},
+			{RoutingNumber: 111, AccountType: "ACCOUNT", AccountId: "111000001", AssetType: "MONAS", AssetId: "RSD", Amount: "100", Direction: "CREDIT"},
 		},
 	})
 	if err != nil {
@@ -162,6 +174,7 @@ func TestHandleCommitTx_NotFoundOnAccount_Benign(t *testing.T) {
 	}
 	if _, err := h.HandleCommitTx(context.Background(), &transactionpb.SiTxCommitRequest{
 		IdempotenceKey: &transactionpb.SiTxIdempotenceKey{RoutingNumber: 222, LocallyGeneratedKey: "k-nf"},
+		TransactionId:  &transactionpb.SiTxForeignBankId{RoutingNumber: 222, Id: "k-nf"},
 		PeerBankCode:   "222",
 	}); err != nil {
 		t.Errorf("expected nil err on NotFound from account, got %v", err)
@@ -178,13 +191,15 @@ func TestHandleCommitTx_AccountInternalError_500(t *testing.T) {
 	_, _ = h.HandleNewTx(context.Background(), &transactionpb.SiTxNewTxRequest{
 		IdempotenceKey: &transactionpb.SiTxIdempotenceKey{RoutingNumber: 222, LocallyGeneratedKey: "k-int"},
 		PeerBankCode:   "222",
+		TransactionId:  &transactionpb.SiTxForeignBankId{RoutingNumber: 222, Id: "k-int"},
 		Postings: []*transactionpb.SiTxPosting{
-			{RoutingNumber: 222, AccountId: "222000001", AssetId: "RSD", Amount: "100", Direction: "DEBIT"},
-			{RoutingNumber: 111, AccountId: "111000001", AssetId: "RSD", Amount: "100", Direction: "CREDIT"},
+			{RoutingNumber: 222, AccountType: "ACCOUNT", AccountId: "222000001", AssetType: "MONAS", AssetId: "RSD", Amount: "100", Direction: "DEBIT"},
+			{RoutingNumber: 111, AccountType: "ACCOUNT", AccountId: "111000001", AssetType: "MONAS", AssetId: "RSD", Amount: "100", Direction: "CREDIT"},
 		},
 	})
 	_, err := h.HandleCommitTx(context.Background(), &transactionpb.SiTxCommitRequest{
 		IdempotenceKey: &transactionpb.SiTxIdempotenceKey{RoutingNumber: 222, LocallyGeneratedKey: "k-int"},
+		TransactionId:  &transactionpb.SiTxForeignBankId{RoutingNumber: 222, Id: "k-int"},
 		PeerBankCode:   "222",
 	})
 	if err == nil || status.Code(err) != codes.Internal {
@@ -197,6 +212,7 @@ func TestHandleRollbackTx_MissingKey_400(t *testing.T) {
 	h, _, _ := newPeerTxHandler(t)
 	_, err := h.HandleRollbackTx(context.Background(), &transactionpb.SiTxRollbackRequest{
 		IdempotenceKey: &transactionpb.SiTxIdempotenceKey{RoutingNumber: 222, LocallyGeneratedKey: ""},
+		TransactionId:  &transactionpb.SiTxForeignBankId{RoutingNumber: 222, Id: ""},
 		PeerBankCode:   "",
 	})
 	if err == nil || status.Code(err) != codes.InvalidArgument {
@@ -210,6 +226,7 @@ func TestHandleRollbackTx_NoRecord_Idempotent_NoError(t *testing.T) {
 	h, _, _ := newPeerTxHandler(t)
 	_, err := h.HandleRollbackTx(context.Background(), &transactionpb.SiTxRollbackRequest{
 		IdempotenceKey: &transactionpb.SiTxIdempotenceKey{RoutingNumber: 222, LocallyGeneratedKey: "ghost"},
+		TransactionId:  &transactionpb.SiTxForeignBankId{RoutingNumber: 222, Id: "ghost"},
 		PeerBankCode:   "222",
 	})
 	if err != nil {
@@ -236,9 +253,10 @@ func TestHandleRollbackTx_DebitHoldsReleased(t *testing.T) {
 	_, err := h.HandleNewTx(context.Background(), &transactionpb.SiTxNewTxRequest{
 		IdempotenceKey: &transactionpb.SiTxIdempotenceKey{RoutingNumber: 222, LocallyGeneratedKey: "k-rb"},
 		PeerBankCode:   "222",
+		TransactionId:  &transactionpb.SiTxForeignBankId{RoutingNumber: 222, Id: "k-rb"},
 		Postings: []*transactionpb.SiTxPosting{
-			{RoutingNumber: 111, AccountId: "111-A", AssetId: "RSD", Amount: "75", Direction: "DEBIT"},
-			{RoutingNumber: 222, AccountId: "222-B", AssetId: "RSD", Amount: "75", Direction: "CREDIT"},
+			{RoutingNumber: 111, AccountType: "ACCOUNT", AccountId: "111-A", AssetType: "MONAS", AssetId: "RSD", Amount: "75", Direction: "DEBIT"},
+			{RoutingNumber: 222, AccountType: "ACCOUNT", AccountId: "222-B", AssetType: "MONAS", AssetId: "RSD", Amount: "75", Direction: "CREDIT"},
 		},
 	})
 	if err != nil {
@@ -246,6 +264,7 @@ func TestHandleRollbackTx_DebitHoldsReleased(t *testing.T) {
 	}
 	if _, err := h.HandleRollbackTx(context.Background(), &transactionpb.SiTxRollbackRequest{
 		IdempotenceKey: &transactionpb.SiTxIdempotenceKey{RoutingNumber: 222, LocallyGeneratedKey: "k-rb"},
+		TransactionId:  &transactionpb.SiTxForeignBankId{RoutingNumber: 222, Id: "k-rb"},
 		PeerBankCode:   "222",
 	}); err != nil {
 		t.Fatalf("rollback: %v", err)
@@ -269,13 +288,15 @@ func TestHandleRollbackTx_ReleaseInternalError_500(t *testing.T) {
 	_, _ = h.HandleNewTx(context.Background(), &transactionpb.SiTxNewTxRequest{
 		IdempotenceKey: &transactionpb.SiTxIdempotenceKey{RoutingNumber: 222, LocallyGeneratedKey: "k-rb-int"},
 		PeerBankCode:   "222",
+		TransactionId:  &transactionpb.SiTxForeignBankId{RoutingNumber: 222, Id: "k-rb-int"},
 		Postings: []*transactionpb.SiTxPosting{
-			{RoutingNumber: 222, AccountId: "222000001", AssetId: "RSD", Amount: "100", Direction: "DEBIT"},
-			{RoutingNumber: 111, AccountId: "111000001", AssetId: "RSD", Amount: "100", Direction: "CREDIT"},
+			{RoutingNumber: 222, AccountType: "ACCOUNT", AccountId: "222000001", AssetType: "MONAS", AssetId: "RSD", Amount: "100", Direction: "DEBIT"},
+			{RoutingNumber: 111, AccountType: "ACCOUNT", AccountId: "111000001", AssetType: "MONAS", AssetId: "RSD", Amount: "100", Direction: "CREDIT"},
 		},
 	})
 	_, err := h.HandleRollbackTx(context.Background(), &transactionpb.SiTxRollbackRequest{
 		IdempotenceKey: &transactionpb.SiTxIdempotenceKey{RoutingNumber: 222, LocallyGeneratedKey: "k-rb-int"},
+		TransactionId:  &transactionpb.SiTxForeignBankId{RoutingNumber: 222, Id: "k-rb-int"},
 		PeerBankCode:   "222",
 	})
 	if err == nil || status.Code(err) != codes.Internal {
@@ -293,7 +314,7 @@ func TestHandleCommitTx_MaterialisesOptions(t *testing.T) {
 	stub := &stubAccountForHandler{}
 	idemRepo := repository.NewPeerIdempotenceRepository(db)
 	exec := sitx.NewPostingExecutor(stub, 111)
-	h := handler.NewPeerTxGRPCHandler(idemRepo, exec, stub, nil, nil, nil, 111)
+	h := handler.NewPeerTxGRPCHandler(idemRepo, exec, stub, nil, nil, nil, 111, 5*time.Second)
 
 	rec := &stubOptionRecorder{}
 	h.SetOptionRecorder(rec)
@@ -304,14 +325,15 @@ func TestHandleCommitTx_MaterialisesOptions(t *testing.T) {
 	_, err := h.HandleNewTx(context.Background(), &transactionpb.SiTxNewTxRequest{
 		IdempotenceKey: &transactionpb.SiTxIdempotenceKey{RoutingNumber: 222, LocallyGeneratedKey: "opt-1"},
 		PeerBankCode:   "222",
+		TransactionId:  &transactionpb.SiTxForeignBankId{RoutingNumber: 222, Id: "opt-1"},
 		Postings: []*transactionpb.SiTxPosting{
 			// Money legs — concrete account numbers so they bypass
 			// participant-id resolution. Both balance per assetId.
-			{RoutingNumber: 111, AccountId: "111-pay", AssetId: "RSD", Amount: "100", Direction: "DEBIT"},
-			{RoutingNumber: 222, AccountId: "222-pay", AssetId: "RSD", Amount: "100", Direction: "CREDIT"},
+			{RoutingNumber: 111, AccountType: "ACCOUNT", AccountId: "111-pay", AssetType: "MONAS", AssetId: "RSD", Amount: "100", Direction: "DEBIT"},
+			{RoutingNumber: 222, AccountType: "ACCOUNT", AccountId: "222-pay", AssetType: "MONAS", AssetId: "RSD", Amount: "100", Direction: "CREDIT"},
 			// Option legs — the executor on routing 111 is the buyer (CREDIT).
-			{RoutingNumber: 222, AccountId: "client-2", AssetId: optDesc, Amount: "1", Direction: "DEBIT"},
-			{RoutingNumber: 111, AccountId: "client-1", AssetId: optDesc, Amount: "1", Direction: "CREDIT"},
+			{RoutingNumber: 222, AccountType: "PERSON", AccountId: "client-2", AssetType: "OPTION", AssetId: optDesc, Amount: "1", Direction: "DEBIT"},
+			{RoutingNumber: 111, AccountType: "PERSON", AccountId: "client-1", AssetType: "OPTION", AssetId: optDesc, Amount: "1", Direction: "CREDIT"},
 		},
 	})
 	if err != nil {
@@ -319,6 +341,7 @@ func TestHandleCommitTx_MaterialisesOptions(t *testing.T) {
 	}
 	if _, err := h.HandleCommitTx(context.Background(), &transactionpb.SiTxCommitRequest{
 		IdempotenceKey: &transactionpb.SiTxIdempotenceKey{RoutingNumber: 222, LocallyGeneratedKey: "opt-1"},
+		TransactionId:  &transactionpb.SiTxForeignBankId{RoutingNumber: 222, Id: "opt-1"},
 		PeerBankCode:   "222",
 	}); err != nil {
 		t.Fatalf("COMMIT_TX: %v", err)
@@ -331,6 +354,138 @@ func TestHandleCommitTx_MaterialisesOptions(t *testing.T) {
 	}
 	if rec.calls[0].Intent != "accept" {
 		t.Errorf("intent: %q", rec.calls[0].Intent)
+	}
+}
+
+// exerciseHoldingChecker is a holding checker that reports a found seller-side
+// contract for LookupPeerOptionContract (the seller bank's exercise path).
+type exerciseHoldingChecker struct {
+	handlerHoldingChecker
+	lookup *stockpb.LookupPeerOptionContractResponse
+}
+
+func (e exerciseHoldingChecker) LookupPeerOptionContract(ctx context.Context, in *stockpb.LookupPeerOptionContractRequest, opts ...grpc.CallOption) (*stockpb.LookupPeerOptionContractResponse, error) {
+	if e.lookup != nil {
+		return e.lookup, nil
+	}
+	return &stockpb.LookupPeerOptionContractResponse{Found: false}, nil
+}
+
+// TestHandleCommitTx_ExerciseSeller_RoutesToExerciseSettlement verifies that the
+// seller bank, given the spec exercise pseudo-account NEW_TX, votes YES (crediting
+// the seller's money account + emitting an exercise_seller item) and that COMMIT
+// calls RecordOptionContract with Intent=exercise, Direction=DEBIT — driving the
+// existing recordOptionExercise DEBIT branch (consume reserved shares + mark used).
+func TestHandleCommitTx_ExerciseSeller_RoutesToExerciseSettlement(t *testing.T) {
+	db, _ := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err := db.AutoMigrate(&model.PeerIdempotenceRecord{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	// Seller's money account resolves via ListAccountsByClient("client-3").
+	stub := &stubAccountForHandler{
+		listFn: func(ctx context.Context, in *accountpb.ListAccountsByClientRequest, opts ...grpc.CallOption) (*accountpb.ListAccountsResponse, error) {
+			return &accountpb.ListAccountsResponse{Accounts: []*accountpb.AccountResponse{
+				{AccountNumber: "222000999", CurrencyCode: "RSD", Status: "active"},
+			}}, nil
+		},
+	}
+	idemRepo := repository.NewPeerIdempotenceRepository(db)
+	exec := sitx.NewPostingExecutor(stub, 222) // seller bank
+	exec.SetHoldingChecker(exerciseHoldingChecker{
+		lookup: &stockpb.LookupPeerOptionContractResponse{
+			Found: true, SellerId: "client-3", Ticker: "WMT", StrikePrice: "50",
+			Quantity: 10, Currency: "RSD", SettlementDate: "2999-12-31T00:00:00+02:00", Status: "active",
+		},
+	})
+	h := handler.NewPeerTxGRPCHandler(idemRepo, exec, stub, nil, nil, nil, 222, 5*time.Second)
+	rec := &stubOptionRecorder{}
+	h.SetOptionRecorder(rec)
+
+	// The spec exercise pseudo-account NEW_TX (buyer at 111, seller bank = us 222,
+	// negotiationId {111,"neg-1"}). Strike 50 x 10 = 500.
+	if _, err := h.HandleNewTx(context.Background(), &transactionpb.SiTxNewTxRequest{
+		IdempotenceKey: &transactionpb.SiTxIdempotenceKey{RoutingNumber: 111, LocallyGeneratedKey: "ex-1"},
+		PeerBankCode:   "111",
+		TransactionId:  &transactionpb.SiTxForeignBankId{RoutingNumber: 111, Id: "ex-1"},
+		Postings: []*transactionpb.SiTxPosting{
+			{RoutingNumber: 111, AccountType: "ACCOUNT", AccountId: "111000117810858011", AssetType: "MONAS", AssetId: "RSD", Amount: "500", Direction: "DEBIT"},
+			{RoutingNumber: 111, AccountType: "OPTION", AccountId: "neg-1", AssetType: "MONAS", AssetId: "RSD", Amount: "500", Direction: "CREDIT"},
+			{RoutingNumber: 111, AccountType: "OPTION", AccountId: "neg-1", AssetType: "STOCK", AssetId: "WMT", Amount: "10", Direction: "DEBIT"},
+			{RoutingNumber: 111, AccountType: "PERSON", AccountId: "client-1", AssetType: "STOCK", AssetId: "WMT", Amount: "10", Direction: "CREDIT"},
+		},
+	}); err != nil {
+		t.Fatalf("NEW_TX: %v", err)
+	}
+	if _, err := h.HandleCommitTx(context.Background(), &transactionpb.SiTxCommitRequest{
+		IdempotenceKey: &transactionpb.SiTxIdempotenceKey{RoutingNumber: 111, LocallyGeneratedKey: "ex-1"},
+		TransactionId:  &transactionpb.SiTxForeignBankId{RoutingNumber: 111, Id: "ex-1"},
+		PeerBankCode:   "111",
+	}); err != nil {
+		t.Fatalf("COMMIT_TX: %v", err)
+	}
+	if len(rec.calls) != 1 {
+		t.Fatalf("expected 1 RecordOptionContract call, got %d", len(rec.calls))
+	}
+	if rec.calls[0].GetIntent() != contractsitx.OptionIntentExercise {
+		t.Errorf("intent = %q, want %q", rec.calls[0].GetIntent(), contractsitx.OptionIntentExercise)
+	}
+	if rec.calls[0].GetDirection() != contractsitx.DirectionDebit {
+		t.Errorf("direction = %q, want DEBIT", rec.calls[0].GetDirection())
+	}
+	// The reconstructed option JSON must carry the negotiationId so
+	// recordOptionExercise can look up the seller-side contract.
+	if !strings.Contains(rec.calls[0].GetOptionDescriptionJson(), "neg-1") {
+		t.Errorf("option JSON missing negotiationId: %q", rec.calls[0].GetOptionDescriptionJson())
+	}
+}
+
+// TestHandleCommitTx_ExerciseBuyer_RoutesToExerciseSettlement verifies the buyer
+// bank (sender path) emits an exercise_buyer item that COMMIT routes to
+// RecordOptionContract Intent=exercise Direction=CREDIT.
+func TestHandleCommitTx_ExerciseBuyer_RoutesToExerciseSettlement(t *testing.T) {
+	db, _ := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err := db.AutoMigrate(&model.PeerIdempotenceRecord{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	stub := &stubAccountForHandler{}
+	idemRepo := repository.NewPeerIdempotenceRepository(db)
+	exec := sitx.NewPostingExecutor(stub, 111) // buyer bank
+	// Buyer bank: lookup found=false; peerBankCode == own routing (sender) so the
+	// pseudo legs are SKIPPED, not voted NO.
+	exec.SetHoldingChecker(exerciseHoldingChecker{})
+	h := handler.NewPeerTxGRPCHandler(idemRepo, exec, stub, nil, nil, nil, 111, 5*time.Second)
+	rec := &stubOptionRecorder{}
+	h.SetOptionRecorder(rec)
+
+	// Sender's local reserve uses peerBankCode == own routing ("111").
+	if _, err := h.HandleNewTx(context.Background(), &transactionpb.SiTxNewTxRequest{
+		IdempotenceKey: &transactionpb.SiTxIdempotenceKey{RoutingNumber: 111, LocallyGeneratedKey: "exb-1"},
+		PeerBankCode:   "111",
+		TransactionId:  &transactionpb.SiTxForeignBankId{RoutingNumber: 111, Id: "exb-1"},
+		Postings: []*transactionpb.SiTxPosting{
+			{RoutingNumber: 111, AccountType: "ACCOUNT", AccountId: "111000117810858011", AssetType: "MONAS", AssetId: "RSD", Amount: "500", Direction: "DEBIT"},
+			{RoutingNumber: 111, AccountType: "OPTION", AccountId: "neg-1", AssetType: "MONAS", AssetId: "RSD", Amount: "500", Direction: "CREDIT"},
+			{RoutingNumber: 111, AccountType: "OPTION", AccountId: "neg-1", AssetType: "STOCK", AssetId: "WMT", Amount: "10", Direction: "DEBIT"},
+			{RoutingNumber: 111, AccountType: "PERSON", AccountId: "client-1", AssetType: "STOCK", AssetId: "WMT", Amount: "10", Direction: "CREDIT"},
+		},
+	}); err != nil {
+		t.Fatalf("NEW_TX: %v", err)
+	}
+	if _, err := h.HandleCommitTx(context.Background(), &transactionpb.SiTxCommitRequest{
+		IdempotenceKey: &transactionpb.SiTxIdempotenceKey{RoutingNumber: 111, LocallyGeneratedKey: "exb-1"},
+		TransactionId:  &transactionpb.SiTxForeignBankId{RoutingNumber: 111, Id: "exb-1"},
+		PeerBankCode:   "111",
+	}); err != nil {
+		t.Fatalf("COMMIT_TX: %v", err)
+	}
+	if len(rec.calls) != 1 {
+		t.Fatalf("expected 1 RecordOptionContract call, got %d", len(rec.calls))
+	}
+	if rec.calls[0].GetIntent() != contractsitx.OptionIntentExercise {
+		t.Errorf("intent = %q, want %q", rec.calls[0].GetIntent(), contractsitx.OptionIntentExercise)
+	}
+	if rec.calls[0].GetDirection() != contractsitx.DirectionCredit {
+		t.Errorf("direction = %q, want CREDIT", rec.calls[0].GetDirection())
 	}
 }
 
@@ -349,7 +504,7 @@ func TestHandleRollbackTx_ReleasesSellerShareHold(t *testing.T) {
 	// Executor needs a holding checker so the DEBIT-option leg on our routing
 	// votes YES (reserves) at NEW_TX. ok=true via the stub.
 	exec.SetHoldingChecker(handlerHoldingChecker{})
-	h := handler.NewPeerTxGRPCHandler(idemRepo, exec, stub, nil, nil, nil, 111)
+	h := handler.NewPeerTxGRPCHandler(idemRepo, exec, stub, nil, nil, nil, 111, 5*time.Second)
 	rec := &stubOptionRecorder{}
 	h.SetOptionRecorder(rec)
 
@@ -358,17 +513,19 @@ func TestHandleRollbackTx_ReleasesSellerShareHold(t *testing.T) {
 	if _, err := h.HandleNewTx(context.Background(), &transactionpb.SiTxNewTxRequest{
 		IdempotenceKey: &transactionpb.SiTxIdempotenceKey{RoutingNumber: 222, LocallyGeneratedKey: "rb-shares"},
 		PeerBankCode:   "222",
+		TransactionId:  &transactionpb.SiTxForeignBankId{RoutingNumber: 222, Id: "rb-shares"},
 		Postings: []*transactionpb.SiTxPosting{
-			{RoutingNumber: 222, AccountId: "222-pay", AssetId: "RSD", Amount: "100", Direction: "DEBIT"},
-			{RoutingNumber: 111, AccountId: "111-pay", AssetId: "RSD", Amount: "100", Direction: "CREDIT"},
-			{RoutingNumber: 111, AccountId: "client-7", AssetId: optDesc, Amount: "1", Direction: "DEBIT"},
-			{RoutingNumber: 222, AccountId: "client-8", AssetId: optDesc, Amount: "1", Direction: "CREDIT"},
+			{RoutingNumber: 222, AccountType: "ACCOUNT", AccountId: "222-pay", AssetType: "MONAS", AssetId: "RSD", Amount: "100", Direction: "DEBIT"},
+			{RoutingNumber: 111, AccountType: "ACCOUNT", AccountId: "111-pay", AssetType: "MONAS", AssetId: "RSD", Amount: "100", Direction: "CREDIT"},
+			{RoutingNumber: 111, AccountType: "PERSON", AccountId: "client-7", AssetType: "OPTION", AssetId: optDesc, Amount: "1", Direction: "DEBIT"},
+			{RoutingNumber: 222, AccountType: "PERSON", AccountId: "client-8", AssetType: "OPTION", AssetId: optDesc, Amount: "1", Direction: "CREDIT"},
 		},
 	}); err != nil {
 		t.Fatalf("NEW_TX: %v", err)
 	}
 	if _, err := h.HandleRollbackTx(context.Background(), &transactionpb.SiTxRollbackRequest{
 		IdempotenceKey: &transactionpb.SiTxIdempotenceKey{RoutingNumber: 222, LocallyGeneratedKey: "rb-shares"},
+		TransactionId:  &transactionpb.SiTxForeignBankId{RoutingNumber: 222, Id: "rb-shares"},
 		PeerBankCode:   "222",
 	}); err != nil {
 		t.Fatalf("rollback: %v", err)
@@ -389,22 +546,24 @@ func TestHandleCommitTx_OptionRecorderError_Internal(t *testing.T) {
 	stub := &stubAccountForHandler{}
 	idemRepo := repository.NewPeerIdempotenceRepository(db)
 	exec := sitx.NewPostingExecutor(stub, 111)
-	h := handler.NewPeerTxGRPCHandler(idemRepo, exec, stub, nil, nil, nil, 111)
+	h := handler.NewPeerTxGRPCHandler(idemRepo, exec, stub, nil, nil, nil, 111, 5*time.Second)
 	h.SetOptionRecorder(&stubOptionRecorder{err: errors.New("recorder boom")})
 
 	optDesc := `{"ticker":"AAPL","amount":1}`
 	_, _ = h.HandleNewTx(context.Background(), &transactionpb.SiTxNewTxRequest{
 		IdempotenceKey: &transactionpb.SiTxIdempotenceKey{RoutingNumber: 222, LocallyGeneratedKey: "opt-err"},
 		PeerBankCode:   "222",
+		TransactionId:  &transactionpb.SiTxForeignBankId{RoutingNumber: 222, Id: "opt-err"},
 		Postings: []*transactionpb.SiTxPosting{
-			{RoutingNumber: 111, AccountId: "111-pay", AssetId: "RSD", Amount: "100", Direction: "DEBIT"},
-			{RoutingNumber: 222, AccountId: "222-pay", AssetId: "RSD", Amount: "100", Direction: "CREDIT"},
-			{RoutingNumber: 222, AccountId: "client-2", AssetId: optDesc, Amount: "1", Direction: "DEBIT"},
-			{RoutingNumber: 111, AccountId: "client-1", AssetId: optDesc, Amount: "1", Direction: "CREDIT"},
+			{RoutingNumber: 111, AccountType: "ACCOUNT", AccountId: "111-pay", AssetType: "MONAS", AssetId: "RSD", Amount: "100", Direction: "DEBIT"},
+			{RoutingNumber: 222, AccountType: "ACCOUNT", AccountId: "222-pay", AssetType: "MONAS", AssetId: "RSD", Amount: "100", Direction: "CREDIT"},
+			{RoutingNumber: 222, AccountType: "PERSON", AccountId: "client-2", AssetType: "OPTION", AssetId: optDesc, Amount: "1", Direction: "DEBIT"},
+			{RoutingNumber: 111, AccountType: "PERSON", AccountId: "client-1", AssetType: "OPTION", AssetId: optDesc, Amount: "1", Direction: "CREDIT"},
 		},
 	})
 	_, err := h.HandleCommitTx(context.Background(), &transactionpb.SiTxCommitRequest{
 		IdempotenceKey: &transactionpb.SiTxIdempotenceKey{RoutingNumber: 222, LocallyGeneratedKey: "opt-err"},
+		TransactionId:  &transactionpb.SiTxForeignBankId{RoutingNumber: 222, Id: "opt-err"},
 		PeerBankCode:   "222",
 	})
 	if err == nil || status.Code(err) != codes.Internal {
@@ -440,7 +599,7 @@ func TestInitiateOutboundTx_ShortAccount_400(t *testing.T) {
 	peerLookup := func(ctx context.Context, code string) (*sitx.PeerHTTPTarget, error) {
 		return &sitx.PeerHTTPTarget{BankCode: code, BaseURL: "http://x", APIToken: "t", OwnRouting: 111, RoutingNumber: 222}, nil
 	}
-	h := handler.NewPeerTxGRPCHandler(idemRepo, exec, stub, outRepo, httpClient, handler.PeerLookupFunc(peerLookup), 111)
+	h := handler.NewPeerTxGRPCHandler(idemRepo, exec, stub, outRepo, httpClient, handler.PeerLookupFunc(peerLookup), 111, 5*time.Second)
 	_, err := h.InitiateOutboundTx(context.Background(), &transactionpb.SiTxInitiateRequest{
 		FromAccountNumber: "111-A",
 		ToAccountNumber:   "ab",
@@ -464,7 +623,7 @@ func TestInitiateOutboundTx_PeerNotFound_404(t *testing.T) {
 	peerLookup := func(ctx context.Context, code string) (*sitx.PeerHTTPTarget, error) {
 		return nil, errors.New("not registered")
 	}
-	h := handler.NewPeerTxGRPCHandler(idemRepo, exec, stub, outRepo, httpClient, handler.PeerLookupFunc(peerLookup), 111)
+	h := handler.NewPeerTxGRPCHandler(idemRepo, exec, stub, outRepo, httpClient, handler.PeerLookupFunc(peerLookup), 111, 5*time.Second)
 	_, err := h.InitiateOutboundTx(context.Background(), &transactionpb.SiTxInitiateRequest{
 		FromAccountNumber: "111-A",
 		ToAccountNumber:   "222-B-account",
@@ -488,7 +647,7 @@ func TestInitiateOutboundTx_BadAmount_400(t *testing.T) {
 	peerLookup := func(ctx context.Context, code string) (*sitx.PeerHTTPTarget, error) {
 		return &sitx.PeerHTTPTarget{BankCode: code, BaseURL: "http://x", APIToken: "t", OwnRouting: 111, RoutingNumber: 222}, nil
 	}
-	h := handler.NewPeerTxGRPCHandler(idemRepo, exec, stub, outRepo, httpClient, handler.PeerLookupFunc(peerLookup), 111)
+	h := handler.NewPeerTxGRPCHandler(idemRepo, exec, stub, outRepo, httpClient, handler.PeerLookupFunc(peerLookup), 111, 5*time.Second)
 	_, err := h.InitiateOutboundTx(context.Background(), &transactionpb.SiTxInitiateRequest{
 		FromAccountNumber: "111-A",
 		ToAccountNumber:   "222-B-account",
@@ -511,7 +670,7 @@ func TestInitiateOutboundTx_HappyPath_Yes(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&probe)
 		if probe["messageType"] == contractsitx.MessageTypeNewTx {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"type":"YES"}`))
+			_, _ = w.Write([]byte(`{"vote":"YES"}`))
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -528,7 +687,7 @@ func TestInitiateOutboundTx_HappyPath_Yes(t *testing.T) {
 	peerLookup := func(ctx context.Context, code string) (*sitx.PeerHTTPTarget, error) {
 		return &sitx.PeerHTTPTarget{BankCode: code, BaseURL: srv.URL, APIToken: "t", OwnRouting: 111, RoutingNumber: 222}, nil
 	}
-	h := handler.NewPeerTxGRPCHandler(idemRepo, exec, stub, outRepo, httpClient, handler.PeerLookupFunc(peerLookup), 111)
+	h := handler.NewPeerTxGRPCHandler(idemRepo, exec, stub, outRepo, httpClient, handler.PeerLookupFunc(peerLookup), 111, 5*time.Second)
 
 	resp, err := h.InitiateOutboundTx(context.Background(), &transactionpb.SiTxInitiateRequest{
 		FromAccountNumber: "111-A",
@@ -553,7 +712,7 @@ func TestInitiateOutboundTx_HappyPath_Yes(t *testing.T) {
 func TestInitiateOutboundTx_PeerVotesNO_HoldReleased(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"type":"NO","noVotes":[{"reason":"INSUFFICIENT_ASSET"}]}`))
+		_, _ = w.Write([]byte(`{"vote":"NO","reasons":[{"reason":"INSUFFICIENT_ASSET"}]}`))
 	}))
 	defer srv.Close()
 
@@ -580,7 +739,7 @@ func TestInitiateOutboundTx_PeerVotesNO_HoldReleased(t *testing.T) {
 	peerLookup := func(ctx context.Context, code string) (*sitx.PeerHTTPTarget, error) {
 		return &sitx.PeerHTTPTarget{BankCode: code, BaseURL: srv.URL, APIToken: "t", OwnRouting: 111, RoutingNumber: 222}, nil
 	}
-	h := handler.NewPeerTxGRPCHandler(idemRepo, exec, stub, outRepo, httpClient, handler.PeerLookupFunc(peerLookup), 111)
+	h := handler.NewPeerTxGRPCHandler(idemRepo, exec, stub, outRepo, httpClient, handler.PeerLookupFunc(peerLookup), 111, 5*time.Second)
 
 	if _, err := h.InitiateOutboundTx(context.Background(), &transactionpb.SiTxInitiateRequest{
 		FromAccountNumber: "111-A",
@@ -614,8 +773,8 @@ func TestInitiateOutboundTxWithPostings_NoDeps_Unimplemented(t *testing.T) {
 	_, err := h.InitiateOutboundTxWithPostings(context.Background(), &transactionpb.SiTxInitiateWithPostingsRequest{
 		PeerBankCode: "222",
 		Postings: []*transactionpb.SiTxPosting{
-			{RoutingNumber: 111, AccountId: "111-A", AssetId: "RSD", Amount: "10", Direction: "DEBIT"},
-			{RoutingNumber: 222, AccountId: "222-A", AssetId: "RSD", Amount: "10", Direction: "CREDIT"},
+			{RoutingNumber: 111, AccountType: "ACCOUNT", AccountId: "111-A", AssetType: "MONAS", AssetId: "RSD", Amount: "10", Direction: "DEBIT"},
+			{RoutingNumber: 222, AccountType: "ACCOUNT", AccountId: "222-A", AssetType: "MONAS", AssetId: "RSD", Amount: "10", Direction: "CREDIT"},
 		},
 	})
 	if err == nil || status.Code(err) != codes.Unimplemented {
@@ -635,12 +794,12 @@ func TestInitiateOutboundTxWithPostings_PeerNotFound_404(t *testing.T) {
 	peerLookup := func(ctx context.Context, code string) (*sitx.PeerHTTPTarget, error) {
 		return nil, errors.New("not registered")
 	}
-	h := handler.NewPeerTxGRPCHandler(idemRepo, exec, stub, outRepo, httpClient, handler.PeerLookupFunc(peerLookup), 111)
+	h := handler.NewPeerTxGRPCHandler(idemRepo, exec, stub, outRepo, httpClient, handler.PeerLookupFunc(peerLookup), 111, 5*time.Second)
 	_, err := h.InitiateOutboundTxWithPostings(context.Background(), &transactionpb.SiTxInitiateWithPostingsRequest{
 		PeerBankCode: "222",
 		Postings: []*transactionpb.SiTxPosting{
-			{RoutingNumber: 111, AccountId: "111-A", AssetId: "RSD", Amount: "10", Direction: "DEBIT"},
-			{RoutingNumber: 222, AccountId: "222-A", AssetId: "RSD", Amount: "10", Direction: "CREDIT"},
+			{RoutingNumber: 111, AccountType: "ACCOUNT", AccountId: "111-A", AssetType: "MONAS", AssetId: "RSD", Amount: "10", Direction: "DEBIT"},
+			{RoutingNumber: 222, AccountType: "ACCOUNT", AccountId: "222-A", AssetType: "MONAS", AssetId: "RSD", Amount: "10", Direction: "CREDIT"},
 		},
 	})
 	if err == nil || status.Code(err) != codes.NotFound {

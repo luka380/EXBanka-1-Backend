@@ -353,6 +353,7 @@ func main() {
 		PeerNonces:           peerNonceStore,
 		PeerBanks:            peerBankResolver,
 		OwnBankCode:          cfg.OwnBankCode,
+		OwnBankName:          cfg.OwnBankName,
 		PeerOTCClient:        peerOTCClient,
 		AdminCronClients:     adminCronClients,
 		AuditProducer:        auditProducer,

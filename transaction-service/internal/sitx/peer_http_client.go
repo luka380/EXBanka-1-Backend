@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,13 @@ import (
 
 	contractsitx "github.com/exbanka/contract/sitx"
 )
+
+// ErrRetryLater is the sentinel returned when a peer answers a NEW_TX /
+// COMMIT_TX / ROLLBACK_TX POST with HTTP 202 Accepted — the peer has accepted
+// the message but has not yet produced a final result (vote / ack). The
+// outbound saga must treat this as "leave the row pending and retry later"
+// (via the replay cron / MarkAttempt path), NOT as a NO vote / rollback.
+var ErrRetryLater = errors.New("peer accepted; retry later")
 
 // PeerHTTPTarget is the per-call target descriptor for the outbound HTTP
 // client. Constructed by callers from a peer_banks row.
@@ -45,12 +53,20 @@ func NewPeerHTTPClient(httpClient *http.Client) *PeerHTTPClient {
 }
 
 // PostNewTx sends a NEW_TX envelope and parses the TransactionVote response.
+// SI-TX response handling:
+//   - 200 OK   → parse and return the TransactionVote body.
+//   - 202 Accepted → return ErrRetryLater (peer is deciding; row stays pending).
+//   - 204 No Content → unexpected for NEW_TX (a vote body is required) → error.
+//   - other    → error with the body for diagnostics.
 func (c *PeerHTTPClient) PostNewTx(ctx context.Context, target *PeerHTTPTarget, envelope contractsitx.Message[contractsitx.Transaction]) (*contractsitx.TransactionVote, error) {
 	resp, err := c.postEnvelope(ctx, target, envelope)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusAccepted {
+		return nil, ErrRetryLater
+	}
 	if resp.StatusCode == http.StatusNoContent {
 		return nil, fmt.Errorf("peer returned 204 for NEW_TX (expected vote body)")
 	}
@@ -65,13 +81,19 @@ func (c *PeerHTTPClient) PostNewTx(ctx context.Context, target *PeerHTTPTarget, 
 	return &vote, nil
 }
 
-// PostCommitTx sends a COMMIT_TX envelope and expects 204 No Content.
+// PostCommitTx sends a COMMIT_TX envelope. SI-TX response handling:
+//   - 204 No Content / 200 OK → final, empty (committed).
+//   - 202 Accepted → ErrRetryLater (peer accepted; retry later).
+//   - other → error with the body.
 func (c *PeerHTTPClient) PostCommitTx(ctx context.Context, target *PeerHTTPTarget, envelope contractsitx.Message[contractsitx.CommitTransaction]) error {
 	resp, err := c.postEnvelope(ctx, target, envelope)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusAccepted {
+		return ErrRetryLater
+	}
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("peer COMMIT_TX HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
@@ -79,13 +101,19 @@ func (c *PeerHTTPClient) PostCommitTx(ctx context.Context, target *PeerHTTPTarge
 	return nil
 }
 
-// PostRollbackTx sends a ROLLBACK_TX envelope and expects 204 No Content.
+// PostRollbackTx sends a ROLLBACK_TX envelope. SI-TX response handling:
+//   - 204 No Content / 200 OK → final, empty (rolled back).
+//   - 202 Accepted → ErrRetryLater (peer accepted; retry later).
+//   - other → error with the body.
 func (c *PeerHTTPClient) PostRollbackTx(ctx context.Context, target *PeerHTTPTarget, envelope contractsitx.Message[contractsitx.RollbackTransaction]) error {
 	resp, err := c.postEnvelope(ctx, target, envelope)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusAccepted {
+		return ErrRetryLater
+	}
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("peer ROLLBACK_TX HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
@@ -96,9 +124,9 @@ func (c *PeerHTTPClient) PostRollbackTx(ctx context.Context, target *PeerHTTPTar
 // CheckStatusResponse is the decoded body of GET /api/v3/interbank/:txID/status.
 type CheckStatusResponse struct {
 	TransactionID string `json:"transaction_id"`
-	State         string `json:"state"`           // "prepared"|"committed"|"rolled_back"|"dead_letter"|"unknown"
-	OurRole       string `json:"our_role"`        // "sender"|"receiver"|""
-	LastActionAt  string `json:"last_action_at"`  // RFC3339
+	State         string `json:"state"`          // "prepared"|"committed"|"rolled_back"|"dead_letter"|"unknown"
+	OurRole       string `json:"our_role"`       // "sender"|"receiver"|""
+	LastActionAt  string `json:"last_action_at"` // RFC3339
 	LastError     string `json:"last_error"`
 }
 

@@ -244,6 +244,7 @@ func main() {
 	peerTxHandler := handler.NewPeerTxGRPCHandler(
 		peerIdemRepo, peerExecutor, accountClient,
 		outRepo, peerHTTPClient, handler.PeerLookupFunc(peerLookup), ownRouting,
+		cfg.InterbankReceiveSyncDeadline,
 	)
 	if optionRecorder != nil {
 		peerTxHandler.SetOptionRecorder(optionRecorder)
@@ -260,7 +261,8 @@ func main() {
 	// resolves rows where the commit already landed on the peer but we
 	// missed the confirmation (both-sides-stuck scenario, Celina-5 §"Retry").
 	reconciler := service.NewPeerTxReconciler(outRepo, peerHTTPClient, service.PeerLookupFunc(peerLookup), cronRegistry).
-		WithLocalReversal(peerTxHandler.ReverseOutboundLocal)
+		WithLocalReversal(peerTxHandler.ReverseOutboundLocal).
+		WithLocalCommit(peerTxHandler.CommitOutboundLocal)
 	reconciler.Start(ctx)
 
 	markReady, addReadinessCheck, metricsShutdown := metrics.StartMetricsServer(cfg.MetricsPort)

@@ -12,13 +12,13 @@ import (
 	"github.com/exbanka/transaction-service/internal/sitx"
 )
 
-const transferPostings = `[{"routingNumber":111,"accountId":"111-A","assetId":"RSD","amount":"100","direction":"DEBIT"},{"routingNumber":222,"accountId":"222-B","assetId":"RSD","amount":"100","direction":"CREDIT"}]`
+const transferPostings = `[{"routingNumber":111,"accountType":"ACCOUNT","accountId":"111-A","assetType":"MONAS","assetId":"RSD","amount":"100","direction":"DEBIT"},{"routingNumber":222,"accountType":"ACCOUNT","accountId":"222-B","assetType":"MONAS","assetId":"RSD","amount":"100","direction":"CREDIT"}]`
 
 func noVoteServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"type":"NO","noVotes":[{"reason":"INSUFFICIENT_ASSET"}]}`))
+		_, _ = w.Write([]byte(`{"vote":"NO","reasons":[{"reason":"INSUFFICIENT_ASSET"}]}`))
 	}))
 }
 

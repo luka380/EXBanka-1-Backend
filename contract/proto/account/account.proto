@@ -391,6 +391,7 @@ message ReserveIncomingResponse {
 message CommitIncomingRequest  {
     string reservation_key = 1;
     string idempotency_key = 2;  // saga step idempotency
+    string memo            = 3;  // optional ledger description (SI-TX NEW_TX message)
 }
 message CommitIncomingResponse { string balance_after   = 1; }
 

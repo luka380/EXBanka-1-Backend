@@ -110,7 +110,7 @@ func TestPeerHTTPClient_HMAC_HeadersAttached(t *testing.T) {
 	if err := client.PostCommitTx(context.Background(), target, contractsitx.Message[contractsitx.CommitTransaction]{
 		IdempotenceKey: contractsitx.IdempotenceKey{RoutingNumber: 111, LocallyGeneratedKey: "abc"},
 		MessageType:    contractsitx.MessageTypeCommitTx,
-		Message:        contractsitx.CommitTransaction{TransactionID: "tx-h"},
+		Message:        contractsitx.CommitTransaction{TransactionID: contractsitx.ForeignBankId{RoutingNumber: 111, ID: "tx-h"}},
 	}); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestPeerHTTPClient_CommitTx_NonOK_Error(t *testing.T) {
 	if err := client.PostCommitTx(context.Background(), target, contractsitx.Message[contractsitx.CommitTransaction]{
 		IdempotenceKey: contractsitx.IdempotenceKey{RoutingNumber: 111, LocallyGeneratedKey: "abc"},
 		MessageType:    contractsitx.MessageTypeCommitTx,
-		Message:        contractsitx.CommitTransaction{TransactionID: "tx-2"},
+		Message:        contractsitx.CommitTransaction{TransactionID: contractsitx.ForeignBankId{RoutingNumber: 111, ID: "tx-2"}},
 	}); err == nil {
 		t.Fatalf("expected error on 500")
 	}
@@ -151,7 +151,7 @@ func TestPeerHTTPClient_RollbackTx_204(t *testing.T) {
 	if err := client.PostRollbackTx(context.Background(), target, contractsitx.Message[contractsitx.RollbackTransaction]{
 		IdempotenceKey: contractsitx.IdempotenceKey{RoutingNumber: 111, LocallyGeneratedKey: "abc"},
 		MessageType:    contractsitx.MessageTypeRollbackTx,
-		Message:        contractsitx.RollbackTransaction{TransactionID: "tx-r"},
+		Message:        contractsitx.RollbackTransaction{TransactionID: contractsitx.ForeignBankId{RoutingNumber: 111, ID: "tx-r"}},
 	}); err != nil {
 		t.Errorf("rollback: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestPeerHTTPClient_RollbackTx_NonOK_Error(t *testing.T) {
 	if err := client.PostRollbackTx(context.Background(), target, contractsitx.Message[contractsitx.RollbackTransaction]{
 		IdempotenceKey: contractsitx.IdempotenceKey{RoutingNumber: 111, LocallyGeneratedKey: "abc"},
 		MessageType:    contractsitx.MessageTypeRollbackTx,
-		Message:        contractsitx.RollbackTransaction{TransactionID: "tx-r"},
+		Message:        contractsitx.RollbackTransaction{TransactionID: contractsitx.ForeignBankId{RoutingNumber: 111, ID: "tx-r"}},
 	}); err == nil {
 		t.Fatalf("expected error on 502")
 	}
@@ -192,7 +192,7 @@ func TestPeerHTTPClient_TrailingSlashStripped(t *testing.T) {
 	_ = client.PostCommitTx(context.Background(), target, contractsitx.Message[contractsitx.CommitTransaction]{
 		IdempotenceKey: contractsitx.IdempotenceKey{RoutingNumber: 111, LocallyGeneratedKey: "abc"},
 		MessageType:    contractsitx.MessageTypeCommitTx,
-		Message:        contractsitx.CommitTransaction{TransactionID: "tx-3"},
+		Message:        contractsitx.CommitTransaction{TransactionID: contractsitx.ForeignBankId{RoutingNumber: 111, ID: "tx-3"}},
 	})
 	if gotPath != "/interbank" {
 		t.Errorf("expected /interbank, got %q", gotPath)
