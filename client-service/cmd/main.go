@@ -49,6 +49,7 @@ func main() {
 		"client.limits-updated",
 		"client.changelog",
 		"notification.send-email",
+		"notification.general",
 	)
 
 	var redisCache *cache.RedisCache
@@ -78,7 +79,8 @@ func main() {
 	changelogRepo := repository.NewChangelogRepository(db)
 
 	clientService := service.NewClientService(repo, producer, redisCache, changelogRepo)
-	clientLimitSvc := service.NewClientLimitService(clientLimitRepo, userLimitClient, producer, changelogRepo)
+	clientLimitSvc := service.NewClientLimitService(clientLimitRepo, userLimitClient, producer, changelogRepo).
+		WithEmailLookup(clientEmailLookup{repo: repo}) // SP5 D1: limit-change email
 	changelogSvc := service.NewChangelogService(changelogRepo)
 
 	grpcHandler := handler.NewClientGRPCHandler(clientService, changelogSvc)
@@ -116,4 +118,18 @@ func main() {
 	}); err != nil {
 		log.Fatalf("grpc: %v", err)
 	}
+}
+
+// clientEmailLookup adapts the client repository to the limit service's
+// ClientEmailLookup interface (SP5 D1).
+type clientEmailLookup struct {
+	repo *repository.ClientRepository
+}
+
+func (l clientEmailLookup) GetEmailByID(clientID int64) (string, error) {
+	c, err := l.repo.GetByID(uint64(clientID))
+	if err != nil {
+		return "", err
+	}
+	return c.Email, nil
 }

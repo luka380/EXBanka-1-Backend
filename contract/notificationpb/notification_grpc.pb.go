@@ -32,6 +32,7 @@ const (
 	NotificationService_SetTemplate_FullMethodName              = "/notification.NotificationService/SetTemplate"
 	NotificationService_ResetTemplate_FullMethodName            = "/notification.NotificationService/ResetTemplate"
 	NotificationService_ListAdminAuditLogs_FullMethodName       = "/notification.NotificationService/ListAdminAuditLogs"
+	NotificationService_ListBusinessAuditLogs_FullMethodName    = "/notification.NotificationService/ListBusinessAuditLogs"
 )
 
 // NotificationServiceClient is the client API for NotificationService service.
@@ -56,6 +57,10 @@ type NotificationServiceClient interface {
 	// admin-only). Supports optional filters: since/until (unix seconds),
 	// actor_id (employee_id), action string, and pagination.
 	ListAdminAuditLogs(ctx context.Context, in *ListAdminAuditLogsRequest, opts ...grpc.CallOption) (*ListAdminAuditLogsResponse, error)
+	// ListBusinessAuditLogs returns business-action audit entries (limit changes,
+	// usedLimit resets, order approve/reject, permission changes, manual tax
+	// collection). Global, paginated, filterable. Gateway gates on admin.audit.view.
+	ListBusinessAuditLogs(ctx context.Context, in *ListBusinessAuditLogsRequest, opts ...grpc.CallOption) (*ListBusinessAuditLogsResponse, error)
 }
 
 type notificationServiceClient struct {
@@ -196,6 +201,16 @@ func (c *notificationServiceClient) ListAdminAuditLogs(ctx context.Context, in *
 	return out, nil
 }
 
+func (c *notificationServiceClient) ListBusinessAuditLogs(ctx context.Context, in *ListBusinessAuditLogsRequest, opts ...grpc.CallOption) (*ListBusinessAuditLogsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListBusinessAuditLogsResponse)
+	err := c.cc.Invoke(ctx, NotificationService_ListBusinessAuditLogs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // NotificationServiceServer is the server API for NotificationService service.
 // All implementations must embed UnimplementedNotificationServiceServer
 // for forward compatibility.
@@ -218,6 +233,10 @@ type NotificationServiceServer interface {
 	// admin-only). Supports optional filters: since/until (unix seconds),
 	// actor_id (employee_id), action string, and pagination.
 	ListAdminAuditLogs(context.Context, *ListAdminAuditLogsRequest) (*ListAdminAuditLogsResponse, error)
+	// ListBusinessAuditLogs returns business-action audit entries (limit changes,
+	// usedLimit resets, order approve/reject, permission changes, manual tax
+	// collection). Global, paginated, filterable. Gateway gates on admin.audit.view.
+	ListBusinessAuditLogs(context.Context, *ListBusinessAuditLogsRequest) (*ListBusinessAuditLogsResponse, error)
 	mustEmbedUnimplementedNotificationServiceServer()
 }
 
@@ -266,6 +285,9 @@ func (UnimplementedNotificationServiceServer) ResetTemplate(context.Context, *Re
 }
 func (UnimplementedNotificationServiceServer) ListAdminAuditLogs(context.Context, *ListAdminAuditLogsRequest) (*ListAdminAuditLogsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListAdminAuditLogs not implemented")
+}
+func (UnimplementedNotificationServiceServer) ListBusinessAuditLogs(context.Context, *ListBusinessAuditLogsRequest) (*ListBusinessAuditLogsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListBusinessAuditLogs not implemented")
 }
 func (UnimplementedNotificationServiceServer) mustEmbedUnimplementedNotificationServiceServer() {}
 func (UnimplementedNotificationServiceServer) testEmbeddedByValue()                             {}
@@ -522,6 +544,24 @@ func _NotificationService_ListAdminAuditLogs_Handler(srv interface{}, ctx contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NotificationService_ListBusinessAuditLogs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListBusinessAuditLogsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NotificationServiceServer).ListBusinessAuditLogs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NotificationService_ListBusinessAuditLogs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NotificationServiceServer).ListBusinessAuditLogs(ctx, req.(*ListBusinessAuditLogsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // NotificationService_ServiceDesc is the grpc.ServiceDesc for NotificationService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -580,6 +620,10 @@ var NotificationService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListAdminAuditLogs",
 			Handler:    _NotificationService_ListAdminAuditLogs_Handler,
+		},
+		{
+			MethodName: "ListBusinessAuditLogs",
+			Handler:    _NotificationService_ListBusinessAuditLogs_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

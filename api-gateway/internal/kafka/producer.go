@@ -45,3 +45,26 @@ func (p *AuditProducer) PublishCronAction(ctx context.Context, action, service, 
 			action, service, cronName, err)
 	}
 }
+
+// PublishBusinessAction publishes a BusinessAuditActionMessage to the
+// admin.business-action topic (limit changes, usedLimit resets, order
+// approve/reject, permission changes, manual tax collection). Best-effort:
+// failures are logged but never block the HTTP response. actorEmployeeID is the
+// JWT principal_id; targetID/detail describe the affected resource.
+func (p *AuditProducer) PublishBusinessAction(ctx context.Context, action string, actorEmployeeID int64, targetType, targetID, detail string) {
+	if p == nil {
+		return
+	}
+	msg := kafkamsg.BusinessAuditActionMessage{
+		Action:          action,
+		ActorEmployeeID: actorEmployeeID,
+		TargetType:      targetType,
+		TargetID:        targetID,
+		Detail:          detail,
+		Timestamp:       time.Now().UTC(),
+	}
+	if err := p.inner.Publish(ctx, kafkamsg.TopicBusinessAuditAction, msg); err != nil {
+		log.Printf("audit producer: failed to publish business action (action=%s target=%s/%s): %v",
+			action, targetType, targetID, err)
+	}
+}

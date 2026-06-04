@@ -5716,13 +5716,15 @@ Create a new investment fund. Provisions a bank-owned RSD account dedicated to t
 | `name` | string | Yes | Unique fund name |
 | `description` | string | No | Short investment-strategy description |
 | `minimum_contribution_rsd` | string (decimal) | No | Smallest allowed invest amount in RSD (default `0`) |
+| `dividend_mode` | string | No | `payout` (default) credits received stock dividends to the fund's cash; `reinvest` auto-buys more of the dividend-paying stock (DRIP). Also settable via `PUT /api/v3/investment-funds/{id}`. Surfaced as `dividend_mode` on every fund response. (SP4) |
 
 **Example Request:**
 ```json
 {
   "name": "Alpha Growth Fund",
   "description": "IT-sector focus",
-  "minimum_contribution_rsd": "1000.00"
+  "minimum_contribution_rsd": "1000.00",
+  "dividend_mode": "reinvest"
 }
 ```
 
@@ -5763,6 +5765,10 @@ List investment funds (Discovery page).
 | `page_size` | int | 20 | Items per page |
 | `search` | string | — | Case-insensitive substring on `name` |
 | `active_only` | bool | false | When `true`, hide inactive funds |
+| `sort_by` | string | — | `name` \| `value` \| `profit` \| `annualized_return` \| `volatility` \| `reward_to_variability` \| `max_drawdown` (SP3) |
+| `sort_order` | string | desc | `asc` \| `desc` |
+
+Each fund also carries the SP3 statistics (`annualized_return_pct`, `volatility_pct`, `reward_to_variability`, `max_drawdown_pct`, `metrics_available`). When a fund lacks enough snapshot history the numeric metrics are `"0"` and `metrics_available` is `false`. `GET /api/v3/investment-funds/{id}` additionally returns `history` (this fund's daily NAV series: `[{date, total_value_rsd}]`) and `average_history` (the system-average series, each fund indexed to 100 at its first snapshot) for the detail charts.
 
 **Response 200:**
 ```json
@@ -7485,6 +7491,19 @@ Remove a listing from the caller's watchlist.
 
 **Response 204:** No content on success.
 
+### Named watchlists (SP6)
+
+The legacy `/me/watchlist` routes above operate on the caller's default **"My Watchlist"** (created lazily). Callers can also keep **multiple named lists** (e.g. "tech", "forex pairs"). All routes are `AnyAuthMiddleware`; a list is owned by the caller and can only be touched by its owner. The same listing may live in more than one list.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/v3/me/watchlists` | List the caller's named watchlists with `{id, name, item_count, created_at}` (always includes the default). |
+| `POST` | `/api/v3/me/watchlists` | Create a named list. Body `{ "name": "tech" }` (1–64 chars). Idempotent on name. Returns `201 {watchlist}`. |
+| `DELETE` | `/api/v3/me/watchlists/:watchlist_id` | Delete a named list and its items. `204` / `404`. |
+| `GET` | `/api/v3/me/watchlists/:watchlist_id/items?listing_type=` | List a named list's items (same enriched shape as `/me/watchlist`). |
+| `POST` | `/api/v3/me/watchlists/:watchlist_id/items` | Add a listing to a named list. Body `{ "listing_id": 1 }`. `201`. |
+| `DELETE` | `/api/v3/me/watchlists/:watchlist_id/items/:listing_id` | Remove a listing from a named list. `204` / `404`. |
+
 **Response 404:** The listing is not on the caller's watchlist.
 
 **Use cases:**
@@ -9105,6 +9124,46 @@ Response shape:
     }
   ],
   "total": 42,
+  "page": 1,
+  "page_size": 50
+}
+```
+
+**GET /api/v3/admin/audit/business-actions**
+
+Returns the business-action audit log — who changed an employee/actuary limit, reset a usedLimit, approved/rejected an order, changed role/employee permissions, or triggered manual tax collection — persisted by notification-service. The actor is the JWT principal who performed the action.
+
+- Authentication: Bearer token (employee only)
+- Permission: `admin.audit.view`
+
+Query parameters (all optional):
+
+| Param | Type | Notes |
+|---|---|---|
+| `page` | int | default 1 |
+| `page_size` | int | default 50, max 200 |
+| `since` | string | `YYYY-MM-DD` inclusive lower bound |
+| `until` | string | `YYYY-MM-DD` inclusive upper bound |
+| `actor_id` | int | filter by actor employee id |
+| `action` | string | `limit.set` \| `limit.used_reset` \| `order.approve` \| `order.decline` \| `permissions.set` \| `tax.collect` |
+| `target_type` | string | `employee` \| `order` \| `role` \| `tax` |
+
+Response shape:
+
+```json
+{
+  "entries": [
+    {
+      "id": 1,
+      "action": "limit.set",
+      "actor_id": 5,
+      "target_type": "employee",
+      "target_id": "9",
+      "detail": "max_single=5000 max_daily=20000 ...",
+      "timestamp": "2026-06-04T10:00:00Z"
+    }
+  ],
+  "total": 7,
   "page": 1,
   "page_size": 50
 }

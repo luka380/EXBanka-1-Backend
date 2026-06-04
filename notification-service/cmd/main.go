@@ -36,7 +36,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to connect to database: %v", err)
 	}
-	if err := db.AutoMigrate(&model.MobileInboxItem{}, &model.GeneralNotification{}, &model.NotificationTemplate{}, &cronreg.CronPauseState{}, &model.AdminAuditLog{}); err != nil {
+	if err := db.AutoMigrate(&model.MobileInboxItem{}, &model.GeneralNotification{}, &model.NotificationTemplate{}, &cronreg.CronPauseState{}, &model.AdminAuditLog{}, &model.BusinessAuditLog{}); err != nil {
 		log.Fatalf("failed to migrate: %v", err)
 	}
 	// Partial unique index for watchlist-alert (and any future) idempotency keys.
@@ -57,6 +57,7 @@ func main() {
 	notifRepo := repository.NewGeneralNotificationRepository(db)
 	templateRepo := repository.NewTemplateRepository(db)
 	adminAuditRepo := repository.NewAdminAuditLogRepository(db)
+	businessAuditRepo := repository.NewBusinessAuditLogRepository(db)
 
 	// Template service (registry-backed render + admin CRUD)
 	templateSvc := service.NewTemplateService(templateRepo)
@@ -81,6 +82,7 @@ func main() {
 		"notification.general",
 		"notification.watchlist-alert",
 		"admin.cron-action",
+		"admin.business-action",
 	)
 
 	// Kafka consumer (email events)
@@ -112,6 +114,11 @@ func main() {
 	adminAuditConsumer.Start(ctx)
 	defer adminAuditConsumer.Close()
 
+	// Business audit consumer (persists admin.business-action events to business_audit_logs)
+	businessAuditConsumer := consumer.NewBusinessAuditConsumer(cfg.KafkaBrokers, db)
+	businessAuditConsumer.Start(ctx)
+	defer businessAuditConsumer.Close()
+
 	// Background inbox cleanup
 	cleanupSvc := service.NewInboxCleanupService(inboxRepo, cronRegistry)
 	cleanupSvc.StartCleanupCron(ctx)
@@ -135,7 +142,7 @@ func main() {
 			grpc.ChainStreamInterceptor(metrics.GRPCStreamServerInterceptor()),
 		},
 		Register: func(s *grpc.Server) {
-			notifpb.RegisterNotificationServiceServer(s, handler.NewGRPCHandler(emailSender, inboxRepo, notifRepo, templateSvc, adminAuditRepo))
+			notifpb.RegisterNotificationServiceServer(s, handler.NewGRPCHandler(emailSender, inboxRepo, notifRepo, templateSvc, adminAuditRepo, businessAuditRepo))
 			adminpb.RegisterAdminCronServer(s, cronreg.NewGRPCServer(cronRegistry))
 			shared.RegisterHealthCheck(s, "notification-service")
 			reflection.Register(s)

@@ -1056,6 +1056,7 @@ message CreateFundRequest {
   string name = 2;
   string description = 3;
   string minimum_contribution_rsd = 4;
+  string dividend_mode = 5; // payout|reinvest; "" defaults to payout (SP4)
 }
 
 message FundResponse {
@@ -1073,6 +1074,14 @@ message FundResponse {
   string value_rsd = 12;
   string liquid_rsd = 13;
   string profit_rsd = 14;
+  // SP3 statistics (Celina 4): empty / metrics_available=false until enough
+  // snapshot history exists.
+  string annualized_return_pct = 15;
+  string volatility_pct        = 16;
+  string reward_to_variability = 17;
+  string max_drawdown_pct      = 18;
+  bool   metrics_available     = 19;
+  string dividend_mode         = 20; // payout|reinvest (SP4)
 }
 
 message ListFundsRequest {
@@ -1080,6 +1089,9 @@ message ListFundsRequest {
   int32 page_size = 2;
   string search = 3;
   bool   active_only = 4;
+  // SP3 sorting: name|value|profit|annualized_return|volatility|reward_to_variability|max_drawdown
+  string sort_by = 5;
+  string sort_order = 6; // asc|desc
 }
 message ListFundsResponse {
   repeated FundResponse funds = 1;
@@ -1102,7 +1114,23 @@ message FundDetailResponse {
   string total_dividends_paid_rsd = 8;
   string profit_rsd               = 9;
   string profit_pct               = 10;
+  // SP3 statistics + history (Celina 4).
+  string annualized_return_pct      = 11;
+  string volatility_pct             = 12;
+  string reward_to_variability      = 13;
+  string max_drawdown_pct           = 14;
+  bool   metrics_available          = 15;
+  repeated FundValueSnapshotItem history          = 16; // this fund's NAV series
+  repeated FundValueSnapshotItem average_history  = 17; // system average (indexed to 100)
 }
+
+// FundValueSnapshotItem is one point of a fund's daily NAV history (or the
+// system-average comparison series).
+message FundValueSnapshotItem {
+  string date            = 1; // RFC3339
+  string total_value_rsd = 2;
+}
+
 message FundHoldingItem {
   string security_type = 1;
   uint64 security_id = 2;
@@ -1123,6 +1151,7 @@ message UpdateFundRequest {
   string minimum_contribution_rsd = 5;
   bool   active = 6;
   bool   active_set = 7;
+  string dividend_mode = 8; // payout|reinvest; "" = unchanged (SP4)
 }
 
 message InvestInFundRequest {
@@ -2428,18 +2457,52 @@ service WatchlistService {
   rpc AddItem(AddWatchlistItemRequest) returns (WatchlistItemResponse);
   rpc RemoveItem(RemoveWatchlistItemRequest) returns (RemoveWatchlistItemResponse);
   rpc ListMy(ListMyWatchlistRequest) returns (ListMyWatchlistResponse);
+  // SP6 named lists:
+  rpc CreateWatchlist(CreateWatchlistRequest) returns (WatchlistResponse);
+  rpc ListWatchlists(ListWatchlistsRequest) returns (ListWatchlistsResponse);
+  rpc DeleteWatchlist(DeleteWatchlistRequest) returns (DeleteWatchlistResponse);
 }
 
 message AddWatchlistItemRequest {
-  string owner_type = 1; // "client" | "bank"
-  uint64 owner_id   = 2; // omitted/0 when owner_type=="bank"
-  uint64 listing_id = 3;
+  string owner_type   = 1; // "client" | "bank"
+  uint64 owner_id     = 2; // omitted/0 when owner_type=="bank"
+  uint64 listing_id   = 3;
+  uint64 watchlist_id = 4; // 0 → owner's default list (SP6)
 }
 
 message RemoveWatchlistItemRequest {
+  string owner_type   = 1;
+  uint64 owner_id     = 2;
+  uint64 listing_id   = 3;
+  uint64 watchlist_id = 4; // 0 → owner's default list (SP6)
+}
+
+// SP6 named-list messages.
+message CreateWatchlistRequest {
   string owner_type = 1;
   uint64 owner_id   = 2;
-  uint64 listing_id = 3;
+  string name       = 3;
+}
+message WatchlistResponse {
+  uint64 id         = 1;
+  string name       = 2;
+  int64  item_count = 3;
+  string created_at = 4;
+}
+message ListWatchlistsRequest {
+  string owner_type = 1;
+  uint64 owner_id   = 2;
+}
+message ListWatchlistsResponse {
+  repeated WatchlistResponse watchlists = 1;
+}
+message DeleteWatchlistRequest {
+  string owner_type   = 1;
+  uint64 owner_id     = 2;
+  uint64 watchlist_id = 3;
+}
+message DeleteWatchlistResponse {
+  bool removed = 1;
 }
 
 message RemoveWatchlistItemResponse {
@@ -2450,6 +2513,7 @@ message ListMyWatchlistRequest {
   string owner_type    = 1;
   uint64 owner_id      = 2;
   string listing_type  = 3; // optional: "stock" | "option" | "futures" | "forex"
+  uint64 watchlist_id  = 4; // 0 → owner's default list (SP6)
 }
 
 message WatchlistItemResponse {

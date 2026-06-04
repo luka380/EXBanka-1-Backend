@@ -101,6 +101,7 @@ func (h *InvestmentFundHandler) CreateFund(ctx context.Context, in *stockpb.Crea
 		Name:                   in.Name,
 		Description:            in.Description,
 		MinimumContributionRSD: min,
+		DividendMode:           model.DividendMode(in.DividendMode),
 	})
 	if err != nil {
 		return nil, mapFundErr(err)
@@ -109,6 +110,22 @@ func (h *InvestmentFundHandler) CreateFund(ctx context.Context, in *stockpb.Crea
 }
 
 func (h *InvestmentFundHandler) ListFunds(ctx context.Context, in *stockpb.ListFundsRequest) (*stockpb.ListFundsResponse, error) {
+	// SP3: metric sort loads all active funds, computes each one's metrics, and
+	// sorts in memory (funds without metrics sort last), then paginates.
+	if service.IsMetricSort(in.SortBy) {
+		funds, metrics, avail, total, err := h.fundSvc.ListSortedByMetric(in.Search, in.SortBy, in.SortOrder, int(in.Page), int(in.PageSize))
+		if err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+		out := &stockpb.ListFundsResponse{Total: total, Funds: make([]*stockpb.FundResponse, 0, len(funds))}
+		for i := range funds {
+			fr := toFundResponse(&funds[i])
+			fillFundMetrics(fr, metrics[i], avail[i])
+			out.Funds = append(out.Funds, fr)
+		}
+		return out, nil
+	}
+
 	var active *bool
 	if in.ActiveOnly {
 		t := true
@@ -120,9 +137,30 @@ func (h *InvestmentFundHandler) ListFunds(ctx context.Context, in *stockpb.ListF
 	}
 	out := &stockpb.ListFundsResponse{Total: total, Funds: make([]*stockpb.FundResponse, 0, len(rows))}
 	for i := range rows {
-		out.Funds = append(out.Funds, toFundResponse(&rows[i]))
+		fr := toFundResponse(&rows[i])
+		// Fill per-fund metrics for display on the returned page.
+		m, ok := h.fundSvc.FundMetricsFor(rows[i].ID)
+		fillFundMetrics(fr, m, ok)
+		out.Funds = append(out.Funds, fr)
 	}
 	return out, nil
+}
+
+// fillFundMetrics writes the SP3 statistics onto a FundResponse. When metrics
+// are unavailable the numeric fields are "0" and metrics_available is false.
+func fillFundMetrics(fr *stockpb.FundResponse, m service.FundMetrics, available bool) {
+	fr.MetricsAvailable = available
+	if !available {
+		fr.AnnualizedReturnPct = "0"
+		fr.VolatilityPct = "0"
+		fr.RewardToVariability = "0"
+		fr.MaxDrawdownPct = "0"
+		return
+	}
+	fr.AnnualizedReturnPct = m.AnnualizedReturnPct.String()
+	fr.VolatilityPct = m.VolatilityPct.String()
+	fr.RewardToVariability = m.RewardToVariability.String()
+	fr.MaxDrawdownPct = m.MaxDrawdownPct.String()
 }
 
 func (h *InvestmentFundHandler) GetFund(ctx context.Context, in *stockpb.GetFundRequest) (*stockpb.FundDetailResponse, error) {
@@ -142,6 +180,32 @@ func (h *InvestmentFundHandler) GetFund(ctx context.Context, in *stockpb.GetFund
 	resp.TotalDividendsPaidRsd = stat.TotalDividendsPaidRSD.StringFixed(2)
 	resp.ProfitRsd = stat.ProfitRSD.StringFixed(2)
 	resp.ProfitPct = stat.ProfitPct.StringFixed(4)
+
+	// SP3: statistics metrics + historical value series + system-average series.
+	if m, ok := h.fundSvc.FundMetricsFor(f.ID); ok {
+		resp.MetricsAvailable = true
+		resp.AnnualizedReturnPct = m.AnnualizedReturnPct.String()
+		resp.VolatilityPct = m.VolatilityPct.String()
+		resp.RewardToVariability = m.RewardToVariability.String()
+		resp.MaxDrawdownPct = m.MaxDrawdownPct.String()
+	} else {
+		resp.AnnualizedReturnPct = "0"
+		resp.VolatilityPct = "0"
+		resp.RewardToVariability = "0"
+		resp.MaxDrawdownPct = "0"
+	}
+	for _, snap := range h.fundSvc.FundHistory(f.ID) {
+		resp.History = append(resp.History, &stockpb.FundValueSnapshotItem{
+			Date:          snap.Date.UTC().Format("2006-01-02T15:04:05Z07:00"),
+			TotalValueRsd: snap.TotalValueRSD.StringFixed(2),
+		})
+	}
+	for _, pt := range h.fundSvc.AverageHistory() {
+		resp.AverageHistory = append(resp.AverageHistory, &stockpb.FundValueSnapshotItem{
+			Date:          pt.Date.UTC().Format("2006-01-02T15:04:05Z07:00"),
+			TotalValueRsd: pt.ValueRSD.StringFixed(4),
+		})
+	}
 
 	// Holdings list: use service snapshot (includes current_value_rsd per item).
 	if h.fundHoldings != nil {
@@ -197,6 +261,10 @@ func (h *InvestmentFundHandler) UpdateFund(ctx context.Context, in *stockpb.Upda
 	}
 	if in.ActiveSet {
 		upd.Active = &in.Active
+	}
+	if in.DividendMode != "" {
+		m := model.DividendMode(in.DividendMode)
+		upd.DividendMode = &m
 	}
 	out, err := h.fundSvc.Update(ctx, upd)
 	if err != nil {
@@ -354,6 +422,7 @@ func toFundResponse(f *model.InvestmentFund) *stockpb.FundResponse {
 		MinimumContributionRsd: f.MinimumContributionRSD.String(),
 		RsdAccountId:           f.RSDAccountID,
 		Active:                 f.Active,
+		DividendMode:           string(f.DividendMode),
 		CreatedAt:              f.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		UpdatedAt:              f.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}

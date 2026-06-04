@@ -10,3 +10,4 @@
 vendor/
 */bin/
 .idea/
+.DS_Store

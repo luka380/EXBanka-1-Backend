@@ -1615,8 +1615,9 @@ Six global changelog read endpoints. All require `admin.audit.view` (EmployeeAdm
 | GET | `/api/v3/admin/audit/loans-changelog` | `admin.audit.view` | AdminAuditHandler.ListLoansChangelog | Global changelog from credit-service |
 | GET | `/api/v3/admin/audit/employees-changelog` | `admin.audit.view` | AdminAuditHandler.ListEmployeesChangelog | Global changelog from user-service |
 | GET | `/api/v3/admin/audit/cron-actions` | `admin.audit.view` | AdminAuditHandler.ListCronActions | Admin cron-action audit log from notification-service |
+| GET | `/api/v3/admin/audit/business-actions` | `admin.audit.view` | AdminAuditHandler.ListBusinessActions | Business-action audit log from notification-service (SP2 — 2026-06-04) |
 
-Response shape: `{entries: [...], total, page, page_size}`. Changelog entries carry `{id, entity_type, entity_id, action, field_name, old_value, new_value, actor_id, timestamp, reason}`. Cron-action entries carry `{id, action, service, cron_name, employee_id, reason, timestamp}`.
+Response shape: `{entries: [...], total, page, page_size}`. Changelog entries carry `{id, entity_type, entity_id, action, field_name, old_value, new_value, actor_id, timestamp, reason}`. Cron-action entries carry `{id, action, service, cron_name, employee_id, reason, timestamp}`. Business-action entries carry `{id, action, actor_id, target_type, target_id, detail, timestamp}` and filter by `action` (`limit.set`|`limit.used_reset`|`order.approve`|`order.decline`|`permissions.set`|`tax.collect`), `target_type` (`employee`|`order`|`role`|`tax`), `actor_id`, and date range. The gateway publishes a `BusinessAuditActionMessage` to `admin.business-action` (actor from JWT) after each audited action succeeds (best-effort); notification-service records it into `business_audit_logs`.
 
 ---
 
@@ -1645,7 +1646,9 @@ Response shape: `{entries: [...], total, page, page_size}`. Changelog entries ca
 
 Closed-end invariants enforced in `model.InvestmentFund.BeforeSave`. `FundService.Invest` rejects closed funds outside `fundraising` status; `FundService.Redeem` rejects closed funds outside `open` status. `FundLifecycleCron` walks closed funds every 15 min and transitions `fundraising → active → matured → liquidated` per the calendar, firing `FUND_FUNDRAISING_STARTED/CLOSED/MATURED/LIQUIDATED` in-app notifications to the fund manager. Auto-liquidation money movement (sell remaining holdings + pro-rata distribution) is deferred to a follow-up.
 
-**WatchlistItem** (Celina 3 — `watchlist_items` table in stock-service `stock_db`) — per-owner tracked-listing list
+**Watchlist** (SP6 — `watchlists` table in stock-service `stock_db`) — a named collection of tracked listings owned by a client or the bank. `{id, owner_type, owner_id, name, created_at, updated_at}`, unique `(owner_type, owner_id, name)`. A user may keep several (e.g. "tech stocks"). The legacy single-list endpoints operate on a lazily-created default **"My Watchlist"**. New routes (`/api/v3/me/watchlists*`) provide named-list CRUD + per-list item add/remove; a list is owner-scoped and the same listing may appear in multiple lists. On startup, `MigrateWatchlistsToNamedLists` (idempotent) drops the legacy `(owner, listing)` unique index and assigns any pre-existing items to their owner's default list.
+
+**WatchlistItem** (Celina 3 / SP6 — `watchlist_items` table in stock-service `stock_db`) — one tracked listing inside a `Watchlist`. Gains `watchlist_id` (FK; unique `(watchlist_id, listing_id)`); retains denormalised `owner_type`/`owner_id` so the daily price-move notification cron scans per-owner unchanged.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -2134,6 +2137,18 @@ Reason(string,size:512),
 Timestamp(time.Time,not null,indexed)
 TableName: admin_audit_logs
 ```
+
+**BusinessAuditLog** (SP2 — 2026-06-04) — Audit trail for high-value business actions (limit changes, usedLimit resets, order approve/reject, permission changes, manual tax collection), stored in `notification-service`'s `notification_db`. Fed by the `admin.business-action` Kafka topic published by the api-gateway (actor known from JWT).
+```
+ID(uint64,PK,autoIncrement),
+Action(string,size:32,not null,indexed),      -- limit.set|limit.used_reset|order.approve|order.decline|permissions.set|tax.collect
+ActorID(int64,not null,indexed),              -- employee who performed the action
+TargetType(string,size:32,not null,indexed),  -- employee|order|role|tax
+TargetID(string,size:64,not null,indexed),
+Detail(string,size:512),                      -- human-readable new value / outcome
+Timestamp(time.Time,not null,indexed)
+TableName: business_audit_logs
+```
 Written by the notification-service `admin_audit_consumer` consuming `admin.cron-action` Kafka events published by the api-gateway after each Trigger/Pause/Resume action.
 
 ---
@@ -2206,6 +2221,7 @@ Written by the notification-service `admin_audit_consumer` consuming `admin.cron
 | `credit.saga-dead-letter` | credit-service | (monitoring/alerting) | Failed loan saga events that exceeded all retries (disbursement, installment failures). |
 | `stock.saga-dead-letter` | stock-service | (monitoring/alerting) | Failed stock/OTC saga events that exceeded all retries (OTC exercises, recurring-order failures). |
 | `admin.cron-action` | api-gateway | notification-service | `AdminCronActionMessage` — published after each Trigger/Pause/Resume admin cron action; consumed by notification-service to persist audit log rows (C6/C10/C11 — 2026-05-28) |
+| `admin.business-action` | api-gateway | notification-service | `BusinessAuditActionMessage` — published (best-effort, actor from JWT) after a limit change, usedLimit reset, order approve/reject, permission change, or manual tax collection; consumed by notification-service to persist `business_audit_logs` rows (SP2 — 2026-06-04) |
 
 ### General Notification Types
 
@@ -2241,6 +2257,12 @@ Published to `notification.general` by various services. notification-service co
 **credit-service in-app notifications (Plan B3):** credit-service emits `GeneralNotificationMessage` intents on `notification.general` in the **`Data` form** for: `LOAN_REQUEST_SUBMITTED`, `LOAN_REQUEST_APPROVED`, `LOAN_REQUEST_REJECTED`, `LOAN_DISBURSED` (from the gRPC handler), `INSTALLMENT_COLLECTED`, `INSTALLMENT_FAILED` (from the daily installment-collection cron). Recipient is always the loan's borrower (`Loan.ClientID` / `LoanRequest.ClientID`); no bank-side skip. Best-effort, after the action commits.
 
 **account-service in-app notifications (Plan B4):** account-service now emits `GeneralNotificationMessage` intents on `notification.general` in the **`Data` form** for: `ACCOUNT_OPENED` (on create), `ACCOUNT_STATUS_CHANGED` (on status update), `ACCOUNT_NAME_UPDATED` (on rename), `ACCOUNT_LIMITS_UPDATED` (on limit change), `MAINTENANCE_FEE_CHARGED` (per monthly cron charge). Recipient is the account owner (`account.OwnerID`); bank-owned accounts (`is_bank_account == true` or owner id `1_000_000_000`) are skipped. **Plan B4 also closed three pre-existing publish-site gaps** in the same change: the `account.name-updated`, `account.limits-updated`, and `account.maintenance-charged` domain Kafka events are now published (the producer methods existed but were never called by the handlers / cron). Best-effort, after the action commits.
+
+**SP5 notification coverage expansion (2026-06-04):**
+- **D1 — client limit change:** `client-service.ClientLimitService.SetClientLimits` now emits a `LIMIT_CHANGED` in-app notification (and a best-effort `LIMIT_CHANGED` email via the client's address) to the affected client with the new daily/monthly/transfer limits. (client-service's producer gained `PublishGeneralNotification`; `notification.general` added to its `EnsureTopics`.) New `LIMIT_CHANGED` push + email templates.
+- **E — OTC contract expiring soon:** the OTC expiry cron gained an expiring-soon pass (`OptionContractRepository.ListExpiringOn`) that warns both client parties `OTC_CONTRACT_EXPIRING_SOON` when a contract settles exactly `OTC_EXPIRY_WARNING_DAYS` (default 3) out. New `OTC_CONTRACT_EXPIRING_SOON` push template. Intra-bank contracts only.
+- **D2 (card block) and D3 (loan created/approved)** were already covered by existing card-service / credit-service notifications — no change.
+- **H — order auto-cancel-on-settlement-expiry: DEFERRED.** Stock orders have no `settlement_date` and there is no order-expiry mechanism to notify on; building one is a feature beyond notification scope. OTC offer/contract expiry already notify (`OTC_OFFER_EXPIRED`/`OTC_CONTRACT_EXPIRED`).
 
 ### Email Types (SendEmailMessage.EmailType)
 
@@ -2516,8 +2538,14 @@ Keep these synchronized across API Gateway validation, protobuf definitions, and
 - **Every stock realisation path records a CapitalGain row.** In addition to the order-fill sell (`PortfolioService.recordCapitalGain`), the direct OTC stock sale (`OTCService.BuyOffer`), and the local OTC option exercise (`otc_exercise_saga.go`), realisation rows are now also written by:
   - `OTCStockService.FillBuyOffer` — when a seller fills a buyer's standing buy-offer; uses the holding snapshot captured in step 2 of the fill saga as cost basis and `offer.PricePerUnit` as sell price.
   - `PeerOTCGRPCHandler.recordOptionExercise` (DEBIT branch) — when a cross-bank OTC option exercise lands on the seller's bank; cost basis is snapshotted under the row lock inside `HoldingReservationService.ConsumeForPeerOptionContract` (exposed on `PartialSettleHoldingResult.AveragePriceBefore`), sell price is `contract.StrikePrice`. Wired via `PeerOTCGRPCHandler.WithCapitalGain(repo)` in `cmd/main.go`.
-- **Option premium realises as `CapitalGain` rows at acceptance**, not at exercise or expiry. `OTCOfferService.Accept` writes two `SecurityType="option"` rows when the premium-payment saga commits: `+premium` for the writer (seller) and `−premium` for the buyer, both `OTC=true`, `Currency=PremiumCurrency`. This single-realisation model means option expiry needs no further P/L entry (premium already booked) and option exercise just realises the stock-side P/L on top (writer's stock CG via the exercise saga; buyer's later stock sell at the strike-cost-basis they were credited at). End-to-end totals: round-tripping `buy stock → write call → get exercised` shows premium gain + stock gain; round-tripping `buy call → let expire` shows premium loss; round-tripping `buy call → exercise → sell stock` shows premium loss + stock gain at `sellPrice − strike`.
-- **Buyer's cost basis on OTC option exercise = StrikePrice, premium tracked separately.** Both `otc_exercise_saga.go` (local) and `HoldingReservationService.CreditBuyerHoldingForPeerOption` (cross-bank, now takes a `strikePrice` argument and applies a weighted-average when the buyer already holds the ticker) set the credited `Holding.AveragePrice` to the per-share strike. The premium the buyer paid at acceptance was booked as its own `SecurityType="option"` CG row, so folding it into the stock cost basis would double-count.
+- **Option premium tax — resolution-month model (2026-06-04, `docs/superpowers/specs/2026-06-04-options-premium-tax-design.md`).** The OTC option premium and exercise are taxed as follows:
+  - **Seller (writer) — at accept.** `OTCOfferService.Accept` writes one `SecurityType="option"`, `OTC=true` row: `+premium` for the seller, `Currency=PremiumCurrency`. The premium income is taxable when received (15%).
+  - **Buyer — at resolution, NOT at accept.** The buyer's premium is no longer booked at accept (the `record_buyer_premium_cost` accept-saga step is now a no-op, kept in place so the saga shape — hence crash-recovery — is unchanged).
+    - **On exercise:** `otc_exercise_saga.go` (`record_buyer_exercise_cost` step) writes the buyer's `SecurityType="option"`, `OTC=true` row with `TotalGain = (market − strike) × qty − premium`, in the exercise month, where `market` is the underlying `Listing.Price` snapshotted pre-saga. The row may be negative (premium > bargain), correctly reducing the buyer's monthly gain. Best-effort: skipped (and basis kept at strike) when the market price is unknown — never blocks the exercise.
+    - **On expiry:** the daily `OTCExpiryCron.expireContract` writes the buyer's `−premium` loss row in the expiry month (idempotent on `expire-contract-<id>-buyer-premium-loss`, written before the status flip). The seller adds nothing (already taxed at accept).
+  - **Buyer's cost basis steps up to market on exercise.** `otc_exercise_saga.go` sets the credited `Holding.AveragePrice` to the snapshotted **market** price (was strike). This prevents double taxation: since `(market − strike)` is taxed at exercise, a later sale at market produces zero stock gain. Equivalence: `((market−strike)×qty − premium)` [exercise] `+ (S−market)×qty` [sale] `= (S−strike)×qty − premium`. Falls back to strike basis when the market price is unknown.
+- **Bank (Profit Banke) exemption.** `TaxCollectionRepository.ListOwnersWithGains` filters to `owner_type='client'`, so bank-owned capital gains (actuary trading on behalf of the bank — option premiums, exercise gains, dividends, stock) are never collected; the profit stays with the bank. Same rule as dividends.
+- **Cross-bank OTC buyer taxation is deferred** (`docs/Bugs.txt` §"Cohort-dependent TODOs" item 5): the frozen SI-TX exercise flow carries neither premium nor market price, so `(market−strike)×qty − premium` is uncomputable on the buyer's bank. Cross-bank **sellers** are still taxed (the strike-gain write in `PeerOTCGRPCHandler.recordOptionExercise` DEBIT branch is unchanged); cross-bank buyers are taxed via their eventual stock sale (shares credited at strike basis), as before.
 - **Total P/L = sum of all CG rows regardless of `SecurityType`.** `CapitalGainRepository.SumByOwner*` methods do NOT filter on `security_type`, so portfolio-summary totals already cover stock and option realisations together. Future per-security-type breakdown fields (e.g. `realized_profit_stock_rsd`, `realized_profit_options_rsd`) can be added on top without changing the totals.
 
 ### 21.1 gRPC Error Sentinels
@@ -2719,7 +2747,8 @@ The full endpoint reference is in `docs/api/REST_API_v1.md` (kept under that fil
 
 | Entity | Table | Purpose |
 |---|---|---|
-| `InvestmentFund` | `investment_funds` | Supervisor-managed pool. One bank-owned RSD account, manager_employee_id, minimum contribution. Optimistic locking via Version. |
+| `InvestmentFund` | `investment_funds` | Supervisor-managed pool. One bank-owned RSD account, manager_employee_id, minimum contribution. Optimistic locking via Version. `dividend_mode` (`payout`\|`reinvest`, default `payout` — SP4 2026-06-04): in `reinvest` mode `DividendService.Payout` buys `floor(grossRSD/priceRSD)` more shares of the dividend-paying stock on behalf of the fund (DRIP, best-effort — cash retained on failure) instead of leaving the dividend as cash. Settable on create/update; surfaced on `FundResponse`. |
+| `FundValueSnapshot` | `fund_value_snapshots` | Daily point-in-time NAV per fund (SP3 — 2026-06-04). Unique `(fund_id, date)`; columns `total_value_rsd`, `liquid_rsd_bal`, `holdings_value_rsd`, `investor_count`. Written by the `fund-snapshot-cron` (daily, default 23:50 UTC, `FUND_SNAPSHOT_CRON_UTC`). Feeds the discovery/detail statistics (annualized return, volatility, reward-to-variability, max drawdown — std-dev/Sharpe use monthly-resampled returns; drawdown uses the daily series) and the detail `history`/`average_history` charts. Metrics are computed on demand and shown only once there are ≥ `FUND_METRICS_MIN_MONTHLY_RETURNS` (default 2) monthly returns; otherwise `metrics_available=false`. `ListFunds` supports `sort_by`/`sort_order` over the metrics (`FundResponse`/`FundDetailResponse` extended). |
 | `ClientFundPosition` | `client_fund_positions` | One row per (fund, owner). Owner identified by (`OwnerType`, `OwnerID`) — `bank` with `OwnerID IS NULL` for the bank's own stake, `client` with non-null `OwnerID` for clients. (Renamed from the pre-Task-4 `(UserID=1_000_000_000, SystemType="employee")` sentinel pattern by plan 2026-04-27-owner-type-schema.md.) TotalContributedRSD accumulates contributions and decrements on redeem. |
 | `FundContribution` | `fund_contributions` | Append-mostly history of every invest/redeem event. Owner identified by (`OwnerType`, `OwnerID`); status pending → completed/failed under the saga that produced it. SagaID is a UUID string referencing saga_logs. |
 | `FundHolding` | `fund_holdings` | Fund-side analogue of Holding. Increments on on-behalf-of-fund order fills, decrements on liquidation. FIFO order-by created_at for liquidation. |

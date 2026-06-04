@@ -85,6 +85,11 @@ type FundService struct {
 	// work.
 	outbox   *outbox.Outbox
 	outboxDB *gorm.DB
+
+	// SP3 statistics (optional; wired via WithSnapshots). When nil, fund
+	// metrics/history are unavailable and discovery metric-sorts no-op.
+	snapshots         *repository.FundValueSnapshotRepository
+	metricsMinMonthly int
 }
 
 // WithOutbox wires the transactional outbox + the GORM handle the saga
@@ -153,6 +158,7 @@ type CreateFundInput struct {
 	Name                   string
 	Description            string
 	MinimumContributionRSD decimal.Decimal
+	DividendMode           model.DividendMode // "" defaults to payout (SP4)
 }
 
 func (s *FundService) Create(ctx context.Context, in CreateFundInput) (*model.InvestmentFund, error) {
@@ -178,6 +184,13 @@ func (s *FundService) Create(ctx context.Context, in CreateFundInput) (*model.In
 		return nil, fmt.Errorf("create RSD account: %w", err)
 	}
 
+	mode := in.DividendMode
+	if mode == "" {
+		mode = model.DividendModePayout
+	}
+	if mode != model.DividendModePayout && mode != model.DividendModeReinvest {
+		return nil, fmt.Errorf("dividend_mode must be payout or reinvest: %w", ErrFundInvalidInput)
+	}
 	f := &model.InvestmentFund{
 		Name:                   in.Name,
 		Description:            in.Description,
@@ -185,6 +198,7 @@ func (s *FundService) Create(ctx context.Context, in CreateFundInput) (*model.In
 		MinimumContributionRSD: in.MinimumContributionRSD,
 		RSDAccountID:           acct.Id,
 		Active:                 true,
+		DividendMode:           mode,
 	}
 	if err := s.repo.Create(f); err != nil {
 		// Compensation: log only — manual cleanup of the orphan bank account
@@ -217,6 +231,7 @@ type UpdateFundInput struct {
 	Description            *string
 	MinimumContributionRSD *decimal.Decimal
 	Active                 *bool
+	DividendMode           *model.DividendMode // SP4
 }
 
 func (s *FundService) Update(ctx context.Context, in UpdateFundInput) (*model.InvestmentFund, error) {
@@ -243,6 +258,13 @@ func (s *FundService) Update(ctx context.Context, in UpdateFundInput) (*model.In
 	if in.Active != nil && *in.Active != f.Active {
 		f.Active = *in.Active
 		changed = append(changed, "active")
+	}
+	if in.DividendMode != nil && *in.DividendMode != f.DividendMode {
+		if *in.DividendMode != model.DividendModePayout && *in.DividendMode != model.DividendModeReinvest {
+			return nil, fmt.Errorf("dividend_mode must be payout or reinvest: %w", ErrFundInvalidInput)
+		}
+		f.DividendMode = *in.DividendMode
+		changed = append(changed, "dividend_mode")
 	}
 	if len(changed) == 0 {
 		return f, nil

@@ -157,10 +157,19 @@ func SetupV3(r *gin.Engine, h *Handlers) {
 		// Tax
 		me.GET("/tax", bankIfEmp, h.Tax.ListMyTaxRecords)
 
-		// Watchlist (personal list of tracked listings)
+		// Watchlist — legacy single-list routes operate on the owner's default
+		// "My Watchlist" (backward compatible).
 		me.GET("/watchlist", bankIfEmp, h.Watchlist.ListMy)
 		me.POST("/watchlist", bankIfEmp, h.Watchlist.AddItem)
 		me.DELETE("/watchlist/:listing_id", bankIfEmp, h.Watchlist.RemoveItem)
+
+		// Watchlist — multiple named lists (SP6).
+		me.GET("/watchlists", bankIfEmp, h.Watchlist.ListWatchlists)
+		me.POST("/watchlists", bankIfEmp, h.Watchlist.CreateWatchlist)
+		me.DELETE("/watchlists/:watchlist_id", bankIfEmp, h.Watchlist.DeleteWatchlist)
+		me.GET("/watchlists/:watchlist_id/items", bankIfEmp, h.Watchlist.ListItemsInList)
+		me.POST("/watchlists/:watchlist_id/items", bankIfEmp, h.Watchlist.AddItemToList)
+		me.DELETE("/watchlists/:watchlist_id/items/:listing_id", bankIfEmp, h.Watchlist.RemoveItemFromList)
 
 		// Price alerts (per-owner thresholds on listing price / daily-change %)
 		me.GET("/price-alerts", bankIfEmp, h.PriceAlert.ListMy)
@@ -1033,6 +1042,10 @@ func SetupV3(r *gin.Engine, h *Handlers) {
 			auditAdmin.GET("/employees-changelog", h.AdminAudit.ListEmployeesChangelog)
 			auditAdmin.GET("/cron-actions", h.AdminAudit.ListCronActions)
 			auditAdmin.GET("/saga-logs", h.AdminAudit.ListSagaLogs)
+			// Business-action audit log (SP2 — 2026-06-04): who changed a limit,
+			// reset a usedLimit, approved/rejected an order, changed permissions,
+			// or triggered manual tax collection.
+			auditAdmin.GET("/business-actions", h.AdminAudit.ListBusinessActions)
 		}
 	}
 

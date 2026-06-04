@@ -3,10 +3,12 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 
 	"github.com/exbanka/contract/cronreg"
@@ -41,7 +43,35 @@ type OTCExpiryCron struct {
 	outbox   *outbox.Outbox
 	outboxDB *gorm.DB
 
+	// capitalGains, when wired, books the buyer's lost-premium capital loss
+	// row at contract expiry (resolution-month model). nil disables (legacy
+	// tests). Spec §4 C3.
+	capitalGains CapitalGainRepo
+
+	// warnDays > 0 enables the expiring-soon warning pass (SP5 E): contracts
+	// whose settlement_date is exactly warnDays out get an
+	// OTC_CONTRACT_EXPIRING_SOON in-app notification to both client parties.
+	warnDays int
+
 	entry *cronreg.Entry
+}
+
+// WithExpiryWarning enables the expiring-soon warning pass N days before
+// settlement (SP5 E). 0 disables. Returns the cron for chaining.
+func (cr *OTCExpiryCron) WithExpiryWarning(nDays int) *OTCExpiryCron {
+	if nDays < 0 {
+		nDays = 0
+	}
+	cr.warnDays = nDays
+	return cr
+}
+
+// WithCapitalGains wires the capital-gain repo so contract expiry books the
+// buyer's lost-premium loss row (TotalGain = -premium) in the expiry month.
+// The seller keeps the premium (already taxed at accept). Spec §4 C3.
+func (cr *OTCExpiryCron) WithCapitalGains(repo CapitalGainRepo) *OTCExpiryCron {
+	cr.capitalGains = repo
+	return cr
 }
 
 // WithOutbox wires the transactional outbox + the GORM handle the cron
@@ -119,6 +149,19 @@ func (cr *OTCExpiryCron) RunOnce(ctx context.Context) error {
 			}
 		}
 	}
+	// SP5 E: warn parties whose contract settles exactly warnDays from now.
+	// Matching a single calendar day means each contract is warned once.
+	if cr.warnDays > 0 {
+		warnDay := time.Now().UTC().AddDate(0, 0, cr.warnDays)
+		rows, err := cr.contracts.ListExpiringOn(warnDay, cr.batchSize)
+		if err != nil {
+			log.Printf("WARN: OTC expiring-soon list: %v", err)
+		} else {
+			for i := range rows {
+				cr.warnContractExpiring(ctx, &rows[i])
+			}
+		}
+	}
 	for {
 		rows, err := cr.offers.ListExpiringOffers(today, cr.batchSize)
 		if err != nil {
@@ -167,6 +210,19 @@ func (cr *OTCExpiryCron) expirePeerContract(ctx context.Context, c *model.PeerOp
 	return cr.peerContracts.SetStatus(c.ID, "expired")
 }
 
+// warnContractExpiring sends an OTC_CONTRACT_EXPIRING_SOON in-app notification
+// to both client parties of a contract approaching settlement (SP5 E). Bank
+// parties / nil notifier are no-ops.
+func (cr *OTCExpiryCron) warnContractExpiring(ctx context.Context, c *model.OptionContract) {
+	data := map[string]string{
+		"ticker":          c.Ticker,
+		"settlement_date": c.SettlementDate.UTC().Format("2006-01-02"),
+		"days_remaining":  fmt.Sprintf("%d", cr.warnDays),
+	}
+	notifyOTCPartyVia(ctx, cr.notifier, kafkamsg.OTCParty{OwnerType: string(c.BuyerOwnerType), OwnerID: c.BuyerOwnerID}, "OTC_CONTRACT_EXPIRING_SOON", "otc_contract", c.ID, data)
+	notifyOTCPartyVia(ctx, cr.notifier, kafkamsg.OTCParty{OwnerType: string(c.SellerOwnerType), OwnerID: c.SellerOwnerID}, "OTC_CONTRACT_EXPIRING_SOON", "otc_contract", c.ID, data)
+}
+
 func (cr *OTCExpiryCron) expireContract(ctx context.Context, c *model.OptionContract) error {
 	if cr.holdingRes != nil {
 		if _, err := cr.holdingRes.ReleaseForOTCContract(ctx, c.ID); err != nil {
@@ -174,6 +230,34 @@ func (cr *OTCExpiryCron) expireContract(ctx context.Context, c *model.OptionCont
 		}
 	}
 	now := time.Now().UTC()
+	// Resolution-month model: the buyer's premium is realised as a loss at
+	// expiry, reducing their capital gain for the expiry month. The seller
+	// keeps the premium (already taxed at accept). Booked BEFORE the status
+	// flip so a crash between insert and flip re-runs safely; Create is
+	// idempotent on the contract-scoped key (ON CONFLICT DO NOTHING), so a
+	// re-run never double-books. Spec §3.1, §4 C3.
+	if cr.capitalGains != nil && c.PremiumPaid.IsPositive() {
+		lossKey := fmt.Sprintf("expire-contract-%d-buyer-premium-loss", c.ID)
+		loss := &model.CapitalGain{
+			OwnerType:        c.BuyerOwnerType,
+			OwnerID:          c.BuyerOwnerID,
+			OTC:              true,
+			SecurityType:     "option",
+			Ticker:           c.Ticker,
+			Quantity:         c.Quantity.IntPart(),
+			BuyPricePerUnit:  decimal.Zero,
+			SellPricePerUnit: decimal.Zero,
+			TotalGain:        c.PremiumPaid.Neg(),
+			Currency:         c.PremiumCurrency,
+			AccountID:        c.BuyerAccountID,
+			TaxYear:          now.Year(),
+			TaxMonth:         int(now.Month()),
+			IdempotencyKey:   &lossKey,
+		}
+		if err := cr.capitalGains.Create(loss); err != nil {
+			return err // do not flip status if the loss row failed; retry next pass
+		}
+	}
 	c.Status = model.OptionContractStatusExpired
 	c.ExpiredAt = &now
 	if err := cr.contracts.Save(c); err != nil {

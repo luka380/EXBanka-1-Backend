@@ -1661,6 +1661,258 @@ func (x *ListAdminAuditLogsResponse) GetPageSize() int32 {
 	return 0
 }
 
+type ListBusinessAuditLogsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Page          int32                  `protobuf:"varint,1,opt,name=page,proto3" json:"page,omitempty"`
+	PageSize      int32                  `protobuf:"varint,2,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
+	Since         int64                  `protobuf:"varint,3,opt,name=since,proto3" json:"since,omitempty"`                            // unix seconds, 0 = no lower bound
+	Until         int64                  `protobuf:"varint,4,opt,name=until,proto3" json:"until,omitempty"`                            // unix seconds, 0 = no upper bound
+	ActorId       int64                  `protobuf:"varint,5,opt,name=actor_id,json=actorId,proto3" json:"actor_id,omitempty"`         // actor employee_id filter, 0 = all
+	Action        string                 `protobuf:"bytes,6,opt,name=action,proto3" json:"action,omitempty"`                           // exact match, "" = all
+	TargetType    string                 `protobuf:"bytes,7,opt,name=target_type,json=targetType,proto3" json:"target_type,omitempty"` // exact match, "" = all
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListBusinessAuditLogsRequest) Reset() {
+	*x = ListBusinessAuditLogsRequest{}
+	mi := &file_notification_notification_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListBusinessAuditLogsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListBusinessAuditLogsRequest) ProtoMessage() {}
+
+func (x *ListBusinessAuditLogsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_notification_notification_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListBusinessAuditLogsRequest.ProtoReflect.Descriptor instead.
+func (*ListBusinessAuditLogsRequest) Descriptor() ([]byte, []int) {
+	return file_notification_notification_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *ListBusinessAuditLogsRequest) GetPage() int32 {
+	if x != nil {
+		return x.Page
+	}
+	return 0
+}
+
+func (x *ListBusinessAuditLogsRequest) GetPageSize() int32 {
+	if x != nil {
+		return x.PageSize
+	}
+	return 0
+}
+
+func (x *ListBusinessAuditLogsRequest) GetSince() int64 {
+	if x != nil {
+		return x.Since
+	}
+	return 0
+}
+
+func (x *ListBusinessAuditLogsRequest) GetUntil() int64 {
+	if x != nil {
+		return x.Until
+	}
+	return 0
+}
+
+func (x *ListBusinessAuditLogsRequest) GetActorId() int64 {
+	if x != nil {
+		return x.ActorId
+	}
+	return 0
+}
+
+func (x *ListBusinessAuditLogsRequest) GetAction() string {
+	if x != nil {
+		return x.Action
+	}
+	return ""
+}
+
+func (x *ListBusinessAuditLogsRequest) GetTargetType() string {
+	if x != nil {
+		return x.TargetType
+	}
+	return ""
+}
+
+type BusinessAuditLogEntry struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	Action        string                 `protobuf:"bytes,2,opt,name=action,proto3" json:"action,omitempty"`
+	ActorId       int64                  `protobuf:"varint,3,opt,name=actor_id,json=actorId,proto3" json:"actor_id,omitempty"`
+	TargetType    string                 `protobuf:"bytes,4,opt,name=target_type,json=targetType,proto3" json:"target_type,omitempty"`
+	TargetId      string                 `protobuf:"bytes,5,opt,name=target_id,json=targetId,proto3" json:"target_id,omitempty"`
+	Detail        string                 `protobuf:"bytes,6,opt,name=detail,proto3" json:"detail,omitempty"`
+	Timestamp     int64                  `protobuf:"varint,7,opt,name=timestamp,proto3" json:"timestamp,omitempty"` // unix seconds
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BusinessAuditLogEntry) Reset() {
+	*x = BusinessAuditLogEntry{}
+	mi := &file_notification_notification_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BusinessAuditLogEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BusinessAuditLogEntry) ProtoMessage() {}
+
+func (x *BusinessAuditLogEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_notification_notification_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BusinessAuditLogEntry.ProtoReflect.Descriptor instead.
+func (*BusinessAuditLogEntry) Descriptor() ([]byte, []int) {
+	return file_notification_notification_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *BusinessAuditLogEntry) GetId() uint64 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
+func (x *BusinessAuditLogEntry) GetAction() string {
+	if x != nil {
+		return x.Action
+	}
+	return ""
+}
+
+func (x *BusinessAuditLogEntry) GetActorId() int64 {
+	if x != nil {
+		return x.ActorId
+	}
+	return 0
+}
+
+func (x *BusinessAuditLogEntry) GetTargetType() string {
+	if x != nil {
+		return x.TargetType
+	}
+	return ""
+}
+
+func (x *BusinessAuditLogEntry) GetTargetId() string {
+	if x != nil {
+		return x.TargetId
+	}
+	return ""
+}
+
+func (x *BusinessAuditLogEntry) GetDetail() string {
+	if x != nil {
+		return x.Detail
+	}
+	return ""
+}
+
+func (x *BusinessAuditLogEntry) GetTimestamp() int64 {
+	if x != nil {
+		return x.Timestamp
+	}
+	return 0
+}
+
+type ListBusinessAuditLogsResponse struct {
+	state         protoimpl.MessageState   `protogen:"open.v1"`
+	Entries       []*BusinessAuditLogEntry `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
+	Total         int64                    `protobuf:"varint,2,opt,name=total,proto3" json:"total,omitempty"`
+	Page          int32                    `protobuf:"varint,3,opt,name=page,proto3" json:"page,omitempty"`
+	PageSize      int32                    `protobuf:"varint,4,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListBusinessAuditLogsResponse) Reset() {
+	*x = ListBusinessAuditLogsResponse{}
+	mi := &file_notification_notification_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListBusinessAuditLogsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListBusinessAuditLogsResponse) ProtoMessage() {}
+
+func (x *ListBusinessAuditLogsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_notification_notification_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListBusinessAuditLogsResponse.ProtoReflect.Descriptor instead.
+func (*ListBusinessAuditLogsResponse) Descriptor() ([]byte, []int) {
+	return file_notification_notification_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *ListBusinessAuditLogsResponse) GetEntries() []*BusinessAuditLogEntry {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
+func (x *ListBusinessAuditLogsResponse) GetTotal() int64 {
+	if x != nil {
+		return x.Total
+	}
+	return 0
+}
+
+func (x *ListBusinessAuditLogsResponse) GetPage() int32 {
+	if x != nil {
+		return x.Page
+	}
+	return 0
+}
+
+func (x *ListBusinessAuditLogsResponse) GetPageSize() int32 {
+	if x != nil {
+		return x.PageSize
+	}
+	return 0
+}
+
 var File_notification_notification_proto protoreflect.FileDescriptor
 
 const file_notification_notification_proto_rawDesc = "" +
@@ -1783,7 +2035,31 @@ const file_notification_notification_proto_rawDesc = "" +
 	"\aentries\x18\x01 \x03(\v2 .notification.AdminAuditLogEntryR\aentries\x12\x14\n" +
 	"\x05total\x18\x02 \x01(\x03R\x05total\x12\x12\n" +
 	"\x04page\x18\x03 \x01(\x05R\x04page\x12\x1b\n" +
-	"\tpage_size\x18\x04 \x01(\x05R\bpageSize2\xdb\t\n" +
+	"\tpage_size\x18\x04 \x01(\x05R\bpageSize\"\xcf\x01\n" +
+	"\x1cListBusinessAuditLogsRequest\x12\x12\n" +
+	"\x04page\x18\x01 \x01(\x05R\x04page\x12\x1b\n" +
+	"\tpage_size\x18\x02 \x01(\x05R\bpageSize\x12\x14\n" +
+	"\x05since\x18\x03 \x01(\x03R\x05since\x12\x14\n" +
+	"\x05until\x18\x04 \x01(\x03R\x05until\x12\x19\n" +
+	"\bactor_id\x18\x05 \x01(\x03R\aactorId\x12\x16\n" +
+	"\x06action\x18\x06 \x01(\tR\x06action\x12\x1f\n" +
+	"\vtarget_type\x18\a \x01(\tR\n" +
+	"targetType\"\xce\x01\n" +
+	"\x15BusinessAuditLogEntry\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x16\n" +
+	"\x06action\x18\x02 \x01(\tR\x06action\x12\x19\n" +
+	"\bactor_id\x18\x03 \x01(\x03R\aactorId\x12\x1f\n" +
+	"\vtarget_type\x18\x04 \x01(\tR\n" +
+	"targetType\x12\x1b\n" +
+	"\ttarget_id\x18\x05 \x01(\tR\btargetId\x12\x16\n" +
+	"\x06detail\x18\x06 \x01(\tR\x06detail\x12\x1c\n" +
+	"\ttimestamp\x18\a \x01(\x03R\ttimestamp\"\xa5\x01\n" +
+	"\x1dListBusinessAuditLogsResponse\x12=\n" +
+	"\aentries\x18\x01 \x03(\v2#.notification.BusinessAuditLogEntryR\aentries\x12\x14\n" +
+	"\x05total\x18\x02 \x01(\x03R\x05total\x12\x12\n" +
+	"\x04page\x18\x03 \x01(\x05R\x04page\x12\x1b\n" +
+	"\tpage_size\x18\x04 \x01(\x05R\bpageSize2\xcd\n" +
+	"\n" +
 	"\x13NotificationService\x12L\n" +
 	"\tSendEmail\x12\x1e.notification.SendEmailRequest\x1a\x1f.notification.SendEmailResponse\x12d\n" +
 	"\x11GetDeliveryStatus\x12&.notification.GetDeliveryStatusRequest\x1a'.notification.GetDeliveryStatusResponse\x12c\n" +
@@ -1797,7 +2073,8 @@ const file_notification_notification_proto_rawDesc = "" +
 	"\vGetTemplate\x12 .notification.GetTemplateRequest\x1a\x1a.notification.TemplateInfo\x12K\n" +
 	"\vSetTemplate\x12 .notification.SetTemplateRequest\x1a\x1a.notification.TemplateInfo\x12O\n" +
 	"\rResetTemplate\x12\".notification.ResetTemplateRequest\x1a\x1a.notification.TemplateInfo\x12g\n" +
-	"\x12ListAdminAuditLogs\x12'.notification.ListAdminAuditLogsRequest\x1a(.notification.ListAdminAuditLogsResponseB;Z9github.com/exbanka/contract/notificationpb;notificationpbb\x06proto3"
+	"\x12ListAdminAuditLogs\x12'.notification.ListAdminAuditLogsRequest\x1a(.notification.ListAdminAuditLogsResponse\x12p\n" +
+	"\x15ListBusinessAuditLogs\x12*.notification.ListBusinessAuditLogsRequest\x1a+.notification.ListBusinessAuditLogsResponseB;Z9github.com/exbanka/contract/notificationpb;notificationpbb\x06proto3"
 
 var (
 	file_notification_notification_proto_rawDescOnce sync.Once
@@ -1811,7 +2088,7 @@ func file_notification_notification_proto_rawDescGZIP() []byte {
 	return file_notification_notification_proto_rawDescData
 }
 
-var file_notification_notification_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
+var file_notification_notification_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
 var file_notification_notification_proto_goTypes = []any{
 	(*SendEmailRequest)(nil),                 // 0: notification.SendEmailRequest
 	(*SendEmailResponse)(nil),                // 1: notification.SendEmailResponse
@@ -1841,46 +2118,52 @@ var file_notification_notification_proto_goTypes = []any{
 	(*ListAdminAuditLogsRequest)(nil),        // 25: notification.ListAdminAuditLogsRequest
 	(*AdminAuditLogEntry)(nil),               // 26: notification.AdminAuditLogEntry
 	(*ListAdminAuditLogsResponse)(nil),       // 27: notification.ListAdminAuditLogsResponse
-	nil,                                      // 28: notification.SendEmailRequest.DataEntry
+	(*ListBusinessAuditLogsRequest)(nil),     // 28: notification.ListBusinessAuditLogsRequest
+	(*BusinessAuditLogEntry)(nil),            // 29: notification.BusinessAuditLogEntry
+	(*ListBusinessAuditLogsResponse)(nil),    // 30: notification.ListBusinessAuditLogsResponse
+	nil,                                      // 31: notification.SendEmailRequest.DataEntry
 }
 var file_notification_notification_proto_depIdxs = []int32{
-	28, // 0: notification.SendEmailRequest.data:type_name -> notification.SendEmailRequest.DataEntry
+	31, // 0: notification.SendEmailRequest.data:type_name -> notification.SendEmailRequest.DataEntry
 	5,  // 1: notification.PendingMobileResponse.items:type_name -> notification.MobileInboxEntry
 	10, // 2: notification.ListNotificationsResponse.notifications:type_name -> notification.NotificationEntry
 	18, // 3: notification.TemplateInfo.variables:type_name -> notification.TemplateVariable
 	19, // 4: notification.ListTemplatesResponse.templates:type_name -> notification.TemplateInfo
 	26, // 5: notification.ListAdminAuditLogsResponse.entries:type_name -> notification.AdminAuditLogEntry
-	0,  // 6: notification.NotificationService.SendEmail:input_type -> notification.SendEmailRequest
-	2,  // 7: notification.NotificationService.GetDeliveryStatus:input_type -> notification.GetDeliveryStatusRequest
-	4,  // 8: notification.NotificationService.GetPendingMobileItems:input_type -> notification.GetPendingMobileRequest
-	7,  // 9: notification.NotificationService.AckMobileItem:input_type -> notification.AckMobileRequest
-	9,  // 10: notification.NotificationService.ListNotifications:input_type -> notification.ListNotificationsRequest
-	12, // 11: notification.NotificationService.GetUnreadCount:input_type -> notification.GetUnreadCountRequest
-	14, // 12: notification.NotificationService.MarkNotificationRead:input_type -> notification.MarkNotificationReadRequest
-	16, // 13: notification.NotificationService.MarkAllNotificationsRead:input_type -> notification.MarkAllNotificationsReadRequest
-	20, // 14: notification.NotificationService.ListTemplates:input_type -> notification.ListTemplatesRequest
-	22, // 15: notification.NotificationService.GetTemplate:input_type -> notification.GetTemplateRequest
-	23, // 16: notification.NotificationService.SetTemplate:input_type -> notification.SetTemplateRequest
-	24, // 17: notification.NotificationService.ResetTemplate:input_type -> notification.ResetTemplateRequest
-	25, // 18: notification.NotificationService.ListAdminAuditLogs:input_type -> notification.ListAdminAuditLogsRequest
-	1,  // 19: notification.NotificationService.SendEmail:output_type -> notification.SendEmailResponse
-	3,  // 20: notification.NotificationService.GetDeliveryStatus:output_type -> notification.GetDeliveryStatusResponse
-	6,  // 21: notification.NotificationService.GetPendingMobileItems:output_type -> notification.PendingMobileResponse
-	8,  // 22: notification.NotificationService.AckMobileItem:output_type -> notification.AckMobileResponse
-	11, // 23: notification.NotificationService.ListNotifications:output_type -> notification.ListNotificationsResponse
-	13, // 24: notification.NotificationService.GetUnreadCount:output_type -> notification.GetUnreadCountResponse
-	15, // 25: notification.NotificationService.MarkNotificationRead:output_type -> notification.MarkNotificationReadResponse
-	17, // 26: notification.NotificationService.MarkAllNotificationsRead:output_type -> notification.MarkAllNotificationsReadResponse
-	21, // 27: notification.NotificationService.ListTemplates:output_type -> notification.ListTemplatesResponse
-	19, // 28: notification.NotificationService.GetTemplate:output_type -> notification.TemplateInfo
-	19, // 29: notification.NotificationService.SetTemplate:output_type -> notification.TemplateInfo
-	19, // 30: notification.NotificationService.ResetTemplate:output_type -> notification.TemplateInfo
-	27, // 31: notification.NotificationService.ListAdminAuditLogs:output_type -> notification.ListAdminAuditLogsResponse
-	19, // [19:32] is the sub-list for method output_type
-	6,  // [6:19] is the sub-list for method input_type
-	6,  // [6:6] is the sub-list for extension type_name
-	6,  // [6:6] is the sub-list for extension extendee
-	0,  // [0:6] is the sub-list for field type_name
+	29, // 6: notification.ListBusinessAuditLogsResponse.entries:type_name -> notification.BusinessAuditLogEntry
+	0,  // 7: notification.NotificationService.SendEmail:input_type -> notification.SendEmailRequest
+	2,  // 8: notification.NotificationService.GetDeliveryStatus:input_type -> notification.GetDeliveryStatusRequest
+	4,  // 9: notification.NotificationService.GetPendingMobileItems:input_type -> notification.GetPendingMobileRequest
+	7,  // 10: notification.NotificationService.AckMobileItem:input_type -> notification.AckMobileRequest
+	9,  // 11: notification.NotificationService.ListNotifications:input_type -> notification.ListNotificationsRequest
+	12, // 12: notification.NotificationService.GetUnreadCount:input_type -> notification.GetUnreadCountRequest
+	14, // 13: notification.NotificationService.MarkNotificationRead:input_type -> notification.MarkNotificationReadRequest
+	16, // 14: notification.NotificationService.MarkAllNotificationsRead:input_type -> notification.MarkAllNotificationsReadRequest
+	20, // 15: notification.NotificationService.ListTemplates:input_type -> notification.ListTemplatesRequest
+	22, // 16: notification.NotificationService.GetTemplate:input_type -> notification.GetTemplateRequest
+	23, // 17: notification.NotificationService.SetTemplate:input_type -> notification.SetTemplateRequest
+	24, // 18: notification.NotificationService.ResetTemplate:input_type -> notification.ResetTemplateRequest
+	25, // 19: notification.NotificationService.ListAdminAuditLogs:input_type -> notification.ListAdminAuditLogsRequest
+	28, // 20: notification.NotificationService.ListBusinessAuditLogs:input_type -> notification.ListBusinessAuditLogsRequest
+	1,  // 21: notification.NotificationService.SendEmail:output_type -> notification.SendEmailResponse
+	3,  // 22: notification.NotificationService.GetDeliveryStatus:output_type -> notification.GetDeliveryStatusResponse
+	6,  // 23: notification.NotificationService.GetPendingMobileItems:output_type -> notification.PendingMobileResponse
+	8,  // 24: notification.NotificationService.AckMobileItem:output_type -> notification.AckMobileResponse
+	11, // 25: notification.NotificationService.ListNotifications:output_type -> notification.ListNotificationsResponse
+	13, // 26: notification.NotificationService.GetUnreadCount:output_type -> notification.GetUnreadCountResponse
+	15, // 27: notification.NotificationService.MarkNotificationRead:output_type -> notification.MarkNotificationReadResponse
+	17, // 28: notification.NotificationService.MarkAllNotificationsRead:output_type -> notification.MarkAllNotificationsReadResponse
+	21, // 29: notification.NotificationService.ListTemplates:output_type -> notification.ListTemplatesResponse
+	19, // 30: notification.NotificationService.GetTemplate:output_type -> notification.TemplateInfo
+	19, // 31: notification.NotificationService.SetTemplate:output_type -> notification.TemplateInfo
+	19, // 32: notification.NotificationService.ResetTemplate:output_type -> notification.TemplateInfo
+	27, // 33: notification.NotificationService.ListAdminAuditLogs:output_type -> notification.ListAdminAuditLogsResponse
+	30, // 34: notification.NotificationService.ListBusinessAuditLogs:output_type -> notification.ListBusinessAuditLogsResponse
+	21, // [21:35] is the sub-list for method output_type
+	7,  // [7:21] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_notification_notification_proto_init() }
@@ -1894,7 +2177,7 @@ func file_notification_notification_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_notification_notification_proto_rawDesc), len(file_notification_notification_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   29,
+			NumMessages:   32,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

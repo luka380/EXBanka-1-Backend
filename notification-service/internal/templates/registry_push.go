@@ -488,4 +488,27 @@ var pushDefs = []Definition{
 		DefaultSubject: "Card request rejected",
 		DefaultBody:    "Your card request was rejected: {{reason}}.",
 	},
+	{
+		Type: "LIMIT_CHANGED", Channel: "push",
+		Description: "A client's transaction limits were changed (SP5 D1).",
+		Variables: []Variable{
+			{"daily_limit", "New daily limit", "200000.00"},
+			{"monthly_limit", "New monthly limit", "2000000.00"},
+			{"transfer_limit", "New per-transfer limit", "100000.00"},
+			{"currency", "Currency code", "RSD"},
+		},
+		DefaultSubject: "Limits updated",
+		DefaultBody:    "Your limits were updated: daily {{daily_limit}}, monthly {{monthly_limit}}, per-transfer {{transfer_limit}} {{currency}}.",
+	},
+	{
+		Type: "OTC_CONTRACT_EXPIRING_SOON", Channel: "push",
+		Description: "An OTC option contract is approaching its settlement date (SP5 E).",
+		Variables: []Variable{
+			{"ticker", "Underlying ticker", "AAPL"},
+			{"settlement_date", "Settlement date", "2026-07-15"},
+			{"days_remaining", "Days until settlement", "3"},
+		},
+		DefaultSubject: "OTC contract expiring soon",
+		DefaultBody:    "Your OTC option on {{ticker}} expires in {{days_remaining}} day(s) ({{settlement_date}}).",
+	},
 }

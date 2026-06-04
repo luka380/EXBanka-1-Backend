@@ -5569,9 +5569,12 @@ var PriceAlertService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	WatchlistService_AddItem_FullMethodName    = "/stock.WatchlistService/AddItem"
-	WatchlistService_RemoveItem_FullMethodName = "/stock.WatchlistService/RemoveItem"
-	WatchlistService_ListMy_FullMethodName     = "/stock.WatchlistService/ListMy"
+	WatchlistService_AddItem_FullMethodName         = "/stock.WatchlistService/AddItem"
+	WatchlistService_RemoveItem_FullMethodName      = "/stock.WatchlistService/RemoveItem"
+	WatchlistService_ListMy_FullMethodName          = "/stock.WatchlistService/ListMy"
+	WatchlistService_CreateWatchlist_FullMethodName = "/stock.WatchlistService/CreateWatchlist"
+	WatchlistService_ListWatchlists_FullMethodName  = "/stock.WatchlistService/ListWatchlists"
+	WatchlistService_DeleteWatchlist_FullMethodName = "/stock.WatchlistService/DeleteWatchlist"
 )
 
 // WatchlistServiceClient is the client API for WatchlistService service.
@@ -5581,6 +5584,10 @@ type WatchlistServiceClient interface {
 	AddItem(ctx context.Context, in *AddWatchlistItemRequest, opts ...grpc.CallOption) (*WatchlistItemResponse, error)
 	RemoveItem(ctx context.Context, in *RemoveWatchlistItemRequest, opts ...grpc.CallOption) (*RemoveWatchlistItemResponse, error)
 	ListMy(ctx context.Context, in *ListMyWatchlistRequest, opts ...grpc.CallOption) (*ListMyWatchlistResponse, error)
+	// SP6 named lists:
+	CreateWatchlist(ctx context.Context, in *CreateWatchlistRequest, opts ...grpc.CallOption) (*WatchlistResponse, error)
+	ListWatchlists(ctx context.Context, in *ListWatchlistsRequest, opts ...grpc.CallOption) (*ListWatchlistsResponse, error)
+	DeleteWatchlist(ctx context.Context, in *DeleteWatchlistRequest, opts ...grpc.CallOption) (*DeleteWatchlistResponse, error)
 }
 
 type watchlistServiceClient struct {
@@ -5621,6 +5628,36 @@ func (c *watchlistServiceClient) ListMy(ctx context.Context, in *ListMyWatchlist
 	return out, nil
 }
 
+func (c *watchlistServiceClient) CreateWatchlist(ctx context.Context, in *CreateWatchlistRequest, opts ...grpc.CallOption) (*WatchlistResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WatchlistResponse)
+	err := c.cc.Invoke(ctx, WatchlistService_CreateWatchlist_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *watchlistServiceClient) ListWatchlists(ctx context.Context, in *ListWatchlistsRequest, opts ...grpc.CallOption) (*ListWatchlistsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListWatchlistsResponse)
+	err := c.cc.Invoke(ctx, WatchlistService_ListWatchlists_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *watchlistServiceClient) DeleteWatchlist(ctx context.Context, in *DeleteWatchlistRequest, opts ...grpc.CallOption) (*DeleteWatchlistResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteWatchlistResponse)
+	err := c.cc.Invoke(ctx, WatchlistService_DeleteWatchlist_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // WatchlistServiceServer is the server API for WatchlistService service.
 // All implementations must embed UnimplementedWatchlistServiceServer
 // for forward compatibility.
@@ -5628,6 +5665,10 @@ type WatchlistServiceServer interface {
 	AddItem(context.Context, *AddWatchlistItemRequest) (*WatchlistItemResponse, error)
 	RemoveItem(context.Context, *RemoveWatchlistItemRequest) (*RemoveWatchlistItemResponse, error)
 	ListMy(context.Context, *ListMyWatchlistRequest) (*ListMyWatchlistResponse, error)
+	// SP6 named lists:
+	CreateWatchlist(context.Context, *CreateWatchlistRequest) (*WatchlistResponse, error)
+	ListWatchlists(context.Context, *ListWatchlistsRequest) (*ListWatchlistsResponse, error)
+	DeleteWatchlist(context.Context, *DeleteWatchlistRequest) (*DeleteWatchlistResponse, error)
 	mustEmbedUnimplementedWatchlistServiceServer()
 }
 
@@ -5646,6 +5687,15 @@ func (UnimplementedWatchlistServiceServer) RemoveItem(context.Context, *RemoveWa
 }
 func (UnimplementedWatchlistServiceServer) ListMy(context.Context, *ListMyWatchlistRequest) (*ListMyWatchlistResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListMy not implemented")
+}
+func (UnimplementedWatchlistServiceServer) CreateWatchlist(context.Context, *CreateWatchlistRequest) (*WatchlistResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateWatchlist not implemented")
+}
+func (UnimplementedWatchlistServiceServer) ListWatchlists(context.Context, *ListWatchlistsRequest) (*ListWatchlistsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListWatchlists not implemented")
+}
+func (UnimplementedWatchlistServiceServer) DeleteWatchlist(context.Context, *DeleteWatchlistRequest) (*DeleteWatchlistResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteWatchlist not implemented")
 }
 func (UnimplementedWatchlistServiceServer) mustEmbedUnimplementedWatchlistServiceServer() {}
 func (UnimplementedWatchlistServiceServer) testEmbeddedByValue()                          {}
@@ -5722,6 +5772,60 @@ func _WatchlistService_ListMy_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WatchlistService_CreateWatchlist_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateWatchlistRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WatchlistServiceServer).CreateWatchlist(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WatchlistService_CreateWatchlist_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WatchlistServiceServer).CreateWatchlist(ctx, req.(*CreateWatchlistRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WatchlistService_ListWatchlists_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListWatchlistsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WatchlistServiceServer).ListWatchlists(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WatchlistService_ListWatchlists_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WatchlistServiceServer).ListWatchlists(ctx, req.(*ListWatchlistsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WatchlistService_DeleteWatchlist_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteWatchlistRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WatchlistServiceServer).DeleteWatchlist(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WatchlistService_DeleteWatchlist_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WatchlistServiceServer).DeleteWatchlist(ctx, req.(*DeleteWatchlistRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // WatchlistService_ServiceDesc is the grpc.ServiceDesc for WatchlistService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -5740,6 +5844,18 @@ var WatchlistService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListMy",
 			Handler:    _WatchlistService_ListMy_Handler,
+		},
+		{
+			MethodName: "CreateWatchlist",
+			Handler:    _WatchlistService_CreateWatchlist_Handler,
+		},
+		{
+			MethodName: "ListWatchlists",
+			Handler:    _WatchlistService_ListWatchlists_Handler,
+		},
+		{
+			MethodName: "DeleteWatchlist",
+			Handler:    _WatchlistService_DeleteWatchlist_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

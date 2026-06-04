@@ -13,6 +13,7 @@ func TestRegistry_AllEmailTypesPresent(t *testing.T) {
 		"CARD_VERIFICATION", "CARD_STATUS_CHANGED", "LOAN_APPROVED", "LOAN_REJECTED",
 		"INSTALLMENT_FAILED", "VERIFICATION_CODE", "TRANSACTION_VERIFICATION",
 		"PAYMENT_CONFIRMATION", "MOBILE_ACTIVATION",
+		"LIMIT_CHANGED",
 	}
 	for _, typ := range want {
 		if _, ok := Get(typ, "email"); !ok {
@@ -43,6 +44,7 @@ func TestRegistry_AllPushTypesPresent(t *testing.T) {
 		"FUND_RECURRING_EXECUTED", "FUND_RECURRING_SKIPPED",
 		"PRICE_ALERT_TRIGGERED",
 		"WATCHLIST_PRICE_MOVE",
+		"LIMIT_CHANGED", "OTC_CONTRACT_EXPIRING_SOON",
 	}
 	for _, typ := range want {
 		if _, ok := Get(typ, "push"); !ok {

@@ -15,6 +15,7 @@ import (
 type StockOrderHandler struct {
 	client        stockpb.OrderGRPCServiceClient
 	accountClient accountpb.AccountServiceClient
+	Audit         businessAuditor // optional; set in router/handlers.go
 }
 
 func NewStockOrderHandler(client stockpb.OrderGRPCServiceClient, accountClient accountpb.AccountServiceClient) *StockOrderHandler {
@@ -504,6 +505,7 @@ func (h *StockOrderHandler) ApproveOrder(c *gin.Context) {
 		handleGRPCError(c, err)
 		return
 	}
+	auditBusinessAction(c, h.Audit, "order.approve", "order", strconv.FormatUint(id, 10), "")
 	c.JSON(http.StatusOK, resp)
 }
 
@@ -523,5 +525,6 @@ func (h *StockOrderHandler) RejectOrder(c *gin.Context) {
 		handleGRPCError(c, err)
 		return
 	}
+	auditBusinessAction(c, h.Audit, "order.decline", "order", strconv.FormatUint(id, 10), "")
 	c.JSON(http.StatusOK, resp)
 }

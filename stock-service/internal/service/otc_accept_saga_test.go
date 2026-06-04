@@ -189,6 +189,41 @@ func TestAcceptSaga_SameCurrency_HappyPath(t *testing.T) {
 	}
 }
 
+// Resolution-month model (2026-06-04): the seller's premium income is still
+// booked as a capital gain at accept, but the buyer's premium is NO LONGER
+// booked here — it is realised at exercise/expiry. Spec §3, §4 C1.
+func TestAcceptSaga_NoBuyerPremiumRow(t *testing.T) {
+	fx := newAcceptSagaFixture(t)
+	cg := newMockCapitalGainRepo()
+	fx.svc = fx.svc.WithCapitalGain(cg)
+
+	if _, err := fx.svc.Accept(context.Background(), AcceptInput{
+		OfferID: fx.offer.ID, ActorUserID: fx.buyerID, ActorSystemType: "client",
+		AcceptorAccountID: 5001,
+	}); err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+
+	var sellerRows, buyerRows int
+	for _, g := range cg.gains {
+		if g.SecurityType != "option" {
+			continue
+		}
+		switch {
+		case g.TotalGain.IsNegative():
+			buyerRows++
+		case g.TotalGain.IsPositive():
+			sellerRows++
+		}
+	}
+	if buyerRows != 0 {
+		t.Fatalf("buyer premium row must NOT be booked at accept (resolution-month model), got %d", buyerRows)
+	}
+	if sellerRows != 1 {
+		t.Fatalf("seller premium row must still be booked at accept, got %d", sellerRows)
+	}
+}
+
 // ---------------- in-app notifications ----------------
 
 // On a successful accept both client parties (buyer + seller) get an

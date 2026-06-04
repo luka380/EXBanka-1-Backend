@@ -918,6 +918,8 @@ type stubNotificationClient struct {
 	getTplFn      func(*notificationpb.GetTemplateRequest) (*notificationpb.TemplateInfo, error)
 	setTplFn      func(*notificationpb.SetTemplateRequest) (*notificationpb.TemplateInfo, error)
 	resetTplFn    func(*notificationpb.ResetTemplateRequest) (*notificationpb.TemplateInfo, error)
+
+	listBusinessAuditFn func(*notificationpb.ListBusinessAuditLogsRequest) (*notificationpb.ListBusinessAuditLogsResponse, error)
 }
 
 func (s *stubNotificationClient) SendEmail(_ context.Context, _ *notificationpb.SendEmailRequest, _ ...grpc.CallOption) (*notificationpb.SendEmailResponse, error) {
@@ -988,6 +990,13 @@ func (s *stubNotificationClient) ResetTemplate(_ context.Context, in *notificati
 }
 func (s *stubNotificationClient) ListAdminAuditLogs(_ context.Context, _ *notificationpb.ListAdminAuditLogsRequest, _ ...grpc.CallOption) (*notificationpb.ListAdminAuditLogsResponse, error) {
 	return &notificationpb.ListAdminAuditLogsResponse{}, nil
+}
+
+func (s *stubNotificationClient) ListBusinessAuditLogs(_ context.Context, in *notificationpb.ListBusinessAuditLogsRequest, _ ...grpc.CallOption) (*notificationpb.ListBusinessAuditLogsResponse, error) {
+	if s.listBusinessAuditFn != nil {
+		return s.listBusinessAuditFn(in)
+	}
+	return &notificationpb.ListBusinessAuditLogsResponse{}, nil
 }
 
 // ---------------------------------------------------------------------------

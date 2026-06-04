@@ -44,6 +44,9 @@ type Config struct {
 	// OTC option-contract / offer expiry cron (Celina-4 / Spec 2).
 	OTCExpiryCronUTC   string // "HH:MM" UTC; default 02:00
 	OTCExpiryBatchSize int    // default 500
+	// OTCExpiryWarningDays > 0 enables the expiring-soon warning N days before
+	// settlement (SP5 E). Default 3; 0 disables.
+	OTCExpiryWarningDays int
 	// Spec 3 / Spec 4 cross-bank wiring. TransactionGRPCAddr is dialed by
 	// stock-service's cross-bank accept/exercise sagas to drive Phase 3
 	// transfer_funds + the compensation reverse-transfer. OwnBankCode is
@@ -53,6 +56,10 @@ type Config struct {
 	// WatchlistNotificationCronHours is how often (in hours) the daily watchlist
 	// notification cron runs. Default 24 h.
 	WatchlistNotificationCronHours int
+	// SP3 fund statistics: daily NAV-snapshot cron time and the minimum number
+	// of monthly returns required before metrics are shown.
+	FundSnapshotCronUTC          string // "HH:MM" UTC; default 23:50
+	FundMetricsMinMonthlyReturns int    // default 2
 }
 
 func Load() *Config {
@@ -93,9 +100,12 @@ func Load() *Config {
 		InfluxBucket:                   getEnv("INFLUX_BUCKET", "stock_prices"),
 		OTCExpiryCronUTC:               getEnv("OTC_EXPIRY_CRON_UTC", "02:00"),
 		OTCExpiryBatchSize:             getEnvInt("OTC_EXPIRY_BATCH_SIZE", 500),
+		OTCExpiryWarningDays:           getEnvInt("OTC_EXPIRY_WARNING_DAYS", 3),
 		TransactionGRPCAddr:            getEnv("TRANSACTION_GRPC_ADDR", "localhost:50057"),
 		OwnBankCode:                    getEnv("OWN_BANK_CODE", "111"),
 		WatchlistNotificationCronHours: getEnvInt("WATCHLIST_NOTIFICATION_CRON_HOURS", 24),
+		FundSnapshotCronUTC:            getEnv("FUND_SNAPSHOT_CRON_UTC", "23:50"),
+		FundMetricsMinMonthlyReturns:   getEnvInt("FUND_METRICS_MIN_MONTHLY_RETURNS", 2),
 	}
 }
 

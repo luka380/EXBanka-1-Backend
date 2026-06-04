@@ -216,8 +216,11 @@ func TestAcceptSaga_RecordsOptionPremiumCapitalGains(t *testing.T) {
 		t.Fatalf("accept: %v", err)
 	}
 
-	if len(cgRepo.gains) != 2 {
-		t.Fatalf("expected 2 capital gain rows (writer + buyer), got %d", len(cgRepo.gains))
+	// Resolution-month model (2026-06-04): only the writer's (seller's) premium
+	// income is booked at accept. The buyer's premium is realised at
+	// exercise/expiry, so no buyer row exists here. Spec §3, §4 C1.
+	if len(cgRepo.gains) != 1 {
+		t.Fatalf("expected 1 capital gain row (writer premium only), got %d", len(cgRepo.gains))
 	}
 	sellerUID := uint64(fx.sellerID)
 	buyerUID := uint64(fx.buyerID)
@@ -233,8 +236,8 @@ func TestAcceptSaga_RecordsOptionPremiumCapitalGains(t *testing.T) {
 	if writerCG == nil {
 		t.Fatalf("missing writer CG row")
 	}
-	if buyerCG == nil {
-		t.Fatalf("missing buyer CG row")
+	if buyerCG != nil {
+		t.Fatalf("buyer premium row must NOT be booked at accept under the resolution-month model")
 	}
 	// Premium in fixture = 50000.
 	wantPremium := decimal.NewFromInt(50000)
@@ -244,14 +247,69 @@ func TestAcceptSaga_RecordsOptionPremiumCapitalGains(t *testing.T) {
 	if !writerCG.TotalGain.Equal(wantPremium) {
 		t.Errorf("writer TotalGain = %s, want +%s", writerCG.TotalGain, wantPremium)
 	}
-	if buyerCG.SecurityType != "option" {
-		t.Errorf("buyer SecurityType = %q, want option", buyerCG.SecurityType)
+	if !writerCG.OTC {
+		t.Error("writer option CG row must have OTC=true")
 	}
-	if !buyerCG.TotalGain.Equal(wantPremium.Neg()) {
-		t.Errorf("buyer TotalGain = %s, want -%s", buyerCG.TotalGain, wantPremium)
+}
+
+// fakeStockMeta returns a fixed listing price (the "market" price) for the
+// underlying so the exercise saga can compute the buyer's exercise gain.
+type fakeStockMeta struct {
+	listing *model.Listing
+}
+
+func (f *fakeStockMeta) GetStockByID(id uint64) (*model.Stock, error) { return nil, nil }
+func (f *fakeStockMeta) GetListingBySecurityIDAndType(securityID uint64, securityType string) (*model.Listing, error) {
+	return f.listing, nil
+}
+
+// TestExerciseSaga_BuyerExerciseGain_AndBasisStepUp verifies the resolution-
+// month model: at exercise the buyer is taxed on (market-strike)*qty - premium
+// and the acquired-share cost basis steps up to market (not strike) so a later
+// sale does not re-tax (market-strike). Spec §3.1, §4 C2.
+func TestExerciseSaga_BuyerExerciseGain_AndBasisStepUp(t *testing.T) {
+	fx := newAcceptSagaFixture(t)
+	cgRepo := newMockCapitalGainRepo()
+	market := decimal.NewFromInt(12000) // > strike (5000); premium = 50000, qty = 10
+	fx.svc = fx.svc.WithCapitalGain(cgRepo).
+		WithStockMeta(&fakeStockMeta{listing: &model.Listing{ID: 9, Price: market}})
+
+	contract, err := fx.svc.Accept(context.Background(), AcceptInput{
+		OfferID: fx.offer.ID, ActorUserID: fx.buyerID, ActorSystemType: "client",
+		AcceptorAccountID: 5001,
+	})
+	if err != nil {
+		t.Fatalf("accept: %v", err)
 	}
-	if !writerCG.OTC || !buyerCG.OTC {
-		t.Error("both option CG rows must have OTC=true")
+	if _, err := fx.svc.ExerciseContract(context.Background(), ExerciseInput{
+		ContractID: contract.ID, ActorUserID: fx.buyerID, ActorSystemType: "client",
+	}); err != nil {
+		t.Fatalf("exercise: %v", err)
+	}
+
+	// Buyer exercise option gain: (12000-5000)*10 - 50000 = 20000.
+	buyerUID := uint64(fx.buyerID)
+	var buyerGain *model.CapitalGain
+	for i := range cgRepo.gains {
+		g := &cgRepo.gains[i]
+		if g.SecurityType == "option" && g.OTC && g.OwnerID != nil && *g.OwnerID == buyerUID {
+			buyerGain = g
+		}
+	}
+	if buyerGain == nil {
+		t.Fatal("expected a buyer exercise option capital-gain row")
+	}
+	if !buyerGain.TotalGain.Equal(decimal.NewFromInt(20000)) {
+		t.Fatalf("buyer exercise gain = %s, want 20000 ((market-strike)*qty - premium)", buyerGain.TotalGain)
+	}
+
+	// Cost basis steps up to market (12000), not strike (5000).
+	h, err := fx.holdings.GetByOwnerAndSecurity(model.OwnerClient, &buyerUID, "stock", fx.stockID)
+	if err != nil {
+		t.Fatalf("buyer holding lookup: %v", err)
+	}
+	if !h.AveragePrice.Equal(market) {
+		t.Fatalf("buyer holding basis = %s, want 12000 (market step-up)", h.AveragePrice)
 	}
 }
 

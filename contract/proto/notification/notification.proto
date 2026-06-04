@@ -26,6 +26,11 @@ service NotificationService {
   // admin-only). Supports optional filters: since/until (unix seconds),
   // actor_id (employee_id), action string, and pagination.
   rpc ListAdminAuditLogs(ListAdminAuditLogsRequest) returns (ListAdminAuditLogsResponse);
+
+  // ListBusinessAuditLogs returns business-action audit entries (limit changes,
+  // usedLimit resets, order approve/reject, permission changes, manual tax
+  // collection). Global, paginated, filterable. Gateway gates on admin.audit.view.
+  rpc ListBusinessAuditLogs(ListBusinessAuditLogsRequest) returns (ListBusinessAuditLogsResponse);
 }
 
 message SendEmailRequest {
@@ -195,4 +200,31 @@ message ListAdminAuditLogsResponse {
   int64                        total     = 2;
   int32                        page      = 3;
   int32                        page_size = 4;
+}
+
+message ListBusinessAuditLogsRequest {
+  int32  page        = 1;
+  int32  page_size   = 2;
+  int64  since       = 3; // unix seconds, 0 = no lower bound
+  int64  until       = 4; // unix seconds, 0 = no upper bound
+  int64  actor_id    = 5; // actor employee_id filter, 0 = all
+  string action      = 6; // exact match, "" = all
+  string target_type = 7; // exact match, "" = all
+}
+
+message BusinessAuditLogEntry {
+  uint64 id          = 1;
+  string action      = 2;
+  int64  actor_id    = 3;
+  string target_type = 4;
+  string target_id   = 5;
+  string detail      = 6;
+  int64  timestamp   = 7; // unix seconds
+}
+
+message ListBusinessAuditLogsResponse {
+  repeated BusinessAuditLogEntry entries   = 1;
+  int64                          total     = 2;
+  int32                          page      = 3;
+  int32                          page_size = 4;
 }

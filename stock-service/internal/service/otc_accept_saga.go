@@ -213,10 +213,11 @@ func (s *OTCOfferService) buildAcceptSaga(ctx context.Context, sagaID string, p 
 	state.Set("step:credit_premium_seller:amount", premiumSellerCcy)
 	state.Set("step:credit_premium_seller:currency", premiumCcy)
 
-	// Deterministic capital-gain idempotency keys so the CG steps' Backward can
-	// delete the exact row, and a recovery replay of the Create is a no-op.
+	// Deterministic capital-gain idempotency key so the seller CG step's
+	// Backward can delete the exact row, and a recovery replay of the Create
+	// is a no-op. (The buyer premium row is no longer booked at accept under
+	// the resolution-month model — see StepRecordBuyerPremiumCost below.)
 	sellerCGKey := fmt.Sprintf("%s:seller-premium-cg", sagaID)
-	buyerCGKey := fmt.Sprintf("%s:buyer-premium-cg", sagaID)
 
 	sg := saga.NewSagaWithID(sagaID, stocksaga.NewRecorder(s.sagaRepo)).
 		Add(saga.Step{
@@ -361,37 +362,16 @@ func (s *OTCOfferService) buildAcceptSaga(ctx context.Context, sagaID string, p 
 		}).
 		Add(saga.Step{
 			Name: saga.StepRecordBuyerPremiumCost,
-			Forward: func(ctx context.Context, _ *saga.State) error {
-				if s.capitalGainRepo == nil {
-					return nil
-				}
-				now := time.Now()
-				buyerCG := &model.CapitalGain{
-					OwnerType:        buyerOwnerType,
-					OwnerID:          buyerOwnerID,
-					OTC:              true,
-					SecurityType:     "option",
-					Ticker:           contract.Ticker,
-					Quantity:         qty,
-					BuyPricePerUnit:  o.Premium.Div(decimal.NewFromInt(qty)),
-					SellPricePerUnit: decimal.Zero,
-					TotalGain:        o.Premium.Neg(),
-					Currency:         premiumCcy,
-					AccountID:        buyerAccountID,
-					TaxYear:          now.Year(),
-					TaxMonth:         int(now.Month()),
-					IdempotencyKey:   &buyerCGKey,
-				}
-				return s.capitalGainRepo.Create(buyerCG)
-			},
-			Backward: func(ctx context.Context, _ *saga.State) error {
-				// Delete the buyer's capital-gain cost row for the same reason:
-				// the premium debit was reversed, so this row should not exist.
-				if s.capitalGainRepo == nil {
-					return nil
-				}
-				return s.capitalGainRepo.DeleteByIdempotencyKey(buyerCGKey)
-			},
+			// Resolution-month model (2026-06-04): the buyer's premium is no
+			// longer booked as a capital-gain cost at accept. It is realised
+			// when the option resolves — netted into the exercise gain
+			// (otc_exercise_saga.go: (market-strike)*qty - premium) or booked
+			// as a loss at expiry (otc_expiry_cron.go: -premium). The seller's
+			// premium income is still taxed at accept (StepRecordSellerPremiumGain).
+			// Step kept in place (no shape change) so saga crash-recovery is
+			// unaffected. Spec: docs/superpowers/specs/2026-06-04-options-premium-tax-design.md §3, §4 C1.
+			Forward:  func(ctx context.Context, _ *saga.State) error { return nil },
+			Backward: func(ctx context.Context, _ *saga.State) error { return nil },
 		}).
 		Add(saga.Step{
 			Name: saga.StepPublishOTCAccepted,

@@ -224,6 +224,48 @@ func TestTaxCollectionRepository_Ops(t *testing.T) {
 	}
 }
 
+// TestListOwnersWithGains_ExcludesBankOwners verifies the Profit Banke
+// exemption: bank-owned capital gains (actuary trading on behalf of the bank)
+// must never be returned for tax collection. Spec
+// docs/superpowers/specs/2026-06-04-options-premium-tax-design.md §3.2.
+func TestListOwnersWithGains_ExcludesBankOwners(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.AutoMigrate(&model.CapitalGain{}, &model.TaxCollection{}, &model.Holding{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	repo := NewTaxCollectionRepository(db)
+	cgRepo := NewCapitalGainRepository(db)
+
+	clientID := uint64(5)
+	if err := cgRepo.Create(&model.CapitalGain{
+		OwnerType: model.OwnerClient, OwnerID: &clientID, OTC: true, SecurityType: "option",
+		Ticker: "AAPL", Quantity: 50, BuyPricePerUnit: decimal.Zero, SellPricePerUnit: decimal.NewFromInt(23),
+		TotalGain: decimal.NewFromInt(1150), Currency: "USD", AccountID: 11, TaxYear: 2026, TaxMonth: 6,
+	}); err != nil {
+		t.Fatalf("seed client: %v", err)
+	}
+	if err := cgRepo.Create(&model.CapitalGain{
+		OwnerType: model.OwnerBank, OwnerID: nil, OTC: true, SecurityType: "option",
+		Ticker: "AAPL", Quantity: 50, BuyPricePerUnit: decimal.Zero, SellPricePerUnit: decimal.NewFromInt(23),
+		TotalGain: decimal.NewFromInt(1150), Currency: "USD", AccountID: 12, TaxYear: 2026, TaxMonth: 6,
+	}); err != nil {
+		t.Fatalf("seed bank: %v", err)
+	}
+
+	rows, _, err := repo.ListOwnersWithGains(2026, 6, TaxFilter{Page: 1, PageSize: 100})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, r := range rows {
+		if r.OwnerType == string(model.OwnerBank) {
+			t.Fatalf("bank owner must be excluded from tax collection, got %+v", r)
+		}
+	}
+	if len(rows) != 1 || rows[0].OwnerType != string(model.OwnerClient) {
+		t.Fatalf("expected exactly the client owner, got %+v", rows)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // SagaLogRepository: WithTx / IsForwardCompleted
 // ---------------------------------------------------------------------------

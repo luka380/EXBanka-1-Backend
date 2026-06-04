@@ -78,6 +78,18 @@ const docTemplate = `{
                         "description": "filter to active funds",
                         "name": "active_only",
                         "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "name|value|profit|annualized_return|volatility|reward_to_variability|max_drawdown",
+                        "name": "sort_by",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "asc|desc",
+                        "name": "sort_order",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -8637,6 +8649,104 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/v3/admin/audit/business-actions": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns who-did-what audit entries for high-value business actions (limit changes, usedLimit resets, order approve/reject, permission changes, manual tax collection), persisted by notification-service. Filterable by date range, actor, action, and target type. Requires admin.audit.view.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Admin"
+                ],
+                "summary": "Global business-action audit log (admin)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Page number (default 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default 50, max 200)",
+                        "name": "page_size",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter from date YYYY-MM-DD (inclusive)",
+                        "name": "since",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter to date YYYY-MM-DD (inclusive)",
+                        "name": "until",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Filter by actor employee ID",
+                        "name": "actor_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by action (limit.set|limit.used_reset|order.approve|order.decline|permissions.set|tax.collect)",
+                        "name": "action",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by target type (employee|order|role|tax)",
+                        "name": "target_type",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v3/admin/audit/cards-changelog": {
             "get": {
                 "security": [
@@ -13782,6 +13892,233 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/v3/me/watchlists": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Watchlist"
+                ],
+                "summary": "List the caller's named watchlists (SP6)",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Watchlist"
+                ],
+                "summary": "Create a named watchlist (SP6)",
+                "parameters": [
+                    {
+                        "description": "list name",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handler.createWatchlistRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v3/me/watchlists/{watchlist_id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "Watchlist"
+                ],
+                "summary": "Delete a named watchlist and its items (SP6)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "watchlist id",
+                        "name": "watchlist_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v3/me/watchlists/{watchlist_id}/items": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Watchlist"
+                ],
+                "summary": "List a named watchlist's items (SP6)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "watchlist id",
+                        "name": "watchlist_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "stock|option|futures|forex",
+                        "name": "listing_type",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Watchlist"
+                ],
+                "summary": "Add a listing to a named watchlist (SP6)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "watchlist id",
+                        "name": "watchlist_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "listing_id to track",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handler.addWatchlistRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v3/me/watchlists/{watchlist_id}/items/{listing_id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "Watchlist"
+                ],
+                "summary": "Remove a listing from a named watchlist (SP6)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "watchlist id",
+                        "name": "watchlist_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "listing id",
+                        "name": "listing_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v3/notification-templates": {
             "get": {
                 "security": [
@@ -15397,6 +15734,10 @@ const docTemplate = `{
                 "description": {
                     "type": "string"
                 },
+                "dividend_mode": {
+                    "description": "payout|reinvest; \"\" defaults to payout (SP4)",
+                    "type": "string"
+                },
                 "minimum_contribution_rsd": {
                     "type": "string"
                 },
@@ -15824,6 +16165,14 @@ const docTemplate = `{
                 "usage_type": {
                     "type": "string",
                     "example": "single_use"
+                }
+            }
+        },
+        "handler.createWatchlistRequest": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string"
                 }
             }
         },
@@ -16461,6 +16810,10 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "description": {
+                    "type": "string"
+                },
+                "dividend_mode": {
+                    "description": "payout|reinvest (SP4)",
                     "type": "string"
                 },
                 "minimum_contribution_rsd": {

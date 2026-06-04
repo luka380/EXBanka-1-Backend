@@ -135,6 +135,25 @@ func (s *OTCOfferService) buildExerciseSaga(ctx context.Context, sagaID string, 
 			sellerCostBasisKnown = true
 		}
 	}
+	// Snapshot the underlying's current market price for the buyer's
+	// exercise-gain row ((market-strike)*qty - premium, resolution-month
+	// model). Done pre-saga so a lookup failure degrades to "skip the buyer
+	// tax row + keep basis at strike" rather than blocking the exercise (money
+	// safety first). Market price is in the underlying's exchange currency,
+	// which equals the strike currency for a same-stock option.
+	// Spec docs/superpowers/specs/2026-06-04-options-premium-tax-design.md §4 C2.
+	var marketPrice decimal.Decimal
+	marketPriceKnown := false
+	if s.capitalGainRepo != nil && s.stockMeta != nil {
+		if lst, lerr := s.stockMeta.GetListingBySecurityIDAndType(c.StockID, "stock"); lerr == nil && lst != nil && lst.Price.IsPositive() {
+			marketPrice = lst.Price
+			marketPriceKnown = true
+		} else if lerr != nil {
+			log.Printf("WARN: OTC exercise saga: market price lookup for stock %d failed (buyer exercise gain skipped, basis falls back to strike): %v", c.StockID, lerr)
+		}
+	}
+	buyerExerciseGainKey := fmt.Sprintf("%s:buyer-exercise-cg", sagaID)
+
 	buyerAcct, err := s.accounts.GetAccount(ctx, &accountpb.GetAccountRequest{Id: c.BuyerAccountID})
 	if err != nil {
 		return nil, nil, fmt.Errorf("get buyer account: %w", err)
@@ -192,6 +211,15 @@ func (s *OTCOfferService) buildExerciseSaga(ctx context.Context, sagaID string, 
 
 	// Build buyer holding with metadata (resolved once outside the saga steps
 	// to avoid repeated lookups on retry).
+	// Basis step-up: under the resolution-month model the buyer is taxed on
+	// (market-strike) at exercise, so their acquired-share cost basis is the
+	// market price — otherwise a later sale at market would re-tax the same
+	// appreciation (double taxation). Falls back to strike when the market
+	// price is unknown (degraded mode, preserves pre-fix behaviour). Spec §3.1.
+	buyerBasis := c.StrikePrice
+	if marketPriceKnown {
+		buyerBasis = marketPrice
+	}
 	buyerHolding := &model.Holding{
 		OwnerType:    c.BuyerOwnerType,
 		OwnerID:      c.BuyerOwnerID,
@@ -199,7 +227,7 @@ func (s *OTCOfferService) buildExerciseSaga(ctx context.Context, sagaID string, 
 		SecurityID:   c.StockID,
 		Ticker:       c.Ticker,
 		Quantity:     qty,
-		AveragePrice: c.StrikePrice,
+		AveragePrice: buyerBasis,
 		AccountID:    c.BuyerAccountID,
 	}
 	if s.stockMeta != nil {
@@ -359,21 +387,58 @@ func (s *OTCOfferService) buildExerciseSaga(ctx context.Context, sagaID string, 
 		}).
 		Add(saga.Step{
 			Name: saga.StepRecordBuyerExerciseCost,
+			// Resolution-month model (2026-06-04): tax the buyer at exercise on
+			// (market - strike) * qty - premium, in the exercise month. The
+			// premium is no longer booked at accept (see otc_accept_saga.go).
+			// The buyer's basis is stepped up to market on the credited holding
+			// (above) so a later sale does not re-tax (market - strike).
+			// Best-effort: skipped when the market price is unknown. The row may
+			// be negative (premium > bargain), which correctly reduces the
+			// buyer's month gain. Spec §3.1, §4 C2.
 			Forward: func(ctx context.Context, _ *saga.State) error {
-				// The buyer pays the strike price to acquire shares — this is
-				// their cost basis, not a "loss" in P/L terms. We record it as
-				// a zero-gain entry (buy price = strike price, sell price = 0)
-				// so future portfolio analysis can compute realised gain when
-				// the buyer eventually sells. This mirrors how PortfolioService
-				// records buy-fill cost basis.
-				// Note: recording the cost basis as a capital-gain row with
-				// TotalGain=0 is consistent with the existing OTC-accept pattern
-				// (buyer's premium cost row also has TotalGain negative = cost).
-				// Skip if no repo wired.
-				return nil
+				if s.capitalGainRepo == nil || !marketPriceKnown {
+					return nil
+				}
+				premiumInStrike := c.PremiumPaid
+				if c.PremiumCurrency != c.StrikeCurrency && s.exchange != nil {
+					conv, cerr := s.exchange.Convert(ctx, &exchangepb.ConvertRequest{
+						FromCurrency: c.PremiumCurrency, ToCurrency: c.StrikeCurrency, Amount: c.PremiumPaid.String(),
+					})
+					if cerr != nil {
+						log.Printf("WARN: OTC exercise saga=%s: premium FX convert failed (buyer gain skipped): %v", sagaID, cerr)
+						return nil
+					}
+					parsed, perr := decimal.NewFromString(conv.ConvertedAmount)
+					if perr != nil {
+						log.Printf("WARN: OTC exercise saga=%s: premium FX parse %q failed (buyer gain skipped): %v", sagaID, conv.ConvertedAmount, perr)
+						return nil
+					}
+					premiumInStrike = parsed
+				}
+				gain := marketPrice.Sub(c.StrikePrice).Mul(decimal.NewFromInt(qty)).Sub(premiumInStrike)
+				cg := &model.CapitalGain{
+					OwnerType:        c.BuyerOwnerType,
+					OwnerID:          c.BuyerOwnerID,
+					OTC:              true,
+					SecurityType:     "option",
+					Ticker:           c.Ticker,
+					Quantity:         qty,
+					BuyPricePerUnit:  c.StrikePrice,
+					SellPricePerUnit: marketPrice,
+					TotalGain:        gain,
+					Currency:         c.StrikeCurrency,
+					AccountID:        c.BuyerAccountID,
+					TaxYear:          exercisedAt.Year(),
+					TaxMonth:         int(exercisedAt.Month()),
+					IdempotencyKey:   &buyerExerciseGainKey,
+				}
+				return s.capitalGainRepo.Create(cg)
 			},
 			Backward: func(ctx context.Context, _ *saga.State) error {
-				return nil
+				if s.capitalGainRepo == nil {
+					return nil
+				}
+				return s.capitalGainRepo.DeleteByIdempotencyKey(buyerExerciseGainKey)
 			},
 		}).
 		Add(saga.Step{

@@ -2,6 +2,7 @@ package repository
 
 import (
 	"errors"
+	"time"
 
 	"gorm.io/gorm"
 
@@ -139,6 +140,20 @@ func (r *OptionContractRepository) ListExpiring(today string, limit int) ([]mode
 	var out []model.OptionContract
 	err := r.db.Where("status = ? AND settlement_date < ?",
 		model.OptionContractStatusActive, today).
+		Order("id ASC").Limit(limit).Find(&out).Error
+	return out, err
+}
+
+// ListExpiringOn returns ACTIVE option contracts whose settlement_date falls on
+// exactly the given calendar day [day, day+1). Used by the expiring-soon
+// warning pass (SP5 E) — matching on a single day means each contract is warned
+// once as it crosses the N-days-out mark. `day` is a date-truncated time.
+func (r *OptionContractRepository) ListExpiringOn(day time.Time, limit int) ([]model.OptionContract, error) {
+	start := day.UTC().Truncate(24 * time.Hour)
+	end := start.Add(24 * time.Hour)
+	var out []model.OptionContract
+	err := r.db.Where("status = ? AND settlement_date >= ? AND settlement_date < ?",
+		model.OptionContractStatusActive, start, end).
 		Order("id ASC").Limit(limit).Find(&out).Error
 	return out, err
 }

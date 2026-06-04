@@ -30,6 +30,7 @@ func newOTCExpiryDB(t *testing.T) *gorm.DB {
 		&model.OTCOfferRevision{},
 		&model.OptionContract{},
 		&model.PeerOptionContract{},
+		&model.CapitalGain{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -102,6 +103,100 @@ func TestOTCExpiryCron_ExpireContract_NoHoldingRes(t *testing.T) {
 	}
 	if got.ExpiredAt == nil {
 		t.Error("expected expired_at to be set")
+	}
+}
+
+// TestOTCExpiryCron_BooksBuyerPremiumLoss verifies the resolution-month model:
+// when an OTC contract expires unexercised, the buyer's lost premium is booked
+// as a capital loss (-premium) in the expiry month, idempotently (a re-run does
+// not double-book). The seller keeps the premium (already taxed at accept).
+// Spec §3.1, §4 C3.
+func TestOTCExpiryCron_BooksBuyerPremiumLoss(t *testing.T) {
+	db := newOTCExpiryDB(t)
+	contractRepo := repository.NewOptionContractRepository(db)
+	cgRepo := repository.NewCapitalGainRepository(db)
+	cr := NewOTCExpiryCron(contractRepo, repository.NewOTCOfferRepository(db), nil, nil, 10, "02:00", nilRegistry()).
+		WithCapitalGains(cgRepo)
+
+	uid := uint64(7)
+	c := &model.OptionContract{
+		StockID: 42, Ticker: "AAPL", Quantity: decimal.NewFromInt(10),
+		StrikePrice: decimal.NewFromInt(150), PremiumPaid: decimal.NewFromInt(1150),
+		PremiumCurrency: "USD", StrikeCurrency: "USD",
+		SettlementDate: time.Now().Add(-24 * time.Hour),
+		Status:         model.OptionContractStatusActive,
+		BuyerOwnerType: model.OwnerClient, BuyerOwnerID: &uid,
+		SellerOwnerType: model.OwnerBank, SellerOwnerID: nil,
+		BuyerAccountID: 11, SellerAccountID: 12, PremiumPaidAt: time.Now(),
+	}
+	if err := contractRepo.Create(c); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := cr.expireContract(context.Background(), c); err != nil {
+		t.Fatalf("expire: %v", err)
+	}
+	// Re-running must not duplicate the loss row (idempotent by contract key).
+	c.Status = model.OptionContractStatusActive
+	if err := cr.expireContract(context.Background(), c); err != nil {
+		t.Fatalf("expire (re-run): %v", err)
+	}
+
+	var rows []model.CapitalGain
+	db.Where("owner_type = ? AND security_type = ?", model.OwnerClient, "option").Find(&rows)
+	if len(rows) != 1 {
+		t.Fatalf("expected exactly 1 buyer loss row (idempotent), got %d", len(rows))
+	}
+	if !rows[0].TotalGain.Equal(decimal.NewFromInt(-1150)) {
+		t.Fatalf("buyer loss = %s, want -1150", rows[0].TotalGain)
+	}
+	if rows[0].SecurityType != "option" || !rows[0].OTC {
+		t.Fatalf("loss row must be option/OTC, got type=%s otc=%v", rows[0].SecurityType, rows[0].OTC)
+	}
+}
+
+// TestOTCExpiryCron_WarnsExpiringSoon verifies SP5 E: a contract settling
+// exactly warnDays out triggers an OTC_CONTRACT_EXPIRING_SOON notification to
+// both client parties, without expiring the (still-future) contract.
+func TestOTCExpiryCron_WarnsExpiringSoon(t *testing.T) {
+	db := newOTCExpiryDB(t)
+	contractRepo := repository.NewOptionContractRepository(db)
+	cr := NewOTCExpiryCron(contractRepo, repository.NewOTCOfferRepository(db), nil, nil, 100, "02:00", nilRegistry()).
+		WithExpiryWarning(3)
+	notifier := &recordingOTCNotifier{}
+	cr.notifier = notifier
+
+	buyer := uint64(7)
+	seller := uint64(8)
+	c := &model.OptionContract{
+		StockID: 42, Ticker: "AAPL", Quantity: decimal.NewFromInt(10),
+		StrikePrice: decimal.NewFromInt(150), PremiumPaid: decimal.NewFromInt(50),
+		PremiumCurrency: "USD", StrikeCurrency: "USD",
+		SettlementDate: time.Now().UTC().AddDate(0, 0, 3).Truncate(24 * time.Hour),
+		Status:         model.OptionContractStatusActive,
+		BuyerOwnerType: model.OwnerClient, BuyerOwnerID: &buyer,
+		SellerOwnerType: model.OwnerClient, SellerOwnerID: &seller,
+		PremiumPaidAt: time.Now(),
+	}
+	if err := contractRepo.Create(c); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := cr.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	// Contract must NOT be expired (it settles in the future).
+	got, _ := contractRepo.GetByID(c.ID)
+	if got.Status != model.OptionContractStatusActive {
+		t.Fatalf("contract should remain active, got %s", got.Status)
+	}
+	var warns int
+	for _, n := range notifier.notifs {
+		if n.Type == "OTC_CONTRACT_EXPIRING_SOON" {
+			warns++
+		}
+	}
+	if warns != 2 {
+		t.Fatalf("expected 2 expiring-soon warnings (buyer+seller), got %d", warns)
 	}
 }
 

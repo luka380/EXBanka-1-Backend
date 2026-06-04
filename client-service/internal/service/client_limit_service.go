@@ -19,12 +19,26 @@ type ClientLimitRepo interface {
 	Upsert(limit *model.ClientLimit) error
 }
 
+// ClientEmailLookup resolves a client's email for the limit-change notification
+// (SP5 D1). Optional — when nil, only the in-app notification is sent.
+type ClientEmailLookup interface {
+	GetEmailByID(clientID int64) (string, error)
+}
+
 // ClientLimitService manages client transaction limits.
 type ClientLimitService struct {
 	limitRepo     ClientLimitRepo
 	userLimitSvc  userpb.EmployeeLimitServiceClient
 	producer      *kafkaprod.Producer
 	changelogRepo ChangelogRepo
+	emailLookup   ClientEmailLookup // optional (SP5 D1)
+}
+
+// WithEmailLookup wires the client-email lookup used by the limit-change
+// notification (SP5 D1). Optional.
+func (s *ClientLimitService) WithEmailLookup(l ClientEmailLookup) *ClientLimitService {
+	s.emailLookup = l
+	return s
 }
 
 // NewClientLimitService constructs a ClientLimitService.
@@ -115,6 +129,32 @@ func (s *ClientLimitService) SetClientLimits(ctx context.Context, limit model.Cl
 			Action:        "set",
 		}); pubErr != nil {
 			log.Printf("warn: failed to publish client-limits-updated event: %v", pubErr)
+		}
+
+		// SP5 D1: notify the client (in-app + best-effort email) of the change.
+		data := map[string]string{
+			"daily_limit":    result.DailyLimit.String(),
+			"monthly_limit":  result.MonthlyLimit.String(),
+			"transfer_limit": result.TransferLimit.String(),
+			"currency":       "RSD",
+		}
+		if nErr := s.producer.PublishGeneralNotification(ctx, kafkamsg.GeneralNotificationMessage{
+			UserID:  uint64(limit.ClientID),
+			Type:    "LIMIT_CHANGED",
+			Data:    data,
+			RefType: "client_limit",
+			RefID:   uint64(limit.ClientID),
+		}); nErr != nil {
+			log.Printf("warn: failed to publish LIMIT_CHANGED notification: %v", nErr)
+		}
+		if s.emailLookup != nil {
+			if email, eErr := s.emailLookup.GetEmailByID(limit.ClientID); eErr == nil && email != "" {
+				_ = s.producer.SendEmail(ctx, kafkamsg.SendEmailMessage{
+					To:        email,
+					EmailType: kafkamsg.EmailType("LIMIT_CHANGED"),
+					Data:      data,
+				})
+			}
 		}
 	}
 

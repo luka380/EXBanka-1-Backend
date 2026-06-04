@@ -179,7 +179,7 @@ func NewHandlers(d Deps) *Handlers {
 	// OwnBankCode is a 3-digit string ("111"); parse it once for the
 	// PeerUserHandler which needs an int64 routing-number comparator.
 	ownRouting, _ := strconv.ParseInt(d.OwnBankCode, 10, 64)
-	return &Handlers{
+	h := &Handlers{
 		Auth:             handler.NewAuthHandler(d.AuthClient),
 		Version:          handler.NewVersionHandler(),
 		Employee:         handler.NewEmployeeHandler(d.UserClient, d.AuthClient),
@@ -226,4 +226,14 @@ func NewHandlers(d Deps) *Handlers {
 		AdminAudit:       handler.NewAdminAuditHandler(d.AccountClient, d.CardClient, d.ClientClient, d.CreditClient, d.UserClient, d.NotificationClient, d.TxClient),
 		Dividend:         handler.NewDividendHandler(d.FundClient),
 	}
+	// Wire the optional business-audit publisher into the handlers that perform
+	// audited business actions (limit changes, usedLimit resets, order
+	// approve/reject, permission changes, manual tax collection). Best-effort:
+	// nil-safe, never blocks the request. SP2 audit log.
+	h.Limit.Audit = d.AuditProducer
+	h.Actuary.Audit = d.AuditProducer
+	h.StockOrder.Audit = d.AuditProducer
+	h.Role.Audit = d.AuditProducer
+	h.Tax.Audit = d.AuditProducer
+	return h
 }

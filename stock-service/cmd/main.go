@@ -100,6 +100,7 @@ func main() {
 		&model.TaxCollection{},
 		&model.SagaLog{},
 		&model.InvestmentFund{},
+		&model.FundValueSnapshot{},
 		&model.ClientFundPosition{},
 		&model.FundPositionSettlement{},
 		&model.FundContribution{},
@@ -120,6 +121,7 @@ func main() {
 		&model.OptionContract{},
 		&model.OTCOfferReadReceipt{},
 		&model.IdempotencyRecord{},
+		&model.Watchlist{},
 		&model.WatchlistItem{},
 		&model.OTCTraderRating{},
 		&model.PriceAlert{},
@@ -393,6 +395,17 @@ func main() {
 	holdingRepo := repository.NewHoldingRepository(db)
 	capitalGainRepo := repository.NewCapitalGainRepository(db)
 	taxCollectionRepo := repository.NewTaxCollectionRepository(db)
+
+	// Tax cutover (2026-06-04): under the resolution-month model the buyer's
+	// option premium is booked at exercise/expiry, not accept. Remove any
+	// accept-time buyer-premium rows still tied to ACTIVE contracts so they are
+	// not double-counted when those contracts resolve. Idempotent; no-op once
+	// clean. Spec docs/superpowers/specs/2026-06-04-options-premium-tax-design.md §6.
+	if n, err := service.CleanupLegacyBuyerPremiumRows(db); err != nil {
+		log.Printf("WARN: legacy buyer-premium cleanup failed: %v", err)
+	} else if n > 0 {
+		log.Printf("tax cutover: removed %d legacy buyer-premium capital-gain rows", n)
+	}
 
 	// --- Investment funds (Celina 4) ---
 	fundRepo := repository.NewFundRepository(db)
@@ -770,13 +783,18 @@ func main() {
 	).WithPositionReads(listingRepo).WithLiquidation(orderSvc).WithOutbox(ob, db).
 		WithDividendRepo(fundDividendPaymentRepo)
 
+	// SP3: fund value-snapshot history + statistics metrics.
+	fundSnapshotRepo := repository.NewFundValueSnapshotRepository(db)
+	fundService = fundService.WithSnapshots(fundSnapshotRepo, cfg.FundMetricsMinMonthlyReturns)
+	service.NewFundSnapshotCron(fundService, fundSnapshotRepo, cfg.FundSnapshotCronUTC, cronRegistry).StartDailyCron(ctx)
+
 	// E4: dividend service
 	dividendSvc := service.NewDividendService(
 		db,
 		dividendPaymentRepo, dividendPayoutRepo, fundDividendPaymentRepo,
 		holdingRepo, fundHoldingRepo, fundRepo, fundPositionRepo,
 		fundAccountAdapter,
-	)
+	).WithReinvest(orderSvc, listingRepo, fundExchangeAdapter) // SP4: dividend_mode=reinvest DRIP
 
 	fundHandler := handler.NewInvestmentFundHandler(fundService, fundRepo, fundPositionRepo).
 		WithActuaryDeps(capitalGainRepo, userClient, exchangeClient).
@@ -850,7 +868,9 @@ func main() {
 	// — via WithPeerContracts — cross-bank peer_option_contracts.
 	otcExpiry := service.NewOTCExpiryCron(optionContractRepo, otcOfferRepo, holdingReservationSvc, producer, cfg.OTCExpiryBatchSize, cfg.OTCExpiryCronUTC, cronRegistry).
 		WithOutbox(ob, db).
-		WithPeerContracts(peerOptionRepo)
+		WithPeerContracts(peerOptionRepo).
+		WithCapitalGains(capitalGainRepo).
+		WithExpiryWarning(cfg.OTCExpiryWarningDays) // SP5 E
 	otcExpiry.Start(ctx)
 
 	// Fix R8 (2026-05-16) — daily safety-net scan: any holding_reservation
@@ -990,6 +1010,11 @@ func main() {
 			pb.RegisterOTCStockMarketGRPCServiceServer(s, otcStockMarketHandler)
 			pb.RegisterPeerOTCServiceServer(s, peerOtcHandler)
 			watchlistRepo := repository.NewWatchlistRepository(db)
+			// SP6: one-time migration of legacy single-list items into per-owner
+			// default named lists (idempotent).
+			if err := service.MigrateWatchlistsToNamedLists(db, watchlistRepo); err != nil {
+				log.Printf("WARN: watchlist named-list migration failed: %v", err)
+			}
 			watchlistSvc := service.NewWatchlistService(watchlistRepo, listingRepo, stockRepo, optionRepo, futuresRepo, forexRepo)
 			pb.RegisterWatchlistServiceServer(s, handler.NewWatchlistHandler(watchlistSvc))
 			priceAlertRepo := repository.NewPriceAlertRepository(db)

@@ -361,5 +361,84 @@ func TestDividendSumByFund(t *testing.T) {
 	}
 }
 
+// ── SP4: dividend reinvest (DRIP) ─────────────────────────────────────────
+
+type fakeReinvestOrderPlacer struct {
+	calls []CreateOrderRequest
+}
+
+func (f *fakeReinvestOrderPlacer) CreateOrder(_ context.Context, req CreateOrderRequest) (*model.Order, error) {
+	f.calls = append(f.calls, req)
+	return &model.Order{ID: 1}, nil
+}
+
+type fakeListingLookup struct {
+	listing *model.Listing
+}
+
+func (f *fakeListingLookup) GetBySecurityIDAndType(_ uint64, _ string) (*model.Listing, error) {
+	return f.listing, nil
+}
+
+// In reinvest mode, a fund holding's dividend triggers a market buy of
+// floor(gross/price) shares on behalf of the fund instead of leaving cash.
+func TestDividendPayout_ReinvestPlacesFundBuy(t *testing.T) {
+	db := openDividendTestDB(t)
+	accounts := newFakeDividendAccountClient()
+	placer := &fakeReinvestOrderPlacer{}
+	listings := &fakeListingLookup{listing: &model.Listing{ID: 77, Price: decimal.NewFromInt(200)}} // RSD, no FX
+	svc := newDividendService(db, accounts).WithReinvest(placer, listings, nil)
+	ctx := context.Background()
+
+	fund := &model.InvestmentFund{
+		Name: "DRIP", ManagerEmployeeID: 5, RSDAccountID: 99,
+		FundType: model.FundTypeOpen, FundStatus: model.FundStatusOpen,
+		DividendMode: model.DividendModeReinvest,
+	}
+	db.Create(fund)
+	accounts.addAccount(99, "FUND-RSD")
+	db.Create(&model.FundHolding{FundID: fund.ID, SecurityType: "stock", SecurityID: 10, Quantity: 300, AveragePriceRSD: decimal.NewFromInt(100)})
+
+	// gross = 10/share × 300 = 3000 RSD; price 200 → floor(3000/200) = 15 shares.
+	date := time.Date(2026, 6, 15, 0, 0, 0, 0, time.UTC)
+	payment, err := svc.Declare(ctx, 10, "AAPL", decimal.NewFromInt(10), date, 5)
+	if err != nil {
+		t.Fatalf("declare: %v", err)
+	}
+	if _, err := svc.Payout(ctx, payment.ID); err != nil {
+		t.Fatalf("payout: %v", err)
+	}
+
+	if len(placer.calls) != 1 {
+		t.Fatalf("expected 1 reinvest buy order, got %d", len(placer.calls))
+	}
+	got := placer.calls[0]
+	if got.OnBehalfOfFundID != fund.ID || got.ListingID != 77 || got.Direction != "buy" || got.OrderType != "market" || got.Quantity != 15 || got.AccountID != 99 {
+		t.Fatalf("unexpected reinvest order: %+v", got)
+	}
+}
+
+// In payout mode (default), no buy order is placed — dividend stays as cash.
+func TestDividendPayout_PayoutModeNoBuy(t *testing.T) {
+	db := openDividendTestDB(t)
+	accounts := newFakeDividendAccountClient()
+	placer := &fakeReinvestOrderPlacer{}
+	svc := newDividendService(db, accounts).WithReinvest(placer, &fakeListingLookup{listing: &model.Listing{ID: 77, Price: decimal.NewFromInt(200)}}, nil)
+	ctx := context.Background()
+
+	fund := &model.InvestmentFund{Name: "Cash", ManagerEmployeeID: 5, RSDAccountID: 99, FundType: model.FundTypeOpen, FundStatus: model.FundStatusOpen, DividendMode: model.DividendModePayout}
+	db.Create(fund)
+	accounts.addAccount(99, "FUND-RSD")
+	db.Create(&model.FundHolding{FundID: fund.ID, SecurityType: "stock", SecurityID: 10, Quantity: 300, AveragePriceRSD: decimal.NewFromInt(100)})
+
+	payment, _ := svc.Declare(ctx, 10, "AAPL", decimal.NewFromInt(10), time.Date(2026, 6, 15, 0, 0, 0, 0, time.UTC), 5)
+	if _, err := svc.Payout(ctx, payment.ID); err != nil {
+		t.Fatalf("payout: %v", err)
+	}
+	if len(placer.calls) != 0 {
+		t.Fatalf("payout mode must not place a buy, got %d", len(placer.calls))
+	}
+}
+
 // ptr is a convenience helper for creating *uint64 values in tests.
 func ptr(v uint64) *uint64 { return &v }

@@ -213,4 +213,26 @@ var emailDefs = []Definition{
 <p style="color:#718096;font-size:12px;">EXBanka Security Team</p>
 </body></html>`,
 	},
+	{
+		Type: "LIMIT_CHANGED", Channel: "email",
+		Description: "Sent when a client's transaction limits are changed (SP5 D1).",
+		Variables: []Variable{
+			{"daily_limit", "New daily limit", "200000.00"},
+			{"monthly_limit", "New monthly limit", "2000000.00"},
+			{"transfer_limit", "New per-transfer limit", "100000.00"},
+			{"currency", "Currency code", "RSD"},
+		},
+		DefaultSubject: "EXBanka — Your Limits Were Updated",
+		DefaultBody: `<html><body style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
+<h2 style="color:#1a365d;">Transaction Limits Updated</h2>
+<p>Your transaction limits have been changed:</p>
+<table style="border-collapse:collapse;width:100%">
+  <tr><td style="padding:8px;border:1px solid #ddd;"><strong>Daily limit</strong></td><td style="padding:8px;border:1px solid #ddd;">{{daily_limit}} {{currency}}</td></tr>
+  <tr><td style="padding:8px;border:1px solid #ddd;"><strong>Monthly limit</strong></td><td style="padding:8px;border:1px solid #ddd;">{{monthly_limit}} {{currency}}</td></tr>
+  <tr><td style="padding:8px;border:1px solid #ddd;"><strong>Per-transfer limit</strong></td><td style="padding:8px;border:1px solid #ddd;">{{transfer_limit}} {{currency}}</td></tr>
+</table>
+<p>If you did not expect this change, please contact your bank.</p>
+<p style="color:#718096;font-size:12px;">EXBanka</p>
+</body></html>`,
+	},
 }

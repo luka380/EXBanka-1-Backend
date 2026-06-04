@@ -430,6 +430,95 @@ func (h *AdminAuditHandler) ListCronActions(c *gin.Context) {
 	})
 }
 
+// businessAuditEntryJSON is the API shape of a business-action audit entry.
+type businessAuditEntryJSON struct {
+	ID         uint64 `json:"id"`
+	Action     string `json:"action"`
+	ActorID    int64  `json:"actor_id"`
+	TargetType string `json:"target_type"`
+	TargetID   string `json:"target_id"`
+	Detail     string `json:"detail"`
+	Timestamp  string `json:"timestamp"`
+}
+
+// ListBusinessActions godoc
+// @Summary      Global business-action audit log (admin)
+// @Description  Returns who-did-what audit entries for high-value business actions (limit changes, usedLimit resets, order approve/reject, permission changes, manual tax collection), persisted by notification-service. Filterable by date range, actor, action, and target type. Requires admin.audit.view.
+// @Tags         Admin
+// @Security     BearerAuth
+// @Produce      json
+// @Param        page         query  int     false  "Page number (default 1)"
+// @Param        page_size    query  int     false  "Page size (default 50, max 200)"
+// @Param        since        query  string  false  "Filter from date YYYY-MM-DD (inclusive)"
+// @Param        until        query  string  false  "Filter to date YYYY-MM-DD (inclusive)"
+// @Param        actor_id     query  int     false  "Filter by actor employee ID"
+// @Param        action       query  string  false  "Filter by action (limit.set|limit.used_reset|order.approve|order.decline|permissions.set|tax.collect)"
+// @Param        target_type  query  string  false  "Filter by target type (employee|order|role|tax)"
+// @Success      200  {object}  map[string]interface{}
+// @Failure      400  {object}  map[string]interface{}
+// @Failure      401  {object}  map[string]interface{}
+// @Failure      403  {object}  map[string]interface{}
+// @Failure      500  {object}  map[string]interface{}
+// @Router       /api/v3/admin/audit/business-actions [get]
+func (h *AdminAuditHandler) ListBusinessActions(c *gin.Context) {
+	p, ok := parseAuditParams(c)
+	if !ok {
+		return
+	}
+	action := p.action
+	if action != "" {
+		normalized, err := oneOf("action", action, "limit.set", "limit.used_reset", "order.approve", "order.decline", "permissions.set", "tax.collect")
+		if err != nil {
+			apiError(c, http.StatusBadRequest, ErrValidation, err.Error())
+			return
+		}
+		action = normalized
+	}
+	targetType := c.Query("target_type")
+	if targetType != "" {
+		normalized, err := oneOf("target_type", targetType, "employee", "order", "role", "tax")
+		if err != nil {
+			apiError(c, http.StatusBadRequest, ErrValidation, err.Error())
+			return
+		}
+		targetType = normalized
+	}
+
+	resp, err := h.notifClient.ListBusinessAuditLogs(c.Request.Context(), &notifpb.ListBusinessAuditLogsRequest{
+		Page:       p.page,
+		PageSize:   p.pageSize,
+		Since:      p.since,
+		Until:      p.until,
+		ActorId:    p.actorID,
+		Action:     action,
+		TargetType: targetType,
+	})
+	if err != nil {
+		handleGRPCError(c, err)
+		return
+	}
+
+	rawEntries := resp.GetEntries()
+	entries := make([]businessAuditEntryJSON, len(rawEntries))
+	for i, e := range rawEntries {
+		entries[i] = businessAuditEntryJSON{
+			ID:         e.GetId(),
+			Action:     e.GetAction(),
+			ActorID:    e.GetActorId(),
+			TargetType: e.GetTargetType(),
+			TargetID:   e.GetTargetId(),
+			Detail:     e.GetDetail(),
+			Timestamp:  time.Unix(e.GetTimestamp(), 0).UTC().Format(time.RFC3339),
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"entries":   entries,
+		"total":     resp.GetTotal(),
+		"page":      p.page,
+		"page_size": p.pageSize,
+	})
+}
+
 // ListSagaLogs godoc
 // @Summary      List transfer/payment saga execution logs (admin audit)
 // @Description  Returns transaction-service saga_logs (forward + compensation steps), paginated and filterable. Requires admin.audit.view. Lets an admin review saga execution and compensation history.

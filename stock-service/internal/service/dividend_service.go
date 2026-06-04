@@ -25,6 +25,7 @@ import (
 	"gorm.io/gorm"
 
 	accountpb "github.com/exbanka/contract/accountpb"
+	exchangepb "github.com/exbanka/contract/exchangepb"
 	"github.com/exbanka/stock-service/internal/model"
 	"github.com/exbanka/stock-service/internal/repository"
 )
@@ -42,6 +43,79 @@ type DividendService struct {
 	fundRepo         *repository.FundRepository
 	fundPositionRepo *repository.ClientFundPositionRepository
 	accounts         FundAccountClient
+
+	// Reinvest deps (optional; wired via WithReinvest). When nil, reinvest-mode
+	// funds fall back to crediting cash (payout). SP4.
+	orderPlacer fundReinvestOrderPlacer
+	listings    listingPriceLookup
+	exchange    FundExchangeClient
+}
+
+// fundReinvestOrderPlacer places a market buy on behalf of a fund (DRIP).
+// Satisfied by *OrderService.
+type fundReinvestOrderPlacer interface {
+	CreateOrder(ctx context.Context, req CreateOrderRequest) (*model.Order, error)
+}
+
+// listingPriceLookup resolves the listing (id + current RSD-ish price) for a
+// security. Satisfied by *repository.ListingRepository.
+type listingPriceLookup interface {
+	GetBySecurityIDAndType(securityID uint64, securityType string) (*model.Listing, error)
+}
+
+// WithReinvest wires the deps needed for dividend_mode=reinvest funds: an order
+// placer to buy more of the dividend-paying stock, a listing lookup for the
+// current price, and an exchange client to express that price in RSD. SP4.
+func (s *DividendService) WithReinvest(orderPlacer fundReinvestOrderPlacer, listings listingPriceLookup, exchange FundExchangeClient) *DividendService {
+	s.orderPlacer = orderPlacer
+	s.listings = listings
+	s.exchange = exchange
+	return s
+}
+
+// reinvestFundDividend buys floor(grossRSD / priceRSD) shares of the
+// dividend-paying security on behalf of the fund (DRIP). Best-effort: logs and
+// returns on any failure, leaving the dividend cash in the fund's account.
+func (s *DividendService) reinvestFundDividend(ctx context.Context, fund *model.InvestmentFund, securityID uint64, grossRSD decimal.Decimal) {
+	if s.orderPlacer == nil || s.listings == nil {
+		return
+	}
+	listing, err := s.listings.GetBySecurityIDAndType(securityID, "stock")
+	if err != nil || listing == nil || !listing.Price.IsPositive() {
+		log.Printf("WARN: dividend reinvest: no usable listing for security %d (fund %d) — keeping cash: %v", securityID, fund.ID, err)
+		return
+	}
+	priceRSD := listing.Price
+	if listing.Exchange.Currency != "" && listing.Exchange.Currency != "RSD" && s.exchange != nil {
+		conv, cerr := s.exchange.Convert(ctx, &exchangepb.ConvertRequest{
+			FromCurrency: listing.Exchange.Currency, ToCurrency: "RSD", Amount: listing.Price.String(),
+		})
+		if cerr != nil {
+			log.Printf("WARN: dividend reinvest: FX convert price for security %d failed — keeping cash: %v", securityID, cerr)
+			return
+		}
+		if d, perr := decimal.NewFromString(conv.ConvertedAmount); perr == nil && d.IsPositive() {
+			priceRSD = d
+		}
+	}
+	qty := grossRSD.Div(priceRSD).IntPart() // floor
+	if qty < 1 {
+		log.Printf("dividend reinvest: fund %d dividend %s too small to buy 1 share of security %d (price≈%s RSD) — keeping cash", fund.ID, grossRSD.String(), securityID, priceRSD.StringFixed(2))
+		return
+	}
+	if _, err := s.orderPlacer.CreateOrder(ctx, CreateOrderRequest{
+		ListingID:        listing.ID,
+		Direction:        "buy",
+		OrderType:        "market",
+		Quantity:         qty,
+		AccountID:        fund.RSDAccountID,
+		ActingEmployeeID: uint64(fund.ManagerEmployeeID),
+		OnBehalfOfFundID: fund.ID,
+	}); err != nil {
+		log.Printf("WARN: dividend reinvest: fund %d buy %d × security %d failed — cash retained: %v", fund.ID, qty, securityID, err)
+		return
+	}
+	log.Printf("dividend reinvest: fund %d placed market buy %d × security %d (DRIP)", fund.ID, qty, securityID)
 }
 
 // NewDividendService constructs the service with required dependencies.
@@ -238,6 +312,13 @@ func (s *DividendService) Payout(ctx context.Context, dividendPaymentID uint64) 
 		if creditErr != nil {
 			log.Printf("WARN: dividend payout: credit fund account %s: %v — skipping", acctResp.AccountNumber, creditErr)
 			continue
+		}
+
+		// SP4: in reinvest mode, buy more of the dividend-paying stock with the
+		// just-credited cash (DRIP). Best-effort — any failure leaves the cash in
+		// the fund account (graceful degrade to payout) and never aborts the loop.
+		if fund.DividendMode == model.DividendModeReinvest {
+			s.reinvestFundDividend(ctx, fund, payment.SecurityID, gross)
 		}
 
 		// Compute per-investor snapshot (pct_of_fund at payment time).

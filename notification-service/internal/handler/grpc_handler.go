@@ -40,6 +40,11 @@ type adminAuditRepoFacade interface {
 	ListAll(filters repository.AdminAuditLogFilters, page, pageSize int) ([]model.AdminAuditLog, int64, error)
 }
 
+// businessAuditRepoFacade is the narrow interface of *repository.BusinessAuditLogRepository used by GRPCHandler.
+type businessAuditRepoFacade interface {
+	ListAll(filters repository.BusinessAuditLogFilters, page, pageSize int) ([]model.BusinessAuditLog, int64, error)
+}
+
 // templateServiceFacade is the narrow interface of *service.TemplateService used by GRPCHandler.
 type templateServiceFacade interface {
 	Render(typ, channel string, data map[string]string) (subject, body string, err error)
@@ -54,12 +59,13 @@ type GRPCHandler struct {
 	emailSender    emailSenderFacade
 	inboxRepo      inboxRepoFacade
 	notifRepo      notifRepoFacade
-	templateSvc    templateServiceFacade
-	adminAuditRepo adminAuditRepoFacade
+	templateSvc       templateServiceFacade
+	adminAuditRepo    adminAuditRepoFacade
+	businessAuditRepo businessAuditRepoFacade
 }
 
-func NewGRPCHandler(emailSender *sender.EmailSender, inboxRepo *repository.MobileInboxRepository, notifRepo *repository.GeneralNotificationRepository, templateSvc *service.TemplateService, adminAuditRepo *repository.AdminAuditLogRepository) *GRPCHandler {
-	return &GRPCHandler{emailSender: emailSender, inboxRepo: inboxRepo, notifRepo: notifRepo, templateSvc: templateSvc, adminAuditRepo: adminAuditRepo}
+func NewGRPCHandler(emailSender *sender.EmailSender, inboxRepo *repository.MobileInboxRepository, notifRepo *repository.GeneralNotificationRepository, templateSvc *service.TemplateService, adminAuditRepo *repository.AdminAuditLogRepository, businessAuditRepo *repository.BusinessAuditLogRepository) *GRPCHandler {
+	return &GRPCHandler{emailSender: emailSender, inboxRepo: inboxRepo, notifRepo: notifRepo, templateSvc: templateSvc, adminAuditRepo: adminAuditRepo, businessAuditRepo: businessAuditRepo}
 }
 
 // newGRPCHandlerForTest constructs a GRPCHandler with interface-typed
@@ -299,6 +305,59 @@ func (h *GRPCHandler) ListAdminAuditLogs(ctx context.Context, req *notifpb.ListA
 		}
 	}
 	return &notifpb.ListAdminAuditLogsResponse{
+		Entries:  protoEntries,
+		Total:    total,
+		Page:     int32(page),
+		PageSize: int32(pageSize),
+	}, nil
+}
+
+// ListBusinessAuditLogs returns paginated business-action audit log entries
+// (limit changes, usedLimit resets, order approve/reject, permission changes,
+// manual tax collection). Global view; the gateway gates on admin.audit.view.
+func (h *GRPCHandler) ListBusinessAuditLogs(ctx context.Context, req *notifpb.ListBusinessAuditLogsRequest) (*notifpb.ListBusinessAuditLogsResponse, error) {
+	if h.businessAuditRepo == nil {
+		return nil, status.Error(codes.Unimplemented, "business audit log repository not wired")
+	}
+
+	page := int(req.GetPage())
+	pageSize := int(req.GetPageSize())
+	if page < 1 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 50
+	}
+	if pageSize > 200 {
+		pageSize = 200
+	}
+
+	filters := repository.BusinessAuditLogFilters{
+		Since:      req.GetSince(),
+		Until:      req.GetUntil(),
+		ActorID:    req.GetActorId(),
+		Action:     req.GetAction(),
+		TargetType: req.GetTargetType(),
+	}
+
+	entries, total, err := h.businessAuditRepo.ListAll(filters, page, pageSize)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+
+	protoEntries := make([]*notifpb.BusinessAuditLogEntry, len(entries))
+	for i, e := range entries {
+		protoEntries[i] = &notifpb.BusinessAuditLogEntry{
+			Id:         e.ID,
+			Action:     e.Action,
+			ActorId:    e.ActorID,
+			TargetType: e.TargetType,
+			TargetId:   e.TargetID,
+			Detail:     e.Detail,
+			Timestamp:  e.Timestamp.Unix(),
+		}
+	}
+	return &notifpb.ListBusinessAuditLogsResponse{
 		Entries:  protoEntries,
 		Total:    total,
 		Page:     int32(page),

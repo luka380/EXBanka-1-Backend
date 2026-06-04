@@ -796,6 +796,23 @@ type AdminCronActionMessage struct {
 	Reason     string    `json:"reason,omitempty"`
 }
 
+// TopicBusinessAuditAction carries who-did-what audit events for high-value
+// business actions (limit changes, usedLimit resets, order approve/reject,
+// permission changes, manual tax collection). Published by the api-gateway
+// (actor known from the JWT) and recorded by notification-service into the
+// business_audit_logs table. Mirrors the admin.cron-action audit loop.
+const TopicBusinessAuditAction = "admin.business-action"
+
+// BusinessAuditActionMessage is one audited business action.
+type BusinessAuditActionMessage struct {
+	Action          string    `json:"action"`             // limit.set | limit.used_reset | order.approve | order.decline | permissions.set | tax.collect
+	ActorEmployeeID int64     `json:"actor_employee_id"`  // JWT user_id of the actor
+	TargetType      string    `json:"target_type"`        // employee | order | role | tax
+	TargetID        string    `json:"target_id"`
+	Detail          string    `json:"detail"`
+	Timestamp       time.Time `json:"timestamp"`
+}
+
 // ==================== Watchlist Notifications (2026-05-29) ====================
 
 // TopicWatchlistAlert is published by stock-service's daily watchlist
