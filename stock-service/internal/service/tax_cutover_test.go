@@ -18,7 +18,7 @@ func TestCleanupLegacyBuyerPremiumRows(t *testing.T) {
 
 	// Active contract accepted under the old model (saga s-active).
 	if err := db.Create(&model.OptionContract{
-		Status: model.OptionContractStatusActive, OfferID: 1, SagaID: "s-active",
+		Status: model.OptionContractStatusActive, OfferID: u64p(1), SagaID: "s-active",
 		BuyerOwnerType: model.OwnerClient, BuyerOwnerID: &cid, SellerOwnerType: model.OwnerBank,
 		StockID: 1, Quantity: decimal.NewFromInt(1), StrikePrice: decimal.NewFromInt(1),
 		PremiumPaid: decimal.NewFromInt(1), PremiumCurrency: "USD", StrikeCurrency: "USD",
@@ -28,7 +28,7 @@ func TestCleanupLegacyBuyerPremiumRows(t *testing.T) {
 	}
 	// Already-exercised contract (saga s-done) — its premium row must survive.
 	if err := db.Create(&model.OptionContract{
-		Status: model.OptionContractStatusExercised, OfferID: 2, SagaID: "s-done",
+		Status: model.OptionContractStatusExercised, OfferID: u64p(2), SagaID: "s-done",
 		BuyerOwnerType: model.OwnerClient, BuyerOwnerID: &cid, SellerOwnerType: model.OwnerBank,
 		StockID: 1, Quantity: decimal.NewFromInt(1), StrikePrice: decimal.NewFromInt(1),
 		PremiumPaid: decimal.NewFromInt(1), PremiumCurrency: "USD", StrikeCurrency: "USD",

@@ -10638,6 +10638,13 @@ const docTemplate = `{
                             "type": "object",
                             "additionalProperties": true
                         }
+                    },
+                    "409": {
+                        "description": "out of turn or negotiation closed (SI-TX §3.3)",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
                     }
                 }
             },
@@ -11664,58 +11671,32 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "Returns the caller's formed option contracts, LOCAL and REMOTE merged into one contracts[] array. Each item carries kind/routing_number/bank_code and me_owner (true when the caller is the buyer/holder). peer_contracts[] has been removed — remote contracts appear in contracts[] with kind=remote. (SP-1 Task 8)",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "OTCOptions"
                 ],
-                "summary": "List the caller's OTC contracts",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                        }
-                    }
-                }
-            }
-        },
-        "/api/v3/me/otc/contracts/peer/{id}/exercise": {
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Buyer-only. Initiates the SI-TX exercise flow: strike money buyer→seller + option markers carrying intent=exercise. Both banks transition the contract to status=exercised on COMMIT_TX, the seller's reservation is consumed and the buyer's holding is credited.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "OTCOptions"
-                ],
-                "summary": "Exercise a cross-bank OTC option contract",
+                "summary": "List the caller's OTC contracts (unified local + remote)",
                 "parameters": [
                     {
-                        "type": "integer",
-                        "description": "peer_option_contracts row id on this bank",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
+                        "type": "string",
+                        "description": "buyer|seller|either",
+                        "name": "role",
+                        "in": "query"
                     },
                     {
-                        "description": "buyer's currency account number that pays the strike",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/handler.exercisePeerRequest"
-                        }
+                        "type": "integer",
+                        "description": "page (default 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "page size (default 20)",
+                        "name": "page_size",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -11914,14 +11895,14 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns chains where the caller is the bidder. Filter with ` + "`" + `?statuses=open,countered,accepted,rejected,cancelled,expired` + "`" + `.",
+                "description": "Returns a unified list of the caller's LOCAL (intra-bank bidder) and REMOTE (cross-bank peer) negotiation chains. Each item carries ` + "`" + `kind` + "`" + ` (local|remote), ` + "`" + `routing_number` + "`" + `/` + "`" + `bank_code` + "`" + ` provenance, and ` + "`" + `me_owner` + "`" + ` (true only when the caller is the parent listing's poster/seller). Filter with ` + "`" + `?statuses=open,countered,accepted,rejected,cancelled,expired` + "`" + ` (applied to both sets).",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "OTCOptions"
                 ],
-                "summary": "List the caller's OTC option negotiation chains",
+                "summary": "List the caller's OTC option negotiation chains (local + remote, merged)",
                 "parameters": [
                     {
                         "type": "string",
@@ -12817,204 +12798,6 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                        }
-                    }
-                }
-            }
-        },
-        "/api/v3/me/peer-otc/negotiations": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Returns rows from this bank's peer_otc_negotiations where the caller is either the buyer (this bank hosts the buyer) or the seller. Use ` + "`" + `role=buyer` + "`" + ` / ` + "`" + `role=seller` + "`" + ` to filter.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "OTCOptions"
-                ],
-                "summary": "List the caller's pending peer-OTC negotiations",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "buyer|seller (default: both)",
-                        "name": "role",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                        }
-                    }
-                }
-            },
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Buyer-side client-facing endpoint. Composes an SI-TX OtcOffer with buyerId from the caller's JWT and sellerId from the body, then HTTP POSTs to the seller's bank's /api/v3/negotiations. Returns the foreign negotiation id assigned by the seller's bank.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "OTCOptions"
-                ],
-                "summary": "Initiate a cross-bank OTC negotiation",
-                "parameters": [
-                    {
-                        "description": "negotiation terms",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/handler.initiateNegotiationRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "201": {
-                        "description": "Created",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                        }
-                    }
-                }
-            }
-        },
-        "/api/v3/me/peer-otc/negotiations/{rid}/{id}": {
-            "put": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Updates the negotiation offer on the counterparty's bank. Body is the same OtcOffer shape as the initial POST. The gateway proxies a PUT to the counterparty's /api/v3/negotiations/:rid/:id. The local mirror row is updated by the inbound webhook from the counterparty after they refetch.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "OTCOptions"
-                ],
-                "summary": "Counter-offer on a cross-bank OTC negotiation",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "routing number of the bank that issued the negotiation id",
-                        "name": "rid",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "foreign id",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                        }
-                    }
-                }
-            },
-            "delete": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Soft-cancels the negotiation on the counterparty's bank (DELETE flips isOngoing to false; the row is preserved per SI-TX §3.5). The local mirror is updated by the inbound webhook from the counterparty after they refetch.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "OTCOptions"
-                ],
-                "summary": "Cancel a cross-bank OTC negotiation",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "routing number",
-                        "name": "rid",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "foreign id",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "204": {
-                        "description": "No Content",
-                        "schema": {
-                            "type": "string"
-                        }
-                    }
-                }
-            }
-        },
-        "/api/v3/me/peer-otc/negotiations/{rid}/{id}/accept": {
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Calls the counterparty's /api/v3/negotiations/:rid/:id/accept which begins the option-formation SI-TX (4-posting NEW_TX). Returns the transaction_id assigned by the counterparty.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "OTCOptions"
-                ],
-                "summary": "Accept a cross-bank OTC negotiation",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "routing number",
-                        "name": "rid",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "foreign id",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -14334,13 +14117,14 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "Resolves an option contract by id. A LOCAL contract is returned with kind=local + own provenance + me_owner (true when caller is the buyer/holder). A non-local id falls back to the cross-bank mirror and returns kind=remote (me_owner=direction==CREDIT). 404 only when neither exists. (SP-1 Task 8)",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "OTCOptions"
                 ],
-                "summary": "Get an OTC contract",
+                "summary": "Get an OTC contract (unified local + remote)",
                 "parameters": [
                     {
                         "type": "integer",
@@ -14357,6 +14141,20 @@ const docTemplate = `{
                             "type": "object",
                             "additionalProperties": true
                         }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
                     }
                 }
             }
@@ -14368,6 +14166,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "Exercises an option contract. The dispatch (local saga vs cross-bank SI-TX) is decided in stock-service from the contract's routing — the frontend uses ONE route regardless of kind. For a cross-bank contract, supply buyer_account_number (the buyer's currency account that pays the strike); the gateway validates the caller owns it. For a local contract the accounts come from the persisted contract and buyer_account_number is ignored.",
                 "consumes": [
                     "application/json"
                 ],
@@ -14377,7 +14176,7 @@ const docTemplate = `{
                 "tags": [
                     "OTCOptions"
                 ],
-                "summary": "Exercise an OTC option contract",
+                "summary": "Exercise an OTC option contract (unified local + cross-bank)",
                 "parameters": [
                     {
                         "type": "integer",
@@ -14387,7 +14186,7 @@ const docTemplate = `{
                         "required": true
                     },
                     {
-                        "description": "optional on-behalf client id; accounts come from the contract",
+                        "description": "optional on-behalf client/fund id; buyer_account_number required only for cross-bank contracts",
                         "name": "body",
                         "in": "body",
                         "schema": {
@@ -14398,6 +14197,27 @@ const docTemplate = `{
                 "responses": {
                     "201": {
                         "description": "Created",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -14477,17 +14297,18 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "Resolves an OTC option offer by its stable surrogate id (the local_id from the discovery feed). Local offers return the {offer,revisions} body decorated with kind=\"local\" + me_owner. If the id is not a local offer it is resolved from the remote (cross-bank) mirror and returned as a flat body with kind=\"remote\" + me_owner=false. When the authenticated caller has an own (bidder) negotiation chain against the offer, the offer object also carries my_negotiation_id + my_negotiation_status so the FE can jump straight to its chain (absent/0 otherwise; a poster who never bid has no chain).",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "OTCOptions"
                 ],
-                "summary": "Get an OTC offer with revisions",
+                "summary": "Get an OTC option offer by surrogate id (local or remote)",
                 "parameters": [
                     {
                         "type": "integer",
-                        "description": "offer id",
+                        "description": "surrogate offer id",
                         "name": "id",
                         "in": "path",
                         "required": true
@@ -14496,6 +14317,20 @@ const docTemplate = `{
                 "responses": {
                     "200": {
                         "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -16224,17 +16059,13 @@ const docTemplate = `{
                 }
             }
         },
-        "handler.exercisePeerRequest": {
-            "type": "object",
-            "properties": {
-                "buyer_account_number": {
-                    "type": "string"
-                }
-            }
-        },
         "handler.exerciseRequest": {
             "type": "object",
             "properties": {
+                "buyer_account_number": {
+                    "description": "BuyerAccountNumber is REQUIRED only for cross-bank (remote) contracts: the\nbuyer's currency account that pays the strike. The gateway validates the\ncaller owns it before forwarding (the only client-supplied resource on the\nmoney path). LOCAL contracts ignore it — their accounts come from the\npersisted contract. (SP-2b Task 5 — unified local+cross-bank exercise.)",
+                    "type": "string"
+                },
                 "on_behalf_of_client_id": {
                     "type": "integer"
                 },
@@ -16243,9 +16074,6 @@ const docTemplate = `{
                     "type": "integer"
                 }
             }
-        },
-        "handler.initiateNegotiationRequest": {
-            "type": "object"
         },
         "handler.investRequest": {
             "type": "object",

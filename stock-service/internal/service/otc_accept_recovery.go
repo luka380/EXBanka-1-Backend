@@ -59,9 +59,15 @@ func (s *OTCOfferService) RecoverAcceptSaga(ctx context.Context, sagaID string, 
 		return fmt.Errorf("recover accept saga %s: load contract: %w", sagaID, err)
 	}
 
-	o, err := s.offers.GetByID(contract.OfferID)
+	if contract.OfferID == nil {
+		// Remote contracts carry no local offer; the accept-saga recovery
+		// path only runs for locally-minted contracts, which always set it.
+		return fmt.Errorf("recover accept saga %s: contract %d has no local offer id", sagaID, contract.ID)
+	}
+	contractOfferID := *contract.OfferID
+	o, err := s.offers.GetByID(contractOfferID)
 	if err != nil {
-		return fmt.Errorf("recover accept saga %s: load offer %d: %w", sagaID, contract.OfferID, err)
+		return fmt.Errorf("recover accept saga %s: load offer %d: %w", sagaID, contractOfferID, err)
 	}
 
 	buyerAcct, err := s.accounts.GetAccount(ctx, &accountpb.GetAccountRequest{Id: contract.BuyerAccountID})

@@ -3,19 +3,15 @@ package sitx
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	contractsitx "github.com/exbanka/contract/sitx"
+	"github.com/exbanka/contract/sitxauth"
 )
 
 // ErrRetryLater is the sentinel returned when a peer answers a NEW_TX /
@@ -139,20 +135,7 @@ func (c *PeerHTTPClient) CheckStatus(ctx context.Context, target *PeerHTTPTarget
 	if err != nil {
 		return nil, fmt.Errorf("new request: %w", err)
 	}
-	req.Header.Set("X-Api-Key", target.APIToken)
-
-	if target.HMACOutboundKey != "" {
-		nonce, _ := generateNonce()
-		ts := time.Now().UTC().Format(time.RFC3339)
-		// Sign empty body for GET requests.
-		mac := hmac.New(sha256.New, []byte(target.HMACOutboundKey))
-		mac.Write([]byte{})
-		sig := hex.EncodeToString(mac.Sum(nil))
-		req.Header.Set("X-Bank-Code", target.OwnBankCode)
-		req.Header.Set("X-Bank-Signature", sig)
-		req.Header.Set("X-Timestamp", ts)
-		req.Header.Set("X-Nonce", nonce)
-	}
+	sitxauth.Sign(req, target.APIToken, target.HMACOutboundKey, target.OwnBankCode, nil)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -187,30 +170,11 @@ func (c *PeerHTTPClient) postEnvelope(ctx context.Context, target *PeerHTTPTarge
 		return nil, fmt.Errorf("new request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Api-Key", target.APIToken)
-
-	if target.HMACOutboundKey != "" {
-		nonce, _ := generateNonce()
-		ts := time.Now().UTC().Format(time.RFC3339)
-		mac := hmac.New(sha256.New, []byte(target.HMACOutboundKey))
-		mac.Write(body)
-		sig := hex.EncodeToString(mac.Sum(nil))
-		// X-Bank-Code identifies the SENDER, not the recipient — the peer
-		// uses it to look up our row in its peer_banks table and pick the
-		// HMAC key to validate against.
-		req.Header.Set("X-Bank-Code", target.OwnBankCode)
-		req.Header.Set("X-Bank-Signature", sig)
-		req.Header.Set("X-Timestamp", ts)
-		req.Header.Set("X-Nonce", nonce)
-	}
+	// X-Bank-Code identifies the SENDER, not the recipient — the peer
+	// uses it to look up our row in its peer_banks table and pick the
+	// HMAC key to validate against.
+	sitxauth.Sign(req, target.APIToken, target.HMACOutboundKey, target.OwnBankCode, body)
 
 	return c.httpClient.Do(req)
 }
 
-func generateNonce() (string, error) {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b), nil
-}

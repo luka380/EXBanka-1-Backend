@@ -280,7 +280,10 @@ func (h *PortfolioHandler) ListOTCOffers(c *gin.Context) {
 //	open listings (kind=remote) merged in the in-memory
 //	cache (refreshed every ~5s). Filter by ticker / kind /
 //	bank_code / direction. Pagination is applied in-memory
-//	over the cached snapshot.
+//	over the cached snapshot. Each offer the authenticated
+//	caller has an own (bidder) negotiation chain against
+//	carries my_negotiation_id + my_negotiation_status so the
+//	FE can jump straight to its chain (absent otherwise).
 //
 // @Tags         OTCOptions
 // @Security     BearerAuth
@@ -351,6 +354,13 @@ func (h *PortfolioHandler) listUnifiedOTCOptions(c *gin.Context, ownerOnlySeller
 			return
 		}
 	}
+	identity, _ := c.MustGet("identity").(*middleware.ResolvedIdentity)
+	var identityOwnerType string
+	var identityOwnerID uint64
+	if identity != nil {
+		identityOwnerType = identity.OwnerType
+		identityOwnerID = derefU64(identity.OwnerID)
+	}
 	resp, err := h.otcClient.ListUnifiedOptionOffers(c.Request.Context(), &stockpb.ListUnifiedOptionOffersRequest{
 		Ticker:            c.Query("ticker"),
 		Kind:              kind,
@@ -359,6 +369,8 @@ func (h *PortfolioHandler) listUnifiedOTCOptions(c *gin.Context, ownerOnlySeller
 		Page:              int32(page),
 		PageSize:          int32(pageSize),
 		OwnerOnlySellerId: ownerOnlySellerID,
+		ActingOwnerType:   identityOwnerType,
+		ActingOwnerId:     identityOwnerID,
 	})
 	if err != nil {
 		handleGRPCError(c, err)
@@ -367,11 +379,13 @@ func (h *PortfolioHandler) listUnifiedOTCOptions(c *gin.Context, ownerOnlySeller
 	offers := make([]gin.H, 0, len(resp.GetOffers()))
 	for _, o := range resp.GetOffers() {
 		row := gin.H{
+			"id":               o.GetLocalId(),
 			"kind":             o.GetKind(),
 			"bank_code":        o.GetBankCode(),
 			"routing_number":   o.GetRoutingNumber(),
 			"offer_id":         o.GetOfferId(),
 			"seller_id":        o.GetSellerId(),
+			"me_owner":         o.GetMeOwner(),
 			"seller_name":      o.GetSellerName(),
 			"direction":        o.GetDirection(),
 			"ticker":           o.GetTicker(),
@@ -394,6 +408,13 @@ func (h *PortfolioHandler) listUnifiedOTCOptions(c *gin.Context, ownerOnlySeller
 		}
 		if o.GetActiveChainsCount() > 0 {
 			row["active_chains_count"] = o.GetActiveChainsCount()
+		}
+		// SP-2b — the caller's own (bidder) negotiation chain on this offer, so
+		// the FE can jump straight to it. Omitted when the caller has no chain
+		// here (0 / "").
+		if o.GetMyNegotiationId() > 0 {
+			row["my_negotiation_id"] = o.GetMyNegotiationId()
+			row["my_negotiation_status"] = o.GetMyNegotiationStatus()
 		}
 		offers = append(offers, row)
 	}

@@ -287,7 +287,10 @@ func (s *OTCNegotiationService) OpenNegotiation(ctx context.Context, in OpenNego
 			LastActionByOwnerType:     string(in.BidderOwnerType),
 			LastActionByOwnerID:       in.BidderOwnerID,
 			LastActionAt:              now,
-			ActingEmployeeID:          in.ActingEmployeeID,
+			// acting_employee_id is valid only on a bank-owned row (bank bidder);
+			// an employee-on-behalf-of-client bid leaves the client-owned chain's
+			// acting_employee_id nil per the ActingEmployee invariant.
+			ActingEmployeeID: actingEmpForOwner(in.BidderOwnerType, in.ActingEmployeeID),
 		}
 		if err := s.negRepo.CreateTx(tx, neg); err != nil {
 			return err
@@ -372,7 +375,7 @@ func (s *OTCNegotiationService) CounterNegotiation(ctx context.Context, in Count
 		neg.LastActionByOwnerType = string(in.CallerOwnerType)
 		neg.LastActionByOwnerID = in.CallerOwnerID
 		neg.LastActionAt = now
-		neg.ActingEmployeeID = in.ActingEmployeeID
+		neg.ActingEmployeeID = actingEmpForOwner(neg.BidderOwnerType, in.ActingEmployeeID)
 		if err := s.negRepo.SaveTx(tx, neg); err != nil {
 			return err
 		}
@@ -480,7 +483,7 @@ func (s *OTCNegotiationService) AcceptNegotiation(ctx context.Context, in Accept
 		neg.LastActionByOwnerType = string(in.CallerOwnerType)
 		neg.LastActionByOwnerID = in.CallerOwnerID
 		neg.LastActionAt = now
-		neg.ActingEmployeeID = in.ActingEmployeeID
+		neg.ActingEmployeeID = actingEmpForOwner(neg.BidderOwnerType, in.ActingEmployeeID)
 		if err := s.negRepo.SaveTx(tx, neg); err != nil {
 			return err
 		}
@@ -696,7 +699,7 @@ func (s *OTCNegotiationService) RejectNegotiation(ctx context.Context, in Reject
 		neg.LastActionByOwnerType = string(in.CallerOwnerType)
 		neg.LastActionByOwnerID = in.CallerOwnerID
 		neg.LastActionAt = now
-		neg.ActingEmployeeID = in.ActingEmployeeID
+		neg.ActingEmployeeID = actingEmpForOwner(neg.BidderOwnerType, in.ActingEmployeeID)
 		if err := s.negRepo.SaveTx(tx, neg); err != nil {
 			return err
 		}
@@ -768,7 +771,7 @@ func (s *OTCNegotiationService) CancelNegotiation(ctx context.Context, in Cancel
 		neg.LastActionByOwnerType = string(in.CallerOwnerType)
 		neg.LastActionByOwnerID = in.CallerOwnerID
 		neg.LastActionAt = now
-		neg.ActingEmployeeID = in.ActingEmployeeID
+		neg.ActingEmployeeID = actingEmpForOwner(neg.BidderOwnerType, in.ActingEmployeeID)
 		if err := s.negRepo.SaveTx(tx, neg); err != nil {
 			return err
 		}
@@ -855,7 +858,7 @@ func (s *OTCNegotiationService) CancelListing(ctx context.Context, in CancelList
 			sib.LastActionByOwnerType = string(in.CallerOwnerType)
 			sib.LastActionByOwnerID = in.CallerOwnerID
 			sib.LastActionAt = now
-			sib.ActingEmployeeID = in.ActingEmployeeID
+			sib.ActingEmployeeID = actingEmpForOwner(sib.BidderOwnerType, in.ActingEmployeeID)
 			if err := s.negRepo.SaveTx(tx, sib); err != nil {
 				return err
 			}
@@ -880,6 +883,26 @@ func (s *OTCNegotiationService) CancelListing(ctx context.Context, in CancelList
 	return result, nil
 }
 
+// LocalParentIsOpen reports whether the LOCAL OTCOffer with id offerID exists
+// and is still an open listing. Used by the cross-bank (remote) accept path to
+// reject an orphan accept against a listing the poster has CANCELLED/CONSUMED:
+// a cross-bank child chain references its parent by (remote_parent_routing,
+// remote_parent_native_id); when the routing is ours the native id is the local
+// offer id, so the seller's bank (which hosts the accept + the listing) can
+// authoritatively gate on the live parent status — mirroring the LOCAL accept
+// path's ErrOTCParentNotOpen check. found=false (offer missing) is treated as
+// NOT open. An offerID of 0 means "no resolvable local parent" → not open.
+func (s *OTCNegotiationService) LocalParentIsOpen(offerID uint64) bool {
+	if offerID == 0 {
+		return false
+	}
+	parent, err := s.offerRepo.GetByID(offerID)
+	if err != nil || parent == nil {
+		return false
+	}
+	return parent.IsOpenListing()
+}
+
 // ListMyNegotiations returns negotiation chains where the caller is the
 // bidder. The listing-poster sees their chains via a different code path
 // (list all chains on offers they posted), surfaced from the handler.
@@ -895,16 +918,25 @@ func (s *OTCNegotiationService) ListMyNegotiations(
 // (owner_type="bank", already gated on otc.read.all at the gateway) may
 // see all incoming bids. A competing bidder receives PermissionDenied —
 // they see only their own chain via ListMyNegotiations.
+//
+// Returns the parent OTCOffer alongside the chain slice so the handler can
+// stamp me_owner from the offer's InitiatorOwnerType/InitiatorOwnerID without
+// a second DB fetch (authorizeListingAudience already loaded it).
 func (s *OTCNegotiationService) ListByParentOffer(
 	ctx context.Context,
 	parentOfferID uint64,
 	callerOwnerType model.OwnerType,
 	callerOwnerID *uint64,
-) ([]model.OTCNegotiation, error) {
-	if _, err := s.authorizeListingAudience(parentOfferID, callerOwnerType, callerOwnerID); err != nil {
-		return nil, err
+) (*model.OTCOffer, []model.OTCNegotiation, error) {
+	parent, err := s.authorizeListingAudience(parentOfferID, callerOwnerType, callerOwnerID)
+	if err != nil {
+		return nil, nil, err
 	}
-	return s.negRepo.ListByParentOffer(parentOfferID)
+	rows, err := s.negRepo.ListByParentOffer(parentOfferID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return parent, rows, nil
 }
 
 // authorizeListingAudience verifies the caller may see the full set of
@@ -1021,6 +1053,23 @@ func (s *OTCNegotiationService) ListRevisions(
 }
 
 // ---------- helpers ----------
+
+// actingEmpForOwner returns the acting-employee id ONLY when the resource
+// being written is bank-owned. The ActingEmployee invariant (see
+// model.ValidateActingEmployee) forbids stamping acting_employee_id on a
+// client-owned row. A bank principal acting on a CLIENT-owned negotiation
+// chain (e.g. the bank poster accepting/countering/rejecting a client
+// bidder's chain) must therefore leave the negotiation's acting_employee_id
+// nil — the bank's wire identity is recorded on the bank-owned OTCOffer, not
+// on the counterparty's chain. Returns nil for client-owned rows regardless
+// of the caller, preventing the save-time invariant violation that otherwise
+// aborts the whole action with a 500.
+func actingEmpForOwner(rowOwnerType model.OwnerType, actingEmployeeID *uint64) *uint64 {
+	if rowOwnerType == model.OwnerBank {
+		return actingEmployeeID
+	}
+	return nil
+}
 
 // ownerMatches reports whether two (owner_type, owner_id) tuples refer
 // to the same principal. Handles nil owner_id for OwnerBank correctly:

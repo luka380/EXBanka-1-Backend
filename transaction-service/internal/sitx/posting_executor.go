@@ -300,8 +300,19 @@ func (e *PostingExecutor) reserveExercisePseudoLeg(ctx context.Context, p contra
 		}
 		// Resolve + credit the seller's money account, tracked like any MONAS
 		// credit so COMMIT settles (CommitIncoming) and ROLLBACK releases.
+		// Honour the seller's NOMINATED account (the account bound at accept,
+		// stored on the contract) when present: credit that concrete 18-digit
+		// number directly (resolveAccountForPosting passes account numbers through
+		// unchanged), so the strike lands in the account the seller chose rather
+		// than their first active <currency> account. Empty ⇒ no nomination stored
+		// (older contract / unbound) → fall back to seller_id participant
+		// resolution. (Sub-case 2 of the cross-bank OTC nominated-account fix.)
 		currency := p.AssetID
-		key, reason, ok := e.reserveIncomingCredit(ctx, look.GetSellerId(), currency, p.Amount, peerBankCode, locallyGeneratedKey)
+		creditTarget := look.GetSellerId()
+		if num := look.GetSellerAccountNumber(); num != "" {
+			creditTarget = num
+		}
+		key, reason, ok := e.reserveIncomingCredit(ctx, creditTarget, currency, p.Amount, peerBankCode, locallyGeneratedKey)
 		if !ok {
 			nv := noVote(reason, i)
 			return exercisePseudoResult{noVote: &nv}
@@ -773,9 +784,19 @@ func (e *PostingExecutor) ExtractOwnOptionItems(postings []contractsitx.Internal
 // downstream GetAccountByNumber call will surface NO_SUCH_ACCOUNT for
 // genuinely unknown accountIds.
 func (e *PostingExecutor) resolveAccountForPosting(ctx context.Context, accountID, currency string) (string, error) {
-	// Participant ID pattern: "client-<digits>". Only the "client"
-	// owner type is resolvable today (employees don't own currency
-	// accounts in this codebase). Everything else falls through.
+	// Bank participant ids ("bank" / "employee-<N>") resolve to the bank's own
+	// active account in the requested currency. SP-3 lifted the bank party for
+	// cross-bank OTC bidding, so a bank can now be the SELLER (its credit leg
+	// carries the bank wire id) or the BUYER. The bank's accounts live under the
+	// well-known sentinel owner id; the bank holds at most one active account per
+	// currency, so the first active match is deterministic. Without this branch
+	// the downstream GetAccountByNumber("employee-1") failed → NO_SUCH_ACCOUNT,
+	// stranding bank↔bank accept SI-TXes in "committing".
+	if accountID == "bank" || strings.HasPrefix(accountID, "employee-") {
+		return e.resolveOwnerAccount(ctx, bankOwnerSentinelID, currency, accountID)
+	}
+
+	// Participant ID pattern: "client-<digits>".
 	rest, ok := strings.CutPrefix(accountID, "client-")
 	if !ok || rest == "" {
 		return accountID, nil
@@ -784,7 +805,19 @@ func (e *PostingExecutor) resolveAccountForPosting(ctx context.Context, accountI
 	if parseErr != nil {
 		return accountID, nil
 	}
-	resp, listErr := e.client.ListAccountsByClient(ctx, &accountpb.ListAccountsByClientRequest{ClientId: clientID, Page: 1, PageSize: 100})
+	return e.resolveOwnerAccount(ctx, clientID, currency, accountID)
+}
+
+// bankOwnerSentinelID is the well-known owner id for bank-owned accounts
+// (mirrors account-service's service.BankOwnerID). A bank participant id
+// resolves to this owner's account in the requested currency.
+const bankOwnerSentinelID uint64 = 1_000_000_000
+
+// resolveOwnerAccount returns ownerID's first active account in currency, or a
+// NO_SUCH_ACCOUNT-shaped error when none exists. accountID is the original
+// participant id, used only for error messages.
+func (e *PostingExecutor) resolveOwnerAccount(ctx context.Context, ownerID uint64, currency, accountID string) (string, error) {
+	resp, listErr := e.client.ListAccountsByClient(ctx, &accountpb.ListAccountsByClientRequest{ClientId: ownerID, Page: 1, PageSize: 100})
 	if listErr != nil || resp == nil {
 		return "", fmt.Errorf("list accounts for %s: %w", accountID, listErr)
 	}
@@ -793,7 +826,7 @@ func (e *PostingExecutor) resolveAccountForPosting(ctx context.Context, accountI
 			return a.GetAccountNumber(), nil
 		}
 	}
-	return "", fmt.Errorf("client %d has no active %s account", clientID, currency)
+	return "", fmt.Errorf("owner %d (%s) has no active %s account", ownerID, accountID, currency)
 }
 
 // pairedMoney totals the money this bank moves for an option leg of the given

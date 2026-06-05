@@ -16,6 +16,10 @@ import (
 
 func newOTCExpiryDB(t *testing.T) *gorm.DB {
 	t.Helper()
+	// SP-2a: remote (cross-bank) contracts live in the unified option_contracts
+	// table as routing_number != OwnRouting() rows. Set own routing so the
+	// remote-scoped repo methods recognise the seeded peer rows (routing 222).
+	model.SetOwnRouting("111")
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
@@ -29,7 +33,6 @@ func newOTCExpiryDB(t *testing.T) *gorm.DB {
 		&model.OTCOffer{},
 		&model.OTCOfferRevision{},
 		&model.OptionContract{},
-		&model.PeerOptionContract{},
 		&model.CapitalGain{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
@@ -437,7 +440,7 @@ func TestOTCExpiryCron_WithPeerContracts(t *testing.T) {
 		repository.NewOTCOfferRepository(db),
 		nil, nil, 10, "02:00", nilRegistry(),
 	)
-	cr2 := cr.WithPeerContracts(repository.NewPeerOptionContractRepository(db))
+	cr2 := cr.WithPeerContracts(repository.NewOptionContractRepository(db))
 	if cr2.peerContracts == nil {
 		t.Fatal("expected peer repo wired")
 	}
@@ -450,27 +453,73 @@ func TestOTCExpiryCron_WithPeerContracts(t *testing.T) {
 // touch holdings (because the buyer's bank holds no lock).
 func TestOTCExpiryCron_ExpirePeerContract_CreditDirection(t *testing.T) {
 	db := newOTCExpiryDB(t)
-	peerRepo := repository.NewPeerOptionContractRepository(db)
+	peerRepo := repository.NewOptionContractRepository(db)
 	cr := NewOTCExpiryCron(
 		repository.NewOptionContractRepository(db),
 		repository.NewOTCOfferRepository(db),
 		nil, nil, 10, "02:00", nilRegistry(),
 	).WithPeerContracts(peerRepo)
 
-	c := &model.PeerOptionContract{
-		CrossbankTxID: "tx-1", PostingIndex: 0,
-		Ticker: "AAPL", Quantity: 10, StrikePrice: decimal.NewFromInt(100),
-		Currency: "USD", SettlementDate: "2025-01-01",
-		Direction: "CREDIT", Status: "active",
-	}
-	if err := peerRepo.UpsertIdempotent(c); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
+	// REMOTE CREDIT contract: we host the buyer (111); the seller's bank (222)
+	// is the counterparty, so routing_number=222 (!= own 111).
+	c := seedExpiryRemoteContract(t, db, "CREDIT", 222)
 	if err := cr.expirePeerContract(context.Background(), c); err != nil {
 		t.Fatalf("expire: %v", err)
 	}
-	got, _ := peerRepo.GetByID(c.ID)
+	got, _ := peerRepo.GetRemoteContractByID(c.ID)
 	if got.Status != "expired" {
 		t.Errorf("status=%s", got.Status)
 	}
+}
+
+// seedExpiryRemoteContract inserts a REMOTE option contract (SP-2a fold) into
+// the unified table for the expiry-cron tests. counterparty is the routing of
+// the bank we do NOT host (so the row is recognised as remote).
+func seedExpiryRemoteContract(t *testing.T, db *gorm.DB, direction string, counterparty int64) *model.OptionContract {
+	t.Helper()
+	native := "tx-1:0"
+	dir := direction
+	bbc, sbc := "111", "222"
+	if direction == "DEBIT" {
+		// We host the seller (111); buyer's bank (counterparty) hosts the buyer.
+		bbc = "222"
+		sbc = "111"
+	}
+	pIdx := int32(0)
+	cbTx := "tx-1"
+	negRouting := int64(111)
+	negNative := "neg-1"
+	bID, sID := "client-1", "client-9"
+	now := time.Now().UTC()
+	row := &model.OptionContract{
+		RoutingNumber:             counterparty,
+		NativeID:                  &native,
+		BuyerOwnerType:            model.OwnerBank,
+		BuyerBankCode:             &bbc,
+		SellerOwnerType:           model.OwnerBank,
+		SellerBankCode:            &sbc,
+		Ticker:                    "AAPL",
+		Quantity:                  decimal.NewFromInt(10),
+		StrikePrice:               decimal.NewFromInt(100),
+		PremiumPaid:               decimal.Zero,
+		PremiumCurrency:           "USD",
+		StrikeCurrency:            "USD",
+		SettlementDate:            time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		Status:                    "active",
+		SagaID:                    cbTx,
+		PremiumPaidAt:             now,
+		CrossbankTxID:             &cbTx,
+		RemotePostingIndex:        &pIdx,
+		RemoteNegotiationRouting:  &negRouting,
+		RemoteNegotiationNativeID: &negNative,
+		RemoteDirection:           &dir,
+		RemoteBuyerID:             &bID,
+		RemoteSellerID:            &sID,
+		CreatedAt:                 now,
+		UpdatedAt:                 now,
+	}
+	if err := db.Create(row).Error; err != nil {
+		t.Fatalf("seed remote contract: %v", err)
+	}
+	return row
 }

@@ -151,14 +151,14 @@ type Handlers struct {
 	PeerAuthMW    gin.HandlerFunc
 
 	// Phase 4 SI-TX OTC peer-facing handlers (Celina 5).
-	// PeerOTC serves /api/v3/public-stock and /api/v3/negotiations/*;
-	// PeerUser serves /api/v3/user/{rid}/{id};
-	// PeerOTCInitiate serves the OUTBOUND client-facing endpoint at
-	// POST /api/v3/me/peer-otc/negotiations (lets a buyer at this
-	// bank kick off a negotiation against a peer's listing).
-	PeerOTC         *handler.PeerOTCHandler
-	PeerUser        *handler.PeerUserHandler
-	PeerOTCInitiate *handler.PeerOTCInitiateHandler
+	// PeerOTC serves /api/v3/cross-bank-protocol/public-stock and
+	// .../negotiations/*; PeerUser serves .../user/{rid}/{id}.
+	// (SP-2b clean-cut, 2026-06-05) The OUTBOUND client-facing
+	// PeerOTCInitiateHandler was retired — cross-bank negotiation
+	// initiation/counter/accept/cancel now dispatch inside stock-service
+	// behind the unified /api/v3/otc/... routes.
+	PeerOTC  *handler.PeerOTCHandler
+	PeerUser *handler.PeerUserHandler
 
 	// AdminCron serves the /api/v3/admin/crons/* routes (C10 — 2026-05-28).
 	AdminCron *handler.AdminCronHandler
@@ -207,7 +207,7 @@ func NewHandlers(d Deps) *Handlers {
 		Verification:     handler.NewVerificationHandler(d.VerificationClient, d.NotificationClient),
 		OptionsV2:        handler.NewOptionsV2Handler(d.SecurityClient, d.OrderClient, d.PortfolioClient),
 		Fund:             handler.NewInvestmentFundHandler(d.FundClient),
-		OTCOptions:       handler.NewOTCOptionsHandler(d.OTCOptionsClient, d.PeerOTCClient, d.SecurityClient, d.AccountClient),
+		OTCOptions:       handler.NewOTCOptionsHandler(d.OTCOptionsClient, d.SecurityClient, d.AccountClient),
 		OTCStock:         handler.NewOTCStockHandler(d.OTCStockMarketClient, d.AccountClient),
 		PeerTxDispatcher: handler.NewPeerTxDispatcherHandler(tx, d.PeerTxClient, d.OwnBankCode),
 		Changelog:        handler.NewChangelogHandler(d.AccountClient, d.CardClient, d.ClientClient, d.CreditClient, d.UserClient),
@@ -221,7 +221,6 @@ func NewHandlers(d Deps) *Handlers {
 		PeerAuthMW:       middleware.PeerAuth(d.PeerBanks, d.PeerNonces, 5*time.Minute),
 		PeerOTC:          handler.NewPeerOTCHandler(d.PeerOTCClient),
 		PeerUser:         handler.NewPeerUserHandler(d.ClientClient, d.UserClient, ownRouting, d.OwnBankName),
-		PeerOTCInitiate:  handler.NewPeerOTCInitiateHandler(d.PeerBankAdminClient, d.PeerOTCClient, d.AccountClient, ownRouting, d.OwnBankCode),
 		AdminCron:        handler.NewAdminCronHandler(d.AdminCronClients, d.AuditProducer),
 		AdminAudit:       handler.NewAdminAuditHandler(d.AccountClient, d.CardClient, d.ClientClient, d.CreditClient, d.UserClient, d.NotificationClient, d.TxClient),
 		Dividend:         handler.NewDividendHandler(d.FundClient),

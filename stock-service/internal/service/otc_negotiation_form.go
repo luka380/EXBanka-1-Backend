@@ -164,8 +164,9 @@ func (s *OTCOfferService) MintContractFromAcceptedNegotiation(ctx context.Contex
 		onBehalfFundPtr = &fid
 	}
 
+	parentOfferID := parent.ID
 	contract := &model.OptionContract{
-		OfferID:          parent.ID,
+		OfferID:          &parentOfferID,
 		BuyerOwnerType:   buyerOwnerType,
 		BuyerOwnerID:     buyerOwnerID,
 		SellerOwnerType:  sellerOwnerType,
@@ -242,7 +243,14 @@ func (s *OTCOfferService) MintContractFromAcceptedNegotiation(ctx context.Contex
 		Add(saga.Step{
 			Name: saga.StepSettlePremiumBuyer,
 			Forward: func(ctx context.Context, _ *saga.State) error {
-				_, e := s.accounts.PartialSettleReservation(ctx, contract.ID, 1, premiumBuyerCcy, settleMemo,
+				// order_transaction_id MUST be globally unique (account-service
+				// enforces UNIQUE(order_transaction_id) on the settlements
+				// table). A constant like literal 1 collides with the first-ever
+				// settlement and silently no-ops every later OTC settle (buyer
+				// never debited, seller still credited → money created). Derive
+				// it from the saga id so it is unique AND deterministic on retry.
+				settleTxnID := computeSettleSeq(sagaID, contract.ID, 0)
+				_, e := s.accounts.PartialSettleReservation(ctx, contract.ID, settleTxnID, premiumBuyerCcy, settleMemo,
 					saga.IdempotencyKey(sagaID, saga.StepSettlePremiumBuyer), orderkind.OTCPremium)
 				return e
 			},

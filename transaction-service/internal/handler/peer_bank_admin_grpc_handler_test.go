@@ -9,6 +9,8 @@ import (
 	"github.com/exbanka/transaction-service/internal/model"
 	"github.com/exbanka/transaction-service/internal/repository"
 	"github.com/glebarez/sqlite"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"gorm.io/gorm"
 )
 
@@ -18,7 +20,7 @@ func newAdminTestHandler(t *testing.T) *handler.PeerBankAdminGRPCHandler {
 	if err := db.AutoMigrate(&model.PeerBank{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	return handler.NewPeerBankAdminGRPCHandler(repository.NewPeerBankRepository(db))
+	return handler.NewPeerBankAdminGRPCHandler(repository.NewPeerBankRepository(db), "111")
 }
 
 func TestPeerBankAdmin_CreateAndGet(t *testing.T) {
@@ -168,6 +170,26 @@ func TestPeerBankAdmin_ResolveByBankCode_NotFound(t *testing.T) {
 	resp, _ := h.ResolvePeerByBankCode(context.Background(), &transactionpb.ResolvePeerByBankCodeRequest{BankCode: "999"})
 	if resp.GetFound() {
 		t.Errorf("expected found=false")
+	}
+}
+
+func TestPeerBankAdmin_RejectsOwnCode(t *testing.T) {
+	h := newAdminTestHandler(t)
+	ctx := context.Background()
+	if _, err := h.CreatePeerBank(ctx, &transactionpb.CreatePeerBankRequest{
+		BankCode: "111", RoutingNumber: 222, BaseUrl: "http://x/api/v3", ApiToken: "t", Active: true,
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("same bank_code: want InvalidArgument, got %v", err)
+	}
+	if _, err := h.CreatePeerBank(ctx, &transactionpb.CreatePeerBankRequest{
+		BankCode: "222", RoutingNumber: 111, BaseUrl: "http://x/api/v3", ApiToken: "t", Active: true,
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("same routing: want InvalidArgument, got %v", err)
+	}
+	if _, err := h.CreatePeerBank(ctx, &transactionpb.CreatePeerBankRequest{
+		BankCode: "222", RoutingNumber: 222, BaseUrl: "http://x/api/v3", ApiToken: "t", Active: true,
+	}); err != nil {
+		t.Fatalf("distinct peer should succeed: %v", err)
 	}
 }
 

@@ -1161,10 +1161,22 @@ func (s *HoldingReservationService) ExerciseBuyerCreditForPeerOption(
 		return status.Error(codes.InvalidArgument, "qty must be > 0")
 	}
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		var contract model.PeerOptionContract
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&contract, peerOptionContractID).Error; err != nil {
+		// The cross-bank contract now lives in the unified option_contracts table
+		// as a REMOTE row (routing_number != OwnRouting()); peerOptionContractID is
+		// its surrogate primary key. Lock the row, read status off the shared
+		// Status column (which carries the PEER vocabulary "active"/"exercising"/
+		// "exercised" on remote rows).
+		//
+		// Defense-in-depth: scope the lookup to remote rows (local = false) so
+		// a caller who passes a LOCAL contract's id (e.g. by mistake or via a
+		// confused caller) cannot trigger the buyer-credit path on a local row —
+		// it would be treated as not-found rather than silently exercised.
+		var contract model.OptionContract
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("local = ?", false).
+			First(&contract, peerOptionContractID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return status.Error(codes.FailedPrecondition, "peer option contract not found")
+				return status.Error(codes.FailedPrecondition, "peer option contract not found (must be a remote/cross-bank contract)")
 			}
 			return err
 		}
@@ -1179,9 +1191,13 @@ func (s *HoldingReservationService) ExerciseBuyerCreditForPeerOption(
 		if err := creditBuyerHoldingTx(tx, ownerType, ownerID, ticker, qty, strikePrice); err != nil {
 			return err
 		}
-		return tx.Model(&model.PeerOptionContract{}).
+		// SkipHooks: targeted status flip on a REMOTE row — BeforeSave's
+		// ValidateOwner would reject the zero-value struct's owner columns and
+		// BeforeUpdate's version guard is irrelevant for this column-scoped update.
+		return tx.Session(&gorm.Session{SkipHooks: true}).
+			Model(&model.OptionContract{}).
 			Where("id = ?", contract.ID).
-			Update("status", "exercised").Error
+			Updates(map[string]any{"status": "exercised", "updated_at": time.Now().UTC()}).Error
 	})
 }
 

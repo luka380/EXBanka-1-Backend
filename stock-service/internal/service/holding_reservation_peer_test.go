@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
@@ -199,6 +200,10 @@ func TestHoldingReservationService_CreditBuyerHolding_TwoTickersNoCollision(t *t
 // status, flipped to "exercised" in the same transaction as the credit and
 // read under a row lock, is the idempotency guard.
 func TestHoldingReservationService_ExerciseBuyerCreditForPeerOption_Idempotent(t *testing.T) {
+	// SP-2a: the cross-bank contract now lives in the unified option_contracts
+	// table as a REMOTE row (routing != OwnRouting). Set own routing 111 so the
+	// seeded remote row (routing 222) is recognised as remote.
+	model.SetOwnRouting("111")
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	require.NoError(t, err)
 	sqlDB, err := db.DB()
@@ -208,21 +213,50 @@ func TestHoldingReservationService_ExerciseBuyerCreditForPeerOption_Idempotent(t
 		&model.Holding{},
 		&model.HoldingReservation{},
 		&model.HoldingReservationSettlement{},
-		&model.PeerOptionContract{},
+		&model.OptionContract{},
 	))
 	holdingRepo := repository.NewHoldingRepository(db)
 	resRepo := repository.NewHoldingReservationRepository(db)
 	svc := NewHoldingReservationService(db, holdingRepo, resRepo)
 
 	strike := decimal.NewFromInt(150)
-	contract := &model.PeerOptionContract{
-		CrossbankTxID: "tx-idem", PostingIndex: 0,
-		NegotiationRoutingNumber: 222, NegotiationID: "neg",
-		BuyerRoutingNumber: 111, BuyerID: "client-99",
-		SellerRoutingNumber: 222, SellerID: "client-1",
-		Ticker: "AAPL", Quantity: 5, StrikePrice: strike,
-		Currency: "USD", SettlementDate: "2026-12-31",
-		Direction: "CREDIT", Status: "active",
+	// REMOTE CREDIT contract (we host the buyer 111; seller's bank 222 is the
+	// counterparty → routing_number=222).
+	native := "tx-idem:0"
+	dir := "CREDIT"
+	bbc, sbc := "111", "222"
+	bID, sID := "client-99", "client-1"
+	pIdx := int32(0)
+	cbTx := "tx-idem"
+	negRouting := int64(222)
+	negNative := "neg"
+	now := time.Now().UTC()
+	contract := &model.OptionContract{
+		RoutingNumber:             222,
+		NativeID:                  &native,
+		BuyerOwnerType:            model.OwnerBank,
+		BuyerBankCode:             &bbc,
+		SellerOwnerType:           model.OwnerBank,
+		SellerBankCode:            &sbc,
+		Ticker:                    "AAPL",
+		Quantity:                  decimal.NewFromInt(5),
+		StrikePrice:               strike,
+		PremiumPaid:               decimal.Zero,
+		PremiumCurrency:           "USD",
+		StrikeCurrency:            "USD",
+		SettlementDate:            time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC),
+		Status:                    "active",
+		SagaID:                    cbTx,
+		PremiumPaidAt:             now,
+		CrossbankTxID:             &cbTx,
+		RemotePostingIndex:        &pIdx,
+		RemoteNegotiationRouting:  &negRouting,
+		RemoteNegotiationNativeID: &negNative,
+		RemoteDirection:           &dir,
+		RemoteBuyerID:             &bID,
+		RemoteSellerID:            &sID,
+		CreatedAt:                 now,
+		UpdatedAt:                 now,
 	}
 	require.NoError(t, db.Create(contract).Error)
 
@@ -237,7 +271,7 @@ func TestHoldingReservationService_ExerciseBuyerCreditForPeerOption_Idempotent(t
 	if got.Quantity != 5 {
 		t.Errorf("buyer qty=%d want 5 — replayed exercise double-credited", got.Quantity)
 	}
-	var reloaded model.PeerOptionContract
+	var reloaded model.OptionContract
 	require.NoError(t, db.First(&reloaded, contract.ID).Error)
 	if reloaded.Status != "exercised" {
 		t.Errorf("contract status=%q want exercised", reloaded.Status)

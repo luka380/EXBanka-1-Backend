@@ -104,6 +104,17 @@ var (
 	// shares of the underlying.
 	ErrOTCInsufficientShares = svcerr.New(codes.FailedPrecondition, "insufficient available shares")
 
+	// ErrOTCSellerNoHolding — sell_initiated create by a seller who holds no
+	// position in the underlying at all (distinct from holding-too-few, which
+	// is ErrOTCInsufficientShares). Surfaces as a 404/precondition rather than
+	// a leaked DB record-not-found that the gateway maps to 500.
+	ErrOTCSellerNoHolding = svcerr.New(codes.FailedPrecondition, "seller holds no position in the underlying")
+
+	// ErrOTCOfferFieldInvalid — a create/counter field failed validation
+	// (non-positive quantity/strike, negative premium, malformed/half-set
+	// counterparty, unknown direction). InvalidArgument → HTTP 400.
+	ErrOTCOfferFieldInvalid = svcerr.New(codes.InvalidArgument, "invalid OTC offer field")
+
 	// ErrOTCSettlementInvalid — settlement_date constraint violated
 	// (in the past, or after underlying expiry).
 	ErrOTCSettlementInvalid = svcerr.New(codes.FailedPrecondition, "invalid settlement_date")

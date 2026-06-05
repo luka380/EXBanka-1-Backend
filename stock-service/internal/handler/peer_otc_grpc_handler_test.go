@@ -2,8 +2,12 @@ package handler_test
 
 import (
 	"context"
+	"encoding/json"
+	"strconv"
 	"testing"
+	"time"
 
+	contractsitx "github.com/exbanka/contract/sitx"
 	stockpb "github.com/exbanka/contract/stockpb"
 	transactionpb "github.com/exbanka/contract/transactionpb"
 	"github.com/exbanka/stock-service/internal/handler"
@@ -90,14 +94,76 @@ func newPeerOtcHandler(t *testing.T) (*handler.PeerOTCGRPCHandler, *gorm.DB, *fa
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	if err := db.AutoMigrate(&model.PeerOtcNegotiation{}, &model.PeerOptionContract{}); err != nil {
+	// SP-2a: remote negotiations AND remote option contracts live in the
+	// unified otc_negotiations / option_contracts tables.
+	model.SetOwnRouting("111")
+	if err := db.AutoMigrate(&model.OTCNegotiation{}, &model.OptionContract{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	repo := repository.NewPeerOtcNegotiationRepository(db)
-	optRepo := repository.NewPeerOptionContractRepository(db)
+	repo := repository.NewOTCNegotiationRepository(db)
+	optRepo := repository.NewOptionContractRepository(db)
 	holdings := &fakeHoldingReader{}
 	peerTx := &fakePeerTxClient{}
 	return handler.NewPeerOTCGRPCHandler(repo, optRepo, holdings, peerTx, 111), db, peerTx, holdings
+}
+
+// seedRemoteContractRow builds a REMOTE model.OptionContract for handler tests
+// (SP-2a fold). routing is the COUNTERPARTY (peer) routing; native_id is
+// "<crossbank_tx_id>:<posting_index>". qty is the int amount (stored as a
+// decimal). All NOT-NULL / CHECK / ValidateOwner constraints are satisfied
+// (OwnerBank + nil owner ids).
+func seedRemoteContractRow(
+	routing int64, crossbankTxID string, postingIndex int32, direction string,
+	negRouting int64, negNative string,
+	buyerRouting int64, buyerID string, sellerRouting int64, sellerID string,
+	ticker string, qty int64, strike decimal.Decimal, currency, settle, status string,
+) *model.OptionContract {
+	native := crossbankTxID + ":" + strconv.FormatInt(int64(postingIndex), 10)
+	bbc := strconv.FormatInt(buyerRouting, 10)
+	sbc := strconv.FormatInt(sellerRouting, 10)
+	cbTx := crossbankTxID
+	pIdx := postingIndex
+	nr := negRouting
+	nn := negNative
+	dir := direction
+	bID := buyerID
+	sID := sellerID
+	settleTime := time.Now().UTC()
+	if settle != "" {
+		if tt, e := time.Parse(time.RFC3339, settle); e == nil {
+			settleTime = tt
+		} else if tt, e := time.Parse("2006-01-02", settle); e == nil {
+			settleTime = tt
+		}
+	}
+	now := time.Now().UTC()
+	return &model.OptionContract{
+		RoutingNumber:             routing,
+		NativeID:                  &native,
+		BuyerOwnerType:            model.OwnerBank,
+		BuyerBankCode:             &bbc,
+		SellerOwnerType:           model.OwnerBank,
+		SellerBankCode:            &sbc,
+		Ticker:                    ticker,
+		Quantity:                  decimal.NewFromInt(qty),
+		StrikePrice:               strike,
+		PremiumPaid:               decimal.Zero,
+		PremiumCurrency:           currency,
+		StrikeCurrency:            currency,
+		SettlementDate:            settleTime,
+		Status:                    status,
+		SagaID:                    crossbankTxID,
+		PremiumPaidAt:             now,
+		CrossbankTxID:             &cbTx,
+		RemotePostingIndex:        &pIdx,
+		RemoteNegotiationRouting:  &nr,
+		RemoteNegotiationNativeID: &nn,
+		RemoteDirection:           &dir,
+		RemoteBuyerID:             &bID,
+		RemoteSellerID:            &sID,
+		CreatedAt:                 now,
+		UpdatedAt:                 now,
+	}
 }
 
 func TestPeerOTC_CreateAndGet(t *testing.T) {
@@ -158,7 +224,7 @@ func TestPeerOTC_GetNotFound(t *testing.T) {
 }
 
 func TestPeerOTC_UpdateOffer(t *testing.T) {
-	h, _, _, _ := newPeerOtcHandler(t)
+	h, db, _, _ := newPeerOtcHandler(t)
 	ctx := context.Background()
 
 	createResp, _ := h.CreateNegotiation(ctx, &stockpb.CreateNegotiationRequest{
@@ -169,8 +235,13 @@ func TestPeerOTC_UpdateOffer(t *testing.T) {
 			Currency: "USD", PremiumCurrency: "USD",
 		},
 		BuyerId:  &stockpb.PeerForeignBankId{RoutingNumber: 222, Id: "b"},
-		SellerId: &stockpb.PeerForeignBankId{RoutingNumber: 111, Id: "s"},
+		SellerId: &stockpb.PeerForeignBankId{RoutingNumber: 111, Id: "client-3"},
 	})
+
+	// §3.3 turn rule: after the peer's bid the stored lastModifiedBy is the peer
+	// (222), so it is OUR turn. Flip the stored lastModifiedBy to ownRouting
+	// (111) so it is now the PEER'S turn and its counter is in-turn (200).
+	setStoredLastModifiedRouting(t, db, 222, createResp.GetNegotiationId().GetId(), 111)
 
 	_, err := h.UpdateNegotiation(ctx, &stockpb.UpdateNegotiationRequest{
 		PeerBankCode:  "222",
@@ -205,7 +276,7 @@ func TestPeerOTC_DeleteNegotiation(t *testing.T) {
 			Currency: "USD", PremiumCurrency: "USD",
 		},
 		BuyerId:  &stockpb.PeerForeignBankId{RoutingNumber: 222, Id: "b"},
-		SellerId: &stockpb.PeerForeignBankId{RoutingNumber: 111, Id: "s"},
+		SellerId: &stockpb.PeerForeignBankId{RoutingNumber: 111, Id: "client-3"},
 	})
 
 	_, err := h.DeleteNegotiation(ctx, &stockpb.DeleteNegotiationRequest{
@@ -233,30 +304,45 @@ func TestPeerOTC_DeleteNegotiation(t *testing.T) {
 }
 
 func TestPeerOTC_AcceptNegotiation_DispatchesViaPeerTx(t *testing.T) {
-	h, _, peerTx, _ := newPeerOtcHandler(t)
+	h, db, peerTx, _ := newPeerOtcHandler(t)
 	ctx := context.Background()
 
-	createResp, _ := h.CreateNegotiation(ctx, &stockpb.CreateNegotiationRequest{
-		PeerBankCode: "222",
-		Offer: &stockpb.PeerOtcOffer{
-			Ticker: "AAPL", Amount: 100,
-			PricePerStock: "150.00", Currency: "USD",
-			Premium: "10.00", PremiumCurrency: "USD",
-			SettlementDate: "2026-12-31",
-			// Pinned buyer account number (money leg) — DISTINCT from the buyer
-			// participant id (option leg) so the test verifies each leg carries
-			// the right identifier.
-			BuyerAccountNumber: "111000000000000999",
-		},
-		BuyerId:  &stockpb.PeerForeignBankId{RoutingNumber: 222, Id: "client-7"},
-		SellerId: &stockpb.PeerForeignBankId{RoutingNumber: 111, Id: "client-9"},
-	})
+	// Authoritative accept guard (HOLE 1, fix #2): the inbound /accept is legit
+	// only when the LOCAL side (the seller@111) last proposed the current terms
+	// (we would have written this via the OUTBOUND counter path). The peer (222)
+	// then accepts as the counterparty. Seed the mirror row directly to reflect
+	// that state — the inbound CreateNegotiation/UpdateNegotiation paths can ONLY
+	// ever stamp lastModifiedBy = the peer (forge-proof guard), so a legit
+	// local-last-proposer mirror is produced by our own outbound write, simulated
+	// here as a direct seed.
+	offer := contractsitx.OtcOffer{
+		Ticker: "AAPL", Amount: 100,
+		PricePerStock:   decimal.RequireFromString("150.00"),
+		Currency:        "USD",
+		Premium:         decimal.RequireFromString("10.00"),
+		PremiumCurrency: "USD",
+		SettlementDate:  "2026-12-31",
+		// Pinned buyer account number (money leg) — DISTINCT from the buyer
+		// participant id (option leg) so the test verifies each leg carries the
+		// right identifier.
+		BuyerAccountNumber: "111000000000000999",
+		LastModifiedBy:     contractsitx.ForeignBankId{RoutingNumber: 111, ID: "client-9"},
+	}
+	offerJSON, _ := json.Marshal(offer)
+	seedRepo := repository.NewOTCNegotiationRepository(db)
+	if err := seedRepo.UpsertRemoteNeg(buildRemoteNegForTest(
+		222, "neg-accept", offer, string(offerJSON),
+		222, "client-7", 111, "client-9",
+	)); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	negID := &stockpb.PeerForeignBankId{RoutingNumber: 111, Id: "neg-accept"}
 
 	peerTx.resp = &transactionpb.SiTxInitiateResponse{TransactionId: "tx-99", Status: "initiated"}
 
 	resp, err := h.AcceptNegotiation(ctx, &stockpb.AcceptNegotiationRequest{
 		PeerBankCode:  "222",
-		NegotiationId: createResp.GetNegotiationId(),
+		NegotiationId: negID,
 	})
 	if err != nil {
 		t.Fatalf("accept: %v", err)
@@ -359,7 +445,7 @@ func TestPeerOTC_AcceptNegotiation_DispatchesViaPeerTx(t *testing.T) {
 	// Status flipped to accepted on the local mirror.
 	getResp, _ := h.GetNegotiation(ctx, &stockpb.GetNegotiationRequest{
 		PeerBankCode:  "222",
-		NegotiationId: createResp.GetNegotiationId(),
+		NegotiationId: negID,
 	})
 	if getResp.GetStatus() != "accepted" {
 		t.Errorf("expected accepted, got %s", getResp.GetStatus())
@@ -372,7 +458,7 @@ func TestPeerOTC_AcceptNegotiation_DispatchesViaPeerTx(t *testing.T) {
 	peerTx.gotReq = nil
 	_, err2 := h.AcceptNegotiation(ctx, &stockpb.AcceptNegotiationRequest{
 		PeerBankCode:  "222",
-		NegotiationId: createResp.GetNegotiationId(),
+		NegotiationId: negID,
 	})
 	if status.Code(err2) != codes.FailedPrecondition {
 		t.Errorf("expected FailedPrecondition on second accept, got %v", err2)
@@ -388,16 +474,14 @@ func TestPeerOTC_AcceptNegotiation_DispatchesViaPeerTx(t *testing.T) {
 // and accept-intent legs are not (yet) enforced.
 func TestValidatePeerOptionMoneyLeg_ForgedStrike(t *testing.T) {
 	h, db, _, _ := newPeerOtcHandler(t) // ownRouting 111
-	// Stored seller-side contract: 2 MA @ strike 250 RSD → honest exercise pays 500.
-	if err := db.Create(&model.PeerOptionContract{
-		CrossbankTxID: "seed:1", PostingIndex: 0,
-		NegotiationRoutingNumber: 111, NegotiationID: "neg-1",
-		BuyerRoutingNumber: 222, BuyerID: "client-9",
-		SellerRoutingNumber: 111, SellerID: "client-1",
-		Ticker: "MA", Quantity: 2, StrikePrice: decimal.NewFromInt(250),
-		Currency: "RSD", SettlementDate: "2028-06-30T00:00:00Z",
-		Direction: "DEBIT", Status: "active",
-	}).Error; err != nil {
+	// Stored seller-side REMOTE contract: 2 MA @ strike 250 RSD → honest exercise
+	// pays 500. We host the seller (111, DEBIT); the buyer's bank (222) is the
+	// counterparty, so the remote row's routing_number=222.
+	if err := db.Create(seedRemoteContractRow(
+		222, "seed:1", 0, "DEBIT", 111, "neg-1",
+		222, "client-9", 111, "client-1",
+		"MA", 2, decimal.NewFromInt(250), "RSD", "2028-06-30T00:00:00Z", "active",
+	)).Error; err != nil {
 		t.Fatalf("seed contract: %v", err)
 	}
 	base := func(money string) *stockpb.ValidatePeerOptionMoneyLegRequest {
@@ -431,7 +515,7 @@ func TestValidatePeerOptionMoneyLeg_ForgedStrike(t *testing.T) {
 	}
 	// Replay defense: once the contract is exercised, even an honest-amount
 	// exercise must be denied (a forged second exercise would double-charge).
-	if err := db.Model(&model.PeerOptionContract{}).Where("negotiation_id = ?", "neg-1").Update("status", "exercised").Error; err != nil {
+	if err := db.Session(&gorm.Session{SkipHooks: true}).Model(&model.OptionContract{}).Where("remote_negotiation_native_id = ?", "neg-1").Update("status", "exercised").Error; err != nil {
 		t.Fatalf("mark exercised: %v", err)
 	}
 	if r, _ := h.ValidatePeerOptionMoneyLeg(ctx, base("500")); r.GetOk() {
@@ -447,9 +531,20 @@ func TestValidatePeerOptionMoneyLeg_AcceptPremium(t *testing.T) {
 	// Stored negotiation: 2 MA, strike 250, premium 35 RSD. peer_bank_code is the
 	// counterparty's code ("222"); foreign_id is the negotiation UUID.
 	offer := `{"ticker":"MA","amount":2,"pricePerStock":"250","currency":"RSD","premium":"35","premiumCurrency":"RSD","settlementDate":"2028-06-30T00:00:00Z"}`
-	if err := db.Create(&model.PeerOtcNegotiation{
-		PeerBankCode: "222", ForeignID: "neg-A", BuyerRoutingNumber: 111, BuyerID: "client-1",
-		SellerRoutingNumber: 222, SellerID: "client-9", OfferJSON: offer, Status: "ongoing",
+	// SP-2a: seed a REMOTE OTCNegotiation. We host the buyer (111); the peer
+	// (seller's bank, 222) issued the foreign id, so routing_number=222 and the
+	// terms live in RemoteOfferJSON. ValidatePeerOptionMoneyLeg looks it up by
+	// native_id alone (GetRemoteNegByNative), scoped to routing != own.
+	buyerRouting := int64(111)
+	sellerRouting := int64(222)
+	buyerID := "client-1"
+	sellerID := "client-9"
+	nativeID := "neg-A"
+	if err := db.Create(&model.OTCNegotiation{
+		RoutingNumber: 222, NativeID: &nativeID, BidderOwnerType: model.OwnerBank, Status: "ongoing",
+		RemoteOfferJSON: &offer, RemoteBuyerRouting: &buyerRouting, RemoteBuyerID: &buyerID,
+		RemoteSellerRouting: &sellerRouting, RemoteSellerID: &sellerID,
+		LastActionByPrincipalType: "system", LastActionByOwnerType: string(model.OwnerBank),
 	}).Error; err != nil {
 		t.Fatalf("seed negotiation: %v", err)
 	}

@@ -185,7 +185,7 @@ func (h *PeerTxDispatcherHandler) GetPaymentByID(c *gin.Context) {
 // client may hold:
 //   - the bare idem (the poll_url returned at dispatch), or
 //   - the contract's `crossbank_tx_id` = "<peerCode>:<idem>" (from
-//     GET /api/v3/me/otc/contracts → peer_contracts[].crossbank_tx_id).
+//     GET /api/v3/me/otc/contracts → contracts[] remote rows carry it).
 //
 // The composite is split into (caller_peer_bank_code, transaction_id) so the
 // lookup resolves on BOTH banks: the dispatching (sender) bank via its outbound

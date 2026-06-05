@@ -233,6 +233,64 @@ func TestAcceptNegotiation_PosterAcceptsBidderTerms(t *testing.T) {
 	}
 }
 
+// TestAcceptNegotiation_BankAcceptsClientBid guards the regression where a
+// BANK poster (sell_initiated) accepting a CLIENT bidder's chain failed with
+// "acting_employee_id may only be set on a bank-owned resource". The accept
+// path stamped neg.ActingEmployeeID from the (bank) caller onto the
+// CLIENT-owned negotiation row, violating the ActingEmployee invariant in
+// OTCNegotiation.BeforeSave and aborting the whole accept (500 to the client).
+// The acting-employee id must only be written when the negotiation row itself
+// is bank-owned (bidder is the bank); a bank action on a client-owned chain
+// leaves it nil (the bank's wire identity lives on the bank-owned OTCOffer).
+func TestAcceptNegotiation_BankAcceptsClientBid(t *testing.T) {
+	env := newNegTestEnv(t)
+	// Bank-owned listing (sell_initiated): poster is the bank.
+	o := &model.OTCOffer{
+		InitiatorOwnerType:          model.OwnerBank,
+		InitiatorOwnerID:            nil,
+		Direction:                   model.OTCDirectionSellInitiated,
+		StockID:                     1,
+		Ticker:                      "AAPL",
+		Quantity:                    decimal.NewFromInt(10),
+		StrikePrice:                 decimal.NewFromFloat(150.0),
+		Premium:                     decimal.NewFromFloat(5.0),
+		SettlementDate:              time.Now().UTC().AddDate(0, 1, 0),
+		Status:                      model.OTCOfferStatusOpen,
+		LastModifiedByPrincipalType: "employee",
+		LastModifiedByPrincipalID:   42,
+		InitiatorAccountID:          100,
+		ActingEmployeeID:            u64p(42),
+		Public:                      true,
+	}
+	if err := env.offerRepo.Create(o); err != nil {
+		t.Fatalf("seed bank listing: %v", err)
+	}
+	// Client bidder opens a chain.
+	neg, err := env.svc.OpenNegotiation(context.Background(), sampleOpenInput(o.ID, 7))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	// Bank (employee acting as bank) accepts the client's bid.
+	result, err := env.svc.AcceptNegotiation(context.Background(), AcceptNegotiationInput{
+		NegotiationID:       neg.ID,
+		CallerOwnerType:     model.OwnerBank,
+		CallerOwnerID:       nil,
+		ActingPrincipalType: "employee",
+		ActingPrincipalID:   42,
+		ActingEmployeeID:    u64p(42),
+	})
+	if err != nil {
+		t.Fatalf("bank accept of client bid failed: %v", err)
+	}
+	if result.WinningNegotiation.Status != model.OTCNegotiationStatusAccepted {
+		t.Errorf("winning neg status=%s want accepted", result.WinningNegotiation.Status)
+	}
+	// The client-owned negotiation must NOT carry the bank's acting_employee_id.
+	if result.WinningNegotiation.ActingEmployeeID != nil {
+		t.Errorf("client-owned negotiation got acting_employee_id=%v, want nil", *result.WinningNegotiation.ActingEmployeeID)
+	}
+}
+
 func TestAcceptNegotiation_RejectsSameSideAccept(t *testing.T) {
 	env := newNegTestEnv(t)
 	listing := seedListing(t, env, 1, model.OTCDirectionSellInitiated, model.OTCOfferStatusOpen)
@@ -576,9 +634,12 @@ func seedTwoChainsWithCounter(t *testing.T, env *negTestEnv) *model.OTCOffer {
 func TestListByParentOffer_PosterAllowed(t *testing.T) {
 	env := newNegTestEnv(t)
 	listing := seedTwoChainsWithCounter(t, env)
-	rows, err := env.svc.ListByParentOffer(context.Background(), listing.ID, model.OwnerClient, u64p(1))
+	parent, rows, err := env.svc.ListByParentOffer(context.Background(), listing.ID, model.OwnerClient, u64p(1))
 	if err != nil {
 		t.Fatalf("poster ListByParentOffer: %v", err)
+	}
+	if parent == nil || parent.ID != listing.ID {
+		t.Errorf("parent offer missing or wrong id: %+v", parent)
 	}
 	if len(rows) != 2 {
 		t.Errorf("want 2 chains, got %d", len(rows))
@@ -590,12 +651,12 @@ func TestListByParentOffer_BidderForbidden(t *testing.T) {
 	listing := seedTwoChainsWithCounter(t, env)
 	// Bidder 7 is a party to one chain but is NOT the listing poster — they
 	// must not see every chain on the offer.
-	rows, err := env.svc.ListByParentOffer(context.Background(), listing.ID, model.OwnerClient, u64p(7))
+	parent, rows, err := env.svc.ListByParentOffer(context.Background(), listing.ID, model.OwnerClient, u64p(7))
 	if !errors.Is(err, ErrOTCListingAudienceForbidden) {
 		t.Fatalf("want ErrOTCListingAudienceForbidden, got %v", err)
 	}
-	if rows != nil {
-		t.Errorf("expected nil rows on forbidden, got %d", len(rows))
+	if parent != nil || rows != nil {
+		t.Errorf("expected nil parent+rows on forbidden")
 	}
 }
 
@@ -604,9 +665,12 @@ func TestListByParentOffer_EmployeeBankAllowed(t *testing.T) {
 	listing := seedTwoChainsWithCounter(t, env)
 	// Employee identity (owner_type="bank"); gateway already enforced
 	// otc.read.all, so the service trusts it.
-	rows, err := env.svc.ListByParentOffer(context.Background(), listing.ID, model.OwnerBank, nil)
+	parent, rows, err := env.svc.ListByParentOffer(context.Background(), listing.ID, model.OwnerBank, nil)
 	if err != nil {
 		t.Fatalf("employee ListByParentOffer: %v", err)
+	}
+	if parent == nil || parent.ID != listing.ID {
+		t.Errorf("parent offer missing or wrong id: %+v", parent)
 	}
 	if len(rows) != 2 {
 		t.Errorf("want 2 chains, got %d", len(rows))
@@ -615,7 +679,7 @@ func TestListByParentOffer_EmployeeBankAllowed(t *testing.T) {
 
 func TestListByParentOffer_OfferNotFound(t *testing.T) {
 	env := newNegTestEnv(t)
-	_, err := env.svc.ListByParentOffer(context.Background(), 999, model.OwnerBank, nil)
+	_, _, err := env.svc.ListByParentOffer(context.Background(), 999, model.OwnerBank, nil)
 	if !errors.Is(err, ErrOTCOfferNotFound) {
 		t.Fatalf("want ErrOTCOfferNotFound, got %v", err)
 	}

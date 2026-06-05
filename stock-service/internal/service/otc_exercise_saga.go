@@ -277,7 +277,14 @@ func (s *OTCOfferService) buildExerciseSaga(ctx context.Context, sagaID string, 
 		Add(saga.Step{
 			Name: saga.StepSettleStrikeBuyer,
 			Forward: func(ctx context.Context, _ *saga.State) error {
-				_, e := s.accounts.PartialSettleReservation(ctx, syntheticTxnID, 1, strikeBuyerCcy, settleMemo,
+				// order_transaction_id MUST be globally unique (account-service
+				// enforces UNIQUE(order_transaction_id) on the settlements
+				// table). A constant like literal 1 collides with the first-ever
+				// settlement and silently no-ops every later OTC settle (buyer
+				// never debited, seller still credited → money created). Derive
+				// it from the saga id so it is unique AND deterministic on retry.
+				settleTxnID := computeSettleSeq(sagaID, c.ID, 0)
+				_, e := s.accounts.PartialSettleReservation(ctx, syntheticTxnID, settleTxnID, strikeBuyerCcy, settleMemo,
 					saga.IdempotencyKey(sagaID, saga.StepSettleStrikeBuyer), orderkind.OTCStrike)
 				return e
 			},

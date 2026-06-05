@@ -105,9 +105,11 @@ type PublicOptionOffersResponse struct {
 }
 
 // PublicOptionOffer is one OPEN OTC option listing on a peer bank.
-// Discovering banks then drive negotiation via the existing
-// POST /api/v3/me/peer-otc/negotiations using offerId.routingNumber
-// as seller_bank_code and sellerId.id as seller_id.
+// Discovering banks then drive negotiation via the unified
+// POST /api/v3/otc/options/{id}/bid; stock-service dispatches the
+// cross-bank negotiation using offerId.routingNumber as the seller
+// bank and sellerId.id as the seller (SP-2b folded the retired
+// /me/peer-otc/negotiations client route into the unified surface).
 //
 // Money values use the canonical {amount, currency} pair so the
 // discovering UI can render strike + premium without inferring

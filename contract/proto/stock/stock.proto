@@ -793,8 +793,10 @@ message ListOTCOffersResponse {
 // UnifiedOTCOffer is one entry in the cross-bank-aggregated OTC view.
 // `kind` discriminates the buy flow:
 //   - "local"  → buy via POST /api/v3/otc/offers/{id}/buy
-//   - "remote" → buy via POST /api/v3/me/peer-otc/negotiations using
-//                bank_code as seller_bank_code and owner_id as seller_id.
+//   - "remote" → bid via the unified POST /api/v3/otc/options/{id}/bid;
+//                stock-service dispatches the cross-bank negotiation
+//                (SP-2b folded the retired /me/peer-otc/negotiations
+//                client route into the unified surface).
 // Local-only fields (id, seller_id, seller_name, name, created_at) are
 // zero/empty on remote offers; owner_id is empty on local offers.
 message UnifiedOTCOffer {
@@ -867,6 +869,22 @@ message UnifiedOptionOffer {
   string best_bid             = 16;
   string best_ask             = 17;
   int32  active_chains_count  = 18;
+  // Stable local surrogate id for this offer (RemoteOTCOffer.ID for remote;
+  // equals the numeric offer_id for local). The frontend addresses any
+  // offer — local or remote — by this id on the unified routes. (SP-1)
+  uint64 local_id = 19;
+  // me_owner is true when the acting caller (acting_owner_type/id on the
+  // request) owns this listing. Always false for remote rows. Computed in
+  // the stock-service from the caller identity. (SP-1)
+  bool me_owner = 20;
+  // my_negotiation_id is the surrogate id of the AUTHENTICATED caller's own
+  // negotiation chain (as BIDDER) against THIS offer, so the FE can jump
+  // straight to its chain without a separate lookup. 0 when the caller has no
+  // chain on this offer (e.g. an offer they posted but never bid on — me_owner
+  // does NOT imply a bidder chain). Works for local and remote offers.
+  // my_negotiation_status carries that chain's status. (SP-2b)
+  uint64 my_negotiation_id     = 21;
+  string my_negotiation_status = 22;
 }
 
 message ListUnifiedOptionOffersRequest {
@@ -884,6 +902,11 @@ message ListUnifiedOptionOffersRequest {
   // shape. Implies kind=local since cross-bank listings can never be
   // ours.
   string owner_only_seller_id = 7;
+  // Caller identity used to stamp me_owner on each row (SP-1).
+  // acting_owner_type is "client" | "bank"; acting_owner_id is 0 when
+  // acting as the bank.
+  string acting_owner_type = 8;
+  uint64 acting_owner_id   = 9;
 }
 
 message ListUnifiedOptionOffersResponse {
@@ -1281,6 +1304,23 @@ message OTCNegotiationResponse {
   // terminal status, or accepted but formation saga failed). Non-zero
   // only on status="accepted" rows where the contract formed successfully.
   uint64 minted_contract_id          = 17;
+  // SP-1 unified-list provenance. ListMyNegotiations merges the caller's
+  // LOCAL (intra-bank) and REMOTE (cross-bank peer) negotiation chains
+  // into one list; each item carries where it lives and whether the
+  // caller is the parent listing's poster/seller.
+  //   kind            — "local" | "remote"
+  //   routing_number  — owning bank's routing (own for local; the
+  //                     counterparty/peer bank's for remote)
+  //   bank_code       — owning bank's 3-digit code (own for local;
+  //                     the peer bank's for remote)
+  //   me_owner        — true ONLY when the caller is the parent offer's
+  //                     poster/seller (someone is bidding on MY listing);
+  //                     a chain the caller opened AS the bidder is false.
+  //                     For remote: true iff WE host the seller side.
+  string kind                        = 18;
+  int64  routing_number              = 19;
+  string bank_code                   = 20;
+  bool   me_owner                    = 21;
 }
 
 // OTCNegotiationRevisionResponse is one entry in the revision chain.
@@ -1321,6 +1361,13 @@ message OpenNegotiationRequest {
   string acting_principal_type = 9;
   uint64 acting_principal_id   = 10;
   uint64 acting_employee_id    = 11;
+  // Field 12 (bidder_account_number) removed: stock-service's remote branch
+  // re-fetches the account itself for owner/active/currency validation and
+  // reads GetAccountNumber() directly from that response. The gateway no
+  // longer needs to pre-fetch and forward the number. Reserved to avoid
+  // reuse of field number 12 in future (proto wire compatibility).
+  reserved 12;
+  reserved "bidder_account_number";
 }
 
 message CounterNegotiationRequest {
@@ -1369,6 +1416,12 @@ message OTCAcceptNegotiationResponse {
   string                  parent_status     = 3;
   repeated OTCNegotiationResponse cancelled_siblings = 4;
   OTCMintedContract       contract          = 5;
+  // cross_bank_transaction_id — for a REMOTE accept, the peer's SI-TX
+  // transaction/correlation id returned by GET .../accept (the peer body's
+  // `transactionId` field). The FE polls cross-bank settlement with it via
+  // GET /me/otc/transactions/:txid/status during the accept→contract-mirror
+  // window. Empty for a LOCAL accept (no cross-bank transaction).
+  string                  cross_bank_transaction_id = 6;
 }
 
 // OTCMintedContract is a thin projection of model.OptionContract for
@@ -1648,6 +1701,12 @@ message CreateOTCOfferRequest {
   uint64 on_behalf_of_client_id = 11;
   // Client-supplied ticker, threaded through for notification rendering.
   string ticker = 12;
+  // The employee principal who originated this action (gateway
+  // identity.ActingEmployeeID). 0 for client / system callers. Captured onto
+  // the persisted offer ONLY when the resolved owner is the bank — it is the
+  // stable SI-TX wire-identity source ("employee-<N>") for a bank acting as a
+  // cross-bank OTC principal (SP-3).
+  uint64 acting_employee_id = 13;
 }
 
 message OTCOfferResponse {
@@ -1668,6 +1727,30 @@ message OTCOfferResponse {
   string  updated_at = 15;
   int64   version = 16;
   bool    unread = 17;
+  // Provenance + ownership for the unified offer read (SP-1). kind is
+  // "local" (this bank holds the listing) or "remote" (resolved from a
+  // peer-bank mirror). routing_number / bank_code identify the hosting
+  // bank. me_owner is true only when the acting caller owns the listing
+  // (always false for remote). Computed in stock-service.
+  string kind = 18;
+  int64  routing_number = 19;
+  string bank_code = 20;
+  bool   me_owner = 21;
+  // my_negotiation_id / my_negotiation_status — the AUTHENTICATED caller's own
+  // negotiation chain (as BIDDER) against this offer, so the FE can jump
+  // straight to its chain from the offer-detail view. 0 / "" when the caller
+  // has no bidder chain on this offer (the poster of an offer typically has no
+  // bidder chain of their own — me_owner does NOT imply my_negotiation_id).
+  // Works for local and remote offers. (SP-2b)
+  uint64 my_negotiation_id     = 22;
+  string my_negotiation_status = 23;
+  // seller_id — the LOCAL read view's SI-TX-prefixed seller identity of the
+  // offer's initiator: "bank" for a bank-owned listing, "client-<N>" for a
+  // client-owned one. This is the same value the unified marketplace listing
+  // surfaces (otccache.composeSellerID), kept consistent across the single-offer
+  // create/detail/counter/cancel responses. Distinct from the cross-bank wire
+  // id "employee-<N>", which is composed only on the SI-TX publish path. (SP-1)
+  string seller_id = 24;
 }
 
 message OTCOfferRevisionItem {
@@ -1704,6 +1787,11 @@ message GetOTCOfferRequest {
   uint64 offer_id = 1;
   int64  actor_user_id = 2;
   string actor_system_type = 3;
+  // Caller identity used to stamp me_owner on the resolved offer (SP-1).
+  // acting_owner_type is "client" | "bank"; acting_owner_id is 0 when
+  // acting as the bank.
+  string acting_owner_type = 4;
+  uint64 acting_owner_id   = 5;
 }
 
 message CounterOTCOfferRequest {
@@ -1763,6 +1851,18 @@ message OptionContractResponse {
   string  created_at = 18;
   string  updated_at = 19;
   int64   version = 20;
+  // Provenance + ownership for the unified contract read (SP-1 Task 8).
+  // kind is "local" (intra-bank contract) or "remote" (cross-bank
+  // peer_option_contracts mirror). routing_number / bank_code identify the
+  // OWNING/HOSTING bank: own for local; the COUNTERPARTY peer bank for remote
+  // (the side this bank does NOT host). me_owner is true ONLY when the acting
+  // caller is the contract's BUYER/HOLDER — a formed option is the buyer's
+  // owned asset, so the seller/writer is never the owner (DIFFERENT from
+  // offers/negotiations where the poster/seller is the owner).
+  string kind = 21;
+  int64  routing_number = 22;
+  string bank_code = 23;
+  bool   me_owner = 24;
 }
 
 message ListMyContractsRequest {
@@ -1776,11 +1876,12 @@ message ListMyContractsRequest {
 message ListContractsResponse {
   repeated OptionContractResponse contracts = 1;
   int64 total = 2;
-  // Cross-bank (Celina 5 SI-TX) option contracts where this user is
-  // either the buyer or the seller. Rendered alongside intra-bank
-  // contracts above so clients see one merged list.
-  repeated PeerOptionContractResponse peer_contracts = 3;
-  int64 peer_total = 4;
+  // (SP-2b clean-cut, 2026-06-05) Fields 3 (peer_contracts) and 4
+  // (peer_total) were REMOVED — they were never populated or read after
+  // SP-2a. Remote contracts now appear in contracts[] with kind=remote.
+  // Field numbers 3/4 are reserved so they are never reused.
+  reserved 3, 4;
+  reserved "peer_contracts", "peer_total";
 }
 
 // PeerOptionContractResponse is the on-the-wire shape of a row from
@@ -1822,6 +1923,11 @@ message ExerciseContractRequest {
   // Strike debit comes from the fund's RSD account; acquired shares land in
   // fund_holdings. Caller must be the fund's manager.
   uint64 on_behalf_of_fund_id = 5;
+  // SP-2b: the buyer's currency account that pays the strike, REQUIRED only on
+  // the cross-bank (remote) exercise path. The gateway validates the caller owns
+  // it before forwarding. Ignored for LOCAL contracts (accounts come from the
+  // persisted contract). Empty on the local path.
+  string buyer_account_number = 6;
 }
 message ExerciseResponse {
   uint64 contract_id = 1;
@@ -1896,117 +2002,6 @@ service PeerOTCService {
   // design §3.3.1 (ownership-by-contract, not routing-prefix). Read-only.
   rpc LookupPeerOptionContract(LookupPeerOptionContractRequest) returns (LookupPeerOptionContractResponse);
   rpc InitiateOptionExercise(InitiateOptionExerciseRequest) returns (InitiateOptionExerciseResponse);
-
-  // Buyer-side mirror persistence so the buyer's bank also has a local
-  // row to surface in /me/peer-otc/negotiations. Called by the gateway
-  // right after the outbound POST to the seller's bank succeeds.
-  rpc RecordOutboundNegotiation(RecordOutboundNegotiationRequest) returns (RecordOutboundNegotiationResponse);
-
-  // Discovery: list pending peer negotiations for a client principal.
-  // Surfaces rows where the caller is either buyer or seller; the
-  // caller's bank's routing number is matched against the row's
-  // buyer/seller routing (so a "buyer" row on bank B is one where
-  // buyer_routing == bank-B routing AND buyer_id == "client-<N>"; a
-  // "seller" row on bank A is one where seller_routing == bank-A
-  // routing AND seller_id == "client-<N>").
-  rpc ListMyPeerNegotiations(ListMyPeerNegotiationsRequest) returns (ListMyPeerNegotiationsResponse);
-
-  // Local-mirror status flip to "accepted". Called by the gateway after
-  // a successful proxy of POST /me/peer-otc/negotiations/.../accept to
-  // the counterparty's bank, so the caller's own list reflects the
-  // terminal state immediately. The peer-facing AcceptNegotiation RPC
-  // (above) is reserved for the bank that actually dispatches the
-  // option-formation SI-TX — calling that one twice would re-dispatch.
-  rpc MarkNegotiationAccepted(MarkNegotiationAcceptedRequest) returns (MarkNegotiationAcceptedResponse);
-
-  // Phase 10 — cross-bank cascade-cancel of sibling chains on accept.
-  // Called by the seller's gateway after MarkNegotiationAccepted. The
-  // RPC returns every other ongoing peer_otc_negotiations row whose
-  // seller is the same AND whose offer matches the accepted offer's
-  // ticker + settlement_date — those are "the same parallel-bid
-  // siblings" in the user's mental model. Each match is marked
-  // status=cancelled locally; the response carries (peer_bank_code,
-  // foreign_id) tuples so the gateway can fire outbound DELETEs to
-  // each bidder's bank to update their mirrors.
-  rpc CascadeCancelSiblings(CascadeCancelSiblingsRequest) returns (CascadeCancelSiblingsResponse);
-}
-
-message CascadeCancelSiblingsRequest {
-  // The negotiation that was just accepted — sets the "seller side" +
-  // "offer terms" the cascade matches on. Caller passes the gateway-
-  // side keys (the gateway only knows (peer_bank_code, foreign_id)
-  // because that's what proxyPeerNegotiation already uses).
-  string peer_bank_code = 1; // peer-bank code of the accepted chain
-  string foreign_id     = 2; // foreign id of the accepted chain
-}
-
-// CascadedSibling identifies one chain that was cancelled by the
-// cascade. peer_bank_code + foreign_id are the routing tuple the
-// gateway uses to fire the outbound DELETE; the rest of the fields
-// are a wire-shape projection of the cancelled negotiation (same
-// shape as PeerNegotiationListItem) so the FE can render the
-// cancelled-siblings list in the cross-bank accept response with
-// the same UI it uses for /me/peer-otc/negotiations rows.
-message CascadedSibling {
-  string peer_bank_code = 1; // bidder's bank-code (for outbound DELETE)
-  string foreign_id     = 2; // foreign id on the bidder's bank
-  PeerForeignBankId buyer_id  = 3;
-  PeerForeignBankId seller_id = 4;
-  PeerOtcOffer      offer     = 5;
-  string            status    = 6; // always "cancelled" for cascade results
-  string            role      = 7; // caller's side — always "seller" (cascade fires on accept)
-  string            updated_at = 8; // ISO-8601
-}
-
-message CascadeCancelSiblingsResponse {
-  repeated CascadedSibling siblings = 1;
-}
-
-message MarkNegotiationAcceptedRequest {
-  string peer_bank_code = 1;
-  PeerForeignBankId negotiation_id = 2;
-}
-message MarkNegotiationAcceptedResponse {}
-
-message RecordOutboundNegotiationRequest {
-  string peer_bank_code = 1;
-  PeerForeignBankId negotiation_id = 2;
-  PeerForeignBankId buyer_id = 3;
-  PeerForeignBankId seller_id = 4;
-  PeerOtcOffer offer = 5;
-}
-message RecordOutboundNegotiationResponse {}
-
-message ListMyPeerNegotiationsRequest {
-  // Caller's own bank routing number. Used together with client_id to
-  // determine which rows belong to the caller as buyer / seller.
-  int64 own_routing_number = 1;
-  // The caller's client principal id (decimal string of the JWT
-  // principal_id). Server stamps it as "client-<N>" before matching
-  // against buyer_id / seller_id strings.
-  string client_id = 2;
-  // Optional role filter: "buyer", "seller", or "" / "both".
-  string role = 3;
-}
-
-message ListMyPeerNegotiationsResponse {
-  repeated PeerNegotiationListItem items = 1;
-}
-
-message PeerNegotiationListItem {
-  PeerForeignBankId id = 1;          // foreign id on the *other* bank
-  PeerForeignBankId buyer_id = 2;
-  PeerForeignBankId seller_id = 3;
-  PeerOtcOffer offer = 4;
-  string status = 5;
-  string role = 6;                    // "buyer" or "seller" — the caller's side
-  string updated_at = 7;
-  // local_contract_id is the peer_option_contracts.id on this bank that
-  // was minted when the negotiation reached status="accepted". 0 when
-  // the negotiation is not yet accepted or no contract row exists on
-  // this bank (the contract always exists on at least one bank side;
-  // on the other bank it may be absent until the SI-TX commits).
-  uint64 local_contract_id = 8;
 }
 
 message PeerForeignBankId {
@@ -2266,6 +2261,13 @@ message LookupPeerOptionContractResponse {
   string currency = 6;
   string settlement_date = 7;  // ISO-8601 string (lex-comparable, SI-TX shape)
   string status = 8;           // "active" | "exercising" | "exercised" | ...
+  // seller_account_number is the seller's NOMINATED 18-digit account number,
+  // bound at accept (the local listing's InitiatorAccountID). When set, the
+  // transaction-service executor credits the strike to THIS exact account on
+  // exercise instead of resolving seller_id to the seller's first active
+  // <currency> account. Empty ⇒ no nomination stored (older contract / unbound)
+  // → the executor falls back to seller_id participant resolution.
+  string seller_account_number = 9;
 }
 
 // ---- RecurringFundService -----------------------------------------------

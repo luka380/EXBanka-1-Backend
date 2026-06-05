@@ -88,10 +88,10 @@ func sellerLookupResp(sellerID, ticker, strike string, qty int64, currency, sett
 // 50 x 10 = 500. negotiationId = {111,"neg-1"}. ownRouting (seller) = 222.
 func exerciseSellerPostings() []contractsitx.InternalPosting {
 	return []contractsitx.InternalPosting{
-		acctMonas(111, "111000117810858011", "RSD", 500, contractsitx.DirectionDebit),       // 1 buyer pays strike
-		optAcctMonas(111, "neg-1", "RSD", 500, contractsitx.DirectionCredit),                 // 2 pseudo gets strike
-		optAcctStock(111, "neg-1", "WMT", 10, contractsitx.DirectionDebit),                   // 3 pseudo releases shares
-		personStock(111, "client-1", "WMT", 10, contractsitx.DirectionCredit),               // 4 buyer gets shares
+		acctMonas(111, "111000117810858011", "RSD", 500, contractsitx.DirectionDebit), // 1 buyer pays strike
+		optAcctMonas(111, "neg-1", "RSD", 500, contractsitx.DirectionCredit),          // 2 pseudo gets strike
+		optAcctStock(111, "neg-1", "WMT", 10, contractsitx.DirectionDebit),            // 3 pseudo releases shares
+		personStock(111, "client-1", "WMT", 10, contractsitx.DirectionCredit),         // 4 buyer gets shares
 	}
 }
 
@@ -156,6 +156,88 @@ func TestReserve_OptionPseudoAccount_OwnedContract_VotesYes(t *testing.T) {
 	// No NEW share reservation must be placed at exercise (shares were reserved at accept).
 	if hc.reserveCalls != 0 {
 		t.Errorf("expected 0 ReserveSellerSharesForNewTx calls at exercise, got %d", hc.reserveCalls)
+	}
+}
+
+// TestReserve_OptionPseudoAccount_StrikeCreditsNominatedAccount: when the stored
+// seller-side contract carries a NOMINATED seller account number, the seller
+// bank credits the strike to THAT exact account (ACCOUNT pass-through) — NOT the
+// seller's first active <currency> account resolved from the participant id. This
+// is sub-case 2: the strike credit honours the seller's bound account.
+func TestReserve_OptionPseudoAccount_StrikeCreditsNominatedAccount(t *testing.T) {
+	const nominated = "222000000000000111"
+	var reserveIncomingAcct string
+	listFnCalls := 0
+	stub := &stubAccountClient{
+		getAccountFn: func(ctx context.Context, in *accountpb.GetAccountByNumberRequest, opts ...grpc.CallOption) (*accountpb.AccountResponse, error) {
+			return &accountpb.AccountResponse{AccountNumber: in.AccountNumber, CurrencyCode: "RSD", Status: "active"}, nil
+		},
+		reserveFn: func(ctx context.Context, in *accountpb.ReserveIncomingRequest, opts ...grpc.CallOption) (*accountpb.ReserveIncomingResponse, error) {
+			reserveIncomingAcct = in.AccountNumber
+			return &accountpb.ReserveIncomingResponse{ReservationKey: in.ReservationKey, BalanceAfter: "1000"}, nil
+		},
+	}
+	// If first-active resolution is (wrongly) used, this list would be consulted.
+	listStub := &stubAccountClientList{
+		stubAccountClient: *stub,
+		listFn: func(ctx context.Context, in *accountpb.ListAccountsByClientRequest, opts ...grpc.CallOption) (*accountpb.ListAccountsResponse, error) {
+			listFnCalls++
+			return &accountpb.ListAccountsResponse{Accounts: []*accountpb.AccountResponse{
+				{AccountNumber: "222000999", CurrencyCode: "RSD", Status: "active"}, // the WRONG (first-active) account
+			}}, nil
+		},
+	}
+	look := sellerLookupResp("client-3", "WMT", "50", 10, "RSD", "2999-12-31T00:00:00+02:00", "active")
+	look.SellerAccountNumber = nominated
+	hc := &stubHoldingChecker{lookupResp: look}
+	exec := sitx.NewPostingExecutor(listStub, 222)
+	exec.SetHoldingChecker(hc)
+
+	res := exec.Reserve(context.Background(), exerciseSellerPostings(), "111", "k-ex-nom")
+	if res.Vote.Type != contractsitx.VoteYes {
+		t.Fatalf("expected YES, got %+v", res.Vote)
+	}
+	if reserveIncomingAcct != nominated {
+		t.Errorf("strike credited to %q, want nominated %q (not first-active)", reserveIncomingAcct, nominated)
+	}
+	if listFnCalls != 0 {
+		t.Errorf("expected NO first-active list lookup when a nominated account is present, got %d calls", listFnCalls)
+	}
+}
+
+// TestReserve_OptionPseudoAccount_StrikeFallsBackWhenNoNomination: with no stored
+// nominated account, the strike credit falls back to first-active participant
+// resolution (the documented fallback) — unchanged from prior behaviour.
+func TestReserve_OptionPseudoAccount_StrikeFallsBackWhenNoNomination(t *testing.T) {
+	var reserveIncomingAcct string
+	stub := &stubAccountClient{
+		getAccountFn: func(ctx context.Context, in *accountpb.GetAccountByNumberRequest, opts ...grpc.CallOption) (*accountpb.AccountResponse, error) {
+			return &accountpb.AccountResponse{AccountNumber: in.AccountNumber, CurrencyCode: "RSD", Status: "active"}, nil
+		},
+		reserveFn: func(ctx context.Context, in *accountpb.ReserveIncomingRequest, opts ...grpc.CallOption) (*accountpb.ReserveIncomingResponse, error) {
+			reserveIncomingAcct = in.AccountNumber
+			return &accountpb.ReserveIncomingResponse{ReservationKey: in.ReservationKey, BalanceAfter: "1000"}, nil
+		},
+	}
+	listStub := &stubAccountClientList{
+		stubAccountClient: *stub,
+		listFn: func(ctx context.Context, in *accountpb.ListAccountsByClientRequest, opts ...grpc.CallOption) (*accountpb.ListAccountsResponse, error) {
+			return &accountpb.ListAccountsResponse{Accounts: []*accountpb.AccountResponse{
+				{AccountNumber: "222000999", CurrencyCode: "RSD", Status: "active"},
+			}}, nil
+		},
+	}
+	// look WITHOUT SellerAccountNumber (empty) → fallback.
+	hc := &stubHoldingChecker{lookupResp: sellerLookupResp("client-3", "WMT", "50", 10, "RSD", "2999-12-31T00:00:00+02:00", "active")}
+	exec := sitx.NewPostingExecutor(listStub, 222)
+	exec.SetHoldingChecker(hc)
+
+	res := exec.Reserve(context.Background(), exerciseSellerPostings(), "111", "k-ex-fb")
+	if res.Vote.Type != contractsitx.VoteYes {
+		t.Fatalf("expected YES, got %+v", res.Vote)
+	}
+	if reserveIncomingAcct != "222000999" {
+		t.Errorf("strike fallback credited to %q, want first-active 222000999", reserveIncomingAcct)
 	}
 }
 

@@ -27,6 +27,14 @@ type fakeOTCAccountClient struct {
 	releaseCalls    int
 	reserveCalls    int
 	settleCalls     int
+	// settleTxnIDs records every order_transaction_id passed to
+	// PartialSettleReservation. account-service enforces a global
+	// UNIQUE(order_transaction_id) on the settlements table, so a constant
+	// (e.g. literal 1) silently no-ops every OTC settle after the first one
+	// ever — the buyer is never debited while the seller is still credited
+	// (money created from nothing). This slice lets a test assert the id is
+	// collision-resistant.
+	settleTxnIDs []uint64
 }
 
 func (f *fakeOTCAccountClient) ReserveFunds(_ context.Context, _, _ uint64, amount decimal.Decimal, _ string, _ string, _ string) (*accountpb.ReserveFundsResponse, error) {
@@ -44,8 +52,9 @@ func (f *fakeOTCAccountClient) ReleaseReservation(_ context.Context, _ uint64, _
 	return &accountpb.ReleaseReservationResponse{}, nil
 }
 
-func (f *fakeOTCAccountClient) PartialSettleReservation(_ context.Context, _, _ uint64, _ decimal.Decimal, _ string, _ string, _ string) (*accountpb.PartialSettleReservationResponse, error) {
+func (f *fakeOTCAccountClient) PartialSettleReservation(_ context.Context, _, orderTransactionID uint64, _ decimal.Decimal, _ string, _ string, _ string) (*accountpb.PartialSettleReservationResponse, error) {
 	f.settleCalls++
+	f.settleTxnIDs = append(f.settleTxnIDs, orderTransactionID)
 	if f.failSettleOnce != nil {
 		err := f.failSettleOnce
 		f.failSettleOnce = nil
@@ -186,6 +195,38 @@ func TestAcceptSaga_SameCurrency_HappyPath(t *testing.T) {
 	got, _ := fx.offers.GetByID(fx.offer.ID)
 	if got.Status != model.OTCOfferStatusAccepted {
 		t.Errorf("offer status %s want ACCEPTED", got.Status)
+	}
+}
+
+// TestAcceptSaga_SettleUsesUniqueTxnID guards the money-creation bug where the
+// premium settle passed a CONSTANT order_transaction_id (literal 1) to
+// account-service. account-service enforces a global
+// UNIQUE(order_transaction_id) on the settlements table, so the very first
+// settle to ever use id=1 wins and every OTC premium settle thereafter hits
+// ON CONFLICT DO NOTHING — it returns success WITHOUT debiting the buyer or
+// marking the reservation settled, while the seller is still credited. Net:
+// money created from nothing, buyer funds stuck reserved forever.
+//
+// The order_transaction_id must be derived from the saga id (collision-
+// resistant + deterministic per attempt) so it never collides with stock-order
+// settlements (small sequential ids) or other OTC settles.
+func TestAcceptSaga_SettleUsesUniqueTxnID(t *testing.T) {
+	fx := newAcceptSagaFixture(t)
+	if _, err := fx.svc.Accept(context.Background(), AcceptInput{
+		OfferID: fx.offer.ID, ActorUserID: fx.buyerID, ActorSystemType: "client",
+		AcceptorAccountID: 5001,
+	}); err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	if len(fx.accounts.settleTxnIDs) == 0 {
+		t.Fatalf("settle was never called")
+	}
+	for _, id := range fx.accounts.settleTxnIDs {
+		if id <= 1 {
+			t.Fatalf("settle order_transaction_id=%d is a small constant that collides with the "+
+				"global UNIQUE(order_transaction_id) constraint (literal-1 money-creation bug). "+
+				"It must be derived from the saga id.", id)
+		}
 	}
 }
 

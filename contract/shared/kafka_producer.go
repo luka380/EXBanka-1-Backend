@@ -70,6 +70,15 @@ func NewProducerWithConfig(cfg ProducerConfig) *Producer {
 	if cfg.RequiredAcks == 0 {
 		cfg.RequiredAcks = kafkago.RequireAll
 	}
+	// segmentio/kafka-go treats a zero BatchTimeout as its 1-SECOND default, so a
+	// synchronous single-message Publish (e.g. the session-created event on login)
+	// blocks ~1s waiting for the batch window to elapse before flushing. Default to
+	// a small window: synchronous publishes flush in ~10ms instead of ~1s, while
+	// RequireAll durability is preserved (we still wait for the broker ack). Under
+	// load, concurrent publishes within the window still batch.
+	if cfg.BatchTimeout <= 0 {
+		cfg.BatchTimeout = 10 * time.Millisecond
+	}
 	w := &kafkago.Writer{
 		Addr:         kafkago.TCP(cfg.Brokers),
 		Balancer:     &kafkago.LeastBytes{},

@@ -15,6 +15,7 @@ import (
 	transactionpb "github.com/exbanka/contract/transactionpb"
 	"github.com/exbanka/stock-service/internal/handler"
 	"github.com/exbanka/stock-service/internal/model"
+	"github.com/exbanka/stock-service/internal/repository"
 	"github.com/exbanka/stock-service/internal/service"
 )
 
@@ -91,6 +92,12 @@ func (f *fakeReserver) ExerciseBuyerCreditForPeerOption(_ context.Context, _ uin
 // GetPublicStocks
 // ---------------------------------------------------------------------------
 
+// TestPeerOTC_GetPublicStocks_HappyPath asserts the /public-stock catalog
+// publishes the STANDARD SI-TX participant id form (sellerIDForOwner): a
+// client-held holding surfaces as "client-<ownerId>" and a bank-held holding
+// as "bank" — the SAME opaque form parseSellerOwner accepts inbound on
+// /negotiations. The legacy bare-numeric owner id ("7"/"0") must NEVER appear
+// on the wire (it could not be addressed back; spec §2.3 ForeignBankId.id).
 func TestPeerOTC_GetPublicStocks_HappyPath(t *testing.T) {
 	h, _, _, holdings := newPeerOtcHandler(t)
 	uid := uint64(7)
@@ -106,12 +113,19 @@ func TestPeerOTC_GetPublicStocks_HappyPath(t *testing.T) {
 		t.Fatalf("expected 2 stocks, got %d", len(resp.GetStocks()))
 	}
 	first := resp.GetStocks()[0]
-	if first.GetOwnerId().GetId() != "7" {
-		t.Errorf("first owner id = %q want 7", first.GetOwnerId().GetId())
+	if first.GetOwnerId().GetId() != "client-7" {
+		t.Errorf("first owner id = %q want client-7", first.GetOwnerId().GetId())
 	}
 	second := resp.GetStocks()[1]
-	if second.GetOwnerId().GetId() != "0" {
-		t.Errorf("bank-owned should map to 0, got %q", second.GetOwnerId().GetId())
+	if second.GetOwnerId().GetId() != "bank" {
+		t.Errorf("bank-owned should map to \"bank\", got %q", second.GetOwnerId().GetId())
+	}
+	// Hard invariant: a bare numeric owner id must never reach the wire — it
+	// cannot be addressed back via /negotiations (parseSellerOwner rejects it).
+	for _, s := range resp.GetStocks() {
+		if id := s.GetOwnerId().GetId(); id == "7" || id == "0" {
+			t.Errorf("bare numeric owner id %q leaked onto the SI-TX wire", id)
+		}
 	}
 }
 
@@ -785,20 +799,30 @@ func TestPeerOTC_AcceptNegotiation_NotFound(t *testing.T) {
 }
 
 func TestPeerOTC_AcceptNegotiation_DispatchError(t *testing.T) {
-	h, _, peerTx, _ := newPeerOtcHandler(t)
-	createResp, _ := h.CreateNegotiation(context.Background(), &stockpb.CreateNegotiationRequest{
-		PeerBankCode: "222",
-		Offer: &stockpb.PeerOtcOffer{
-			Ticker: "AAPL", Amount: 1, PricePerStock: "1", Premium: "1",
-			Currency: "USD", PremiumCurrency: "USD",
-		},
-		BuyerId:  &stockpb.PeerForeignBankId{RoutingNumber: 222, Id: "b"},
-		SellerId: &stockpb.PeerForeignBankId{RoutingNumber: 111, Id: "s"},
-	})
+	h, db, peerTx, _ := newPeerOtcHandler(t)
+	// Seed a legit "WE last proposed" mirror so the authoritative accept guard
+	// passes and we exercise the dispatch-error path. (The inbound create/counter
+	// paths can only stamp lastModifiedBy = the peer, so a local-last-proposer
+	// state is produced by our own outbound write, simulated here as a seed.)
+	offer := contractsitx.OtcOffer{
+		Ticker: "AAPL", Amount: 1,
+		PricePerStock:   decimal.RequireFromString("1"),
+		Currency:        "USD",
+		Premium:         decimal.RequireFromString("1"),
+		PremiumCurrency: "USD",
+		LastModifiedBy:  contractsitx.ForeignBankId{RoutingNumber: 111, ID: "client-9"},
+	}
+	offerJSON, _ := json.Marshal(offer)
+	if err := repository.NewOTCNegotiationRepository(db).UpsertRemoteNeg(buildRemoteNegForTest(
+		222, "neg-dispatch-err", offer, string(offerJSON),
+		222, "client-7", 111, "client-9",
+	)); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
 	peerTx.err = errors.New("peer down")
 	_, err := h.AcceptNegotiation(context.Background(), &stockpb.AcceptNegotiationRequest{
 		PeerBankCode:  "222",
-		NegotiationId: createResp.GetNegotiationId(),
+		NegotiationId: &stockpb.PeerForeignBankId{RoutingNumber: 111, Id: "neg-dispatch-err"},
 	})
 	if status.Code(err) != codes.Internal {
 		t.Errorf("expected Internal on dispatch fail, got %v", err)
@@ -894,29 +918,19 @@ func TestInitiateOptionExercise_SpecPseudoAccountForm(t *testing.T) {
 	// every field value (Ticker, StrikePrice, Quantity, NegotiationID, …)
 	// without going through the RecordOptionContract / OptionDescription
 	// JSON path.
-	if err := db.Create(&model.PeerOptionContract{
-		CrossbankTxID:            "seed:spec-1",
-		PostingIndex:             0,
-		NegotiationRoutingNumber: 111,
-		NegotiationID:            "neg-1",
-		BuyerRoutingNumber:       111,
-		BuyerID:                  "client-1",
-		SellerRoutingNumber:      222,
-		SellerID:                 "seller-1",
-		Ticker:                   "WMT",
-		Quantity:                 10,
-		StrikePrice:              decimal.NewFromInt(50),
-		Currency:                 "RSD",
-		SettlementDate:           "2028-01-01",
-		Direction:                contractsitx.DirectionCredit, // buyer side
-		Status:                   "active",
-	}).Error; err != nil {
+	// SP-2a: REMOTE buyer-side (CREDIT) contract. We host the buyer (111); the
+	// seller's bank (222) is the counterparty, so routing_number=222.
+	if err := db.Create(seedRemoteContractRow(
+		222, "seed:spec-1", 0, contractsitx.DirectionCredit, 111, "neg-1",
+		111, "client-1", 222, "seller-1",
+		"WMT", 10, decimal.NewFromInt(50), "RSD", "2028-01-01", "active",
+	)).Error; err != nil {
 		t.Fatalf("seed contract: %v", err)
 	}
 
 	// Retrieve the auto-assigned ID.
-	var contract model.PeerOptionContract
-	if err := db.Where("negotiation_id = ?", "neg-1").First(&contract).Error; err != nil {
+	var contract model.OptionContract
+	if err := db.Where("remote_negotiation_native_id = ?", "neg-1").First(&contract).Error; err != nil {
 		t.Fatalf("load seeded contract: %v", err)
 	}
 

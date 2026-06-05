@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -67,6 +68,33 @@ func positive(field string, value float64) error {
 // nonNegative checks that a numeric value is >= 0.
 func nonNegative(field string, value float64) error {
 	if value < 0 {
+		return fmt.Errorf("%s must not be negative", field)
+	}
+	return nil
+}
+
+// positiveDecimalString parses a decimal-string money/quantity field and checks
+// it is strictly greater than zero. Used for OTC negotiation amounts (strike,
+// premium, quantity) which arrive as strings. An unparseable value is rejected.
+func positiveDecimalString(field, value string) error {
+	d, err := decimal.NewFromString(value)
+	if err != nil {
+		return fmt.Errorf("%s must be a valid number", field)
+	}
+	if !d.IsPositive() {
+		return fmt.Errorf("%s must be positive", field)
+	}
+	return nil
+}
+
+// nonNegativeDecimalString parses a decimal-string money field and checks it is
+// >= 0. Used where zero is a legitimate value (e.g. a zero premium).
+func nonNegativeDecimalString(field, value string) error {
+	d, err := decimal.NewFromString(value)
+	if err != nil {
+		return fmt.Errorf("%s must be a valid number", field)
+	}
+	if d.IsNegative() {
 		return fmt.Errorf("%s must not be negative", field)
 	}
 	return nil
@@ -153,24 +181,54 @@ func ResolveAndCheckAccount(c *gin.Context, accountClient accountpb.AccountServi
 		handleGRPCError(c, err)
 		return fmt.Errorf("get account %d: %w", accountID, err)
 	}
+	return checkAccountOwnership(c, acct, id, onBehalfClientID)
+}
+
+// ResolveAndCheckAccountByNumber is ResolveAndCheckAccount keyed by account
+// NUMBER instead of id, for money-path resources the caller supplies as an
+// account number (the cross-bank OTC exercise strike account, SP-3 Task 5). It
+// fetches the account by number once and applies the same ownership predicate
+// (no redundant by-id re-fetch). On any mismatch it writes a 403 (or surfaces
+// the gRPC error) and returns non-nil; the caller MUST return immediately.
+func ResolveAndCheckAccountByNumber(c *gin.Context, accountClient accountpb.AccountServiceClient, id *middleware.ResolvedIdentity, accountNumber string, onBehalfClientID uint64) error {
+	if accountNumber == "" {
+		apiError(c, http.StatusBadRequest, ErrValidation, "account_number is required")
+		return fmt.Errorf("account_number is empty")
+	}
+	acct, err := accountClient.GetAccountByNumber(c.Request.Context(), &accountpb.GetAccountByNumberRequest{AccountNumber: accountNumber})
+	if err != nil {
+		handleGRPCError(c, err)
+		return fmt.Errorf("get account %q: %w", accountNumber, err)
+	}
+	return checkAccountOwnership(c, acct, id, onBehalfClientID)
+}
+
+// checkAccountOwnership applies the Resource Ownership Verification predicate to
+// an already-fetched account:
+//   - client principal       → account.owner_id == principal_id, not a bank account
+//   - employee, no on-behalf → account is a bank account (account_kind == "bank")
+//   - employee + on-behalf   → account.owner_id == onBehalfClientID
+//
+// On any mismatch it writes a 403 response and returns a non-nil error.
+func checkAccountOwnership(c *gin.Context, acct *accountpb.AccountResponse, id *middleware.ResolvedIdentity, onBehalfClientID uint64) error {
 	isBank := acct.AccountKind == "bank" || acct.OwnerId == bankSentinelOwnerID
 
 	switch id.PrincipalType {
 	case "client":
 		if isBank || acct.OwnerId != id.PrincipalID {
 			apiError(c, http.StatusForbidden, ErrForbidden, "account does not belong to you")
-			return fmt.Errorf("client %d does not own account %d", id.PrincipalID, accountID)
+			return fmt.Errorf("client %d does not own account %d", id.PrincipalID, acct.GetId())
 		}
 	case "employee":
 		if onBehalfClientID != 0 {
 			if isBank || acct.OwnerId != onBehalfClientID {
 				apiError(c, http.StatusForbidden, ErrForbidden, "account does not belong to that client")
-				return fmt.Errorf("account %d not owned by on-behalf client %d", accountID, onBehalfClientID)
+				return fmt.Errorf("account %d not owned by on-behalf client %d", acct.GetId(), onBehalfClientID)
 			}
 		} else {
 			if !isBank {
 				apiError(c, http.StatusForbidden, ErrForbidden, "employees may only use bank accounts unless acting on behalf of a client")
-				return fmt.Errorf("account %d is not a bank account", accountID)
+				return fmt.Errorf("account %d is not a bank account", acct.GetId())
 			}
 		}
 	default:

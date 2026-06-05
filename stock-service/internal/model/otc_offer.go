@@ -57,7 +57,20 @@ func (o *OTCOffer) IsOpenListing() bool {
 // external_correlation_id) stay NULL for intra-bank trades. Spec 4 wires
 // them up.
 type OTCOffer struct {
-	ID                    uint64          `gorm:"primaryKey;autoIncrement" json:"id"`
+	ID uint64 `gorm:"primaryKey;autoIncrement" json:"id"`
+	// RoutingNumber is the bank that owns this row; stamped to OwnRouting on
+	// local create by BeforeCreate. (routing_number, native_id) is the
+	// bank-scoped natural key + the which-peer / its-foreign-id remote concern.
+	// It is NO LONGER the local-vs-remote discriminator — see Local below.
+	RoutingNumber int64   `gorm:"not null;default:0;uniqueIndex:ux_otc_offer_native,priority:1" json:"routing_number"`
+	NativeID      *string `gorm:"size:128;uniqueIndex:ux_otc_offer_native,priority:2" json:"native_id,omitempty"`
+	// Local is THE authoritative local-vs-remote discriminator: true ⇔ this bank
+	// hosts the row (RoutingNumber == OwnRouting()), false ⇔ a remote mirror of a
+	// peer's row. Stamped once in BeforeCreate (after routing is finalized) and
+	// never mutated. When true, the remote-only columns (NativeID, Remote*, the
+	// peer currencies, LastSeenAt) are NULL; when false, the local-only columns
+	// (e.g. InitiatorAccountID) are unused. Queries discriminate on this column.
+	Local bool `gorm:"not null;default:false;index" json:"local"`
 	InitiatorOwnerType    OwnerType       `gorm:"size:8;not null;index:ix_otc_initiator,priority:1;check:initiator_owner_type IN ('client','bank')" json:"initiator_owner_type"`
 	InitiatorOwnerID      *uint64         `gorm:"index:ix_otc_initiator,priority:2" json:"initiator_owner_id,omitempty"`
 	InitiatorBankCode     *string         `gorm:"size:32" json:"initiator_bank_code,omitempty"`
@@ -77,7 +90,12 @@ type OTCOffer struct {
 	// principal; the owner remains the client. Audit field only.
 	LastModifiedByPrincipalType string  `gorm:"size:10;not null" json:"last_modified_by_principal_type"`
 	LastModifiedByPrincipalID   uint64  `gorm:"not null" json:"last_modified_by_principal_id"`
-	ActingEmployeeID            *uint64 `gorm:"index" json:"acting_employee_id,omitempty"`
+	// ActingEmployeeID is the employee who ORIGINATED this bank-owned resource.
+	// Non-nil ONLY when the owner is the bank and an employee created it. It is the
+	// STABLE SI-TX wire-identity source: the bank party publishes as
+	// "employee-<ActingEmployeeID>" on every wire action, regardless of which
+	// employee performs later actions. nil for client-owned resources and legacy/seed bank rows.
+	ActingEmployeeID *uint64 `gorm:"index" json:"acting_employee_id,omitempty"`
 	ExternalCorrelationID       *string `gorm:"size:64" json:"external_correlation_id,omitempty"`
 	// InitiatorAccountID is the initiator's account bound at offer creation:
 	// it pays the premium on buy_initiated offers and receives it on
@@ -89,9 +107,36 @@ type OTCOffer struct {
 	Public            bool      `gorm:"not null;default:true" json:"public"`
 	Private           bool      `gorm:"not null;default:false" json:"private"`
 	PrivateToBankCode *string   `gorm:"size:3" json:"private_to_bank_code,omitempty"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
-	Version           int64     `gorm:"not null;default:0" json:"-"`
+	// Remote-mirror columns (SP-2a). Populated ONLY on remote rows
+	// (routing_number != OwnRouting()), folded in from the retired
+	// remote_otc_offer mirror. NULL on local rows.
+	//   StrikeCurrency / PremiumCurrency — the peer's published currencies
+	//     (OTCOffer carries no currency for local rows; it lives on the
+	//     StockExchange the listing trades on).
+	//   RemoteSellerID — the SI-TX wire seller id ("client-<N>" | "bank").
+	//   LastSeenAt — last successful peer poll that listed the offer; the
+	//     reconcile flip (open->cancelled) keys off it.
+	StrikeCurrency    *string    `gorm:"size:8" json:"strike_currency,omitempty"`
+	PremiumCurrency   *string    `gorm:"size:8" json:"premium_currency,omitempty"`
+	RemoteSellerID    *string    `gorm:"size:128" json:"remote_seller_id,omitempty"`
+	LastSeenAt        *time.Time `gorm:"index" json:"last_seen_at,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+	Version           int64      `gorm:"not null;default:0" json:"-"`
+}
+
+// BeforeCreate stamps the own routing number on local rows. Remote rows
+// (added in later tasks) arrive with RoutingNumber already set to the peer's
+// routing and are left untouched. Tolerates a nil tx (only touches the struct).
+func (o *OTCOffer) BeforeCreate(tx *gorm.DB) error {
+	if o.RoutingNumber == 0 {
+		o.RoutingNumber = OwnRouting()
+	}
+	// Stamp the discriminator AFTER routing is finalized. Must NOT live in
+	// BeforeSave: GORM runs BeforeSave BEFORE BeforeCreate, where routing would
+	// still be 0 and a local row would be mis-stamped false.
+	o.Local = o.RoutingNumber == OwnRouting()
+	return nil
 }
 
 func (o *OTCOffer) BeforeSave(tx *gorm.DB) error {
@@ -103,7 +148,7 @@ func (o *OTCOffer) BeforeSave(tx *gorm.DB) error {
 			return err
 		}
 	}
-	return nil
+	return ValidateActingEmployee(o.InitiatorOwnerType, o.ActingEmployeeID)
 }
 
 func (o *OTCOffer) BeforeUpdate(tx *gorm.DB) error {

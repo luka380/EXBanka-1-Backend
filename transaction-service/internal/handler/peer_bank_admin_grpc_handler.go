@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"strconv"
 
 	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/grpc/codes"
@@ -19,11 +20,14 @@ import (
 // the peer_banks.manage.any permission).
 type PeerBankAdminGRPCHandler struct {
 	transactionpb.UnimplementedPeerBankAdminServiceServer
-	repo *repository.PeerBankRepository
+	repo        *repository.PeerBankRepository
+	ownBankCode string
+	ownRouting  int64
 }
 
-func NewPeerBankAdminGRPCHandler(repo *repository.PeerBankRepository) *PeerBankAdminGRPCHandler {
-	return &PeerBankAdminGRPCHandler{repo: repo}
+func NewPeerBankAdminGRPCHandler(repo *repository.PeerBankRepository, ownBankCode string) *PeerBankAdminGRPCHandler {
+	ownRouting, _ := strconv.ParseInt(ownBankCode, 10, 64)
+	return &PeerBankAdminGRPCHandler{repo: repo, ownBankCode: ownBankCode, ownRouting: ownRouting}
 }
 
 func (h *PeerBankAdminGRPCHandler) ListPeerBanks(ctx context.Context, req *transactionpb.ListPeerBanksRequest) (*transactionpb.ListPeerBanksResponse, error) {
@@ -52,6 +56,9 @@ func (h *PeerBankAdminGRPCHandler) GetPeerBank(ctx context.Context, req *transac
 func (h *PeerBankAdminGRPCHandler) CreatePeerBank(ctx context.Context, req *transactionpb.CreatePeerBankRequest) (*transactionpb.PeerBank, error) {
 	if req.GetBankCode() == "" || req.GetRoutingNumber() == 0 || req.GetBaseUrl() == "" || req.GetApiToken() == "" {
 		return nil, status.Error(codes.InvalidArgument, "bank_code, routing_number, base_url, api_token are required")
+	}
+	if req.GetBankCode() == h.ownBankCode || req.GetRoutingNumber() == h.ownRouting {
+		return nil, status.Error(codes.InvalidArgument, "peer bank_code/routing must differ from this bank's own")
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.GetApiToken()), bcrypt.DefaultCost)
 	if err != nil {

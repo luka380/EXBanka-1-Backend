@@ -82,11 +82,33 @@ func (h *OTCOptionsHandler) OpenNegotiationChain(c *gin.Context) {
 		apiError(c, http.StatusBadRequest, ErrValidation, "bidder_account_id is required")
 		return
 	}
+	// Money-safety: amounts must be sane before forwarding. Quantity and strike
+	// strictly positive; premium non-negative (zero premium is legitimate, a
+	// negative one is not).
+	if err := positiveDecimalString("quantity", req.Quantity); err != nil {
+		apiError(c, http.StatusBadRequest, ErrValidation, err.Error())
+		return
+	}
+	if err := positiveDecimalString("strike_price", req.StrikePrice); err != nil {
+		apiError(c, http.StatusBadRequest, ErrValidation, err.Error())
+		return
+	}
+	if req.Premium != "" {
+		if err := nonNegativeDecimalString("premium", req.Premium); err != nil {
+			apiError(c, http.StatusBadRequest, ErrValidation, err.Error())
+			return
+		}
+	}
 	identity := c.MustGet("identity").(*middleware.ResolvedIdentity)
 	// Verify the bidder's account belongs to them before forwarding.
 	if err := ResolveAndCheckAccount(c, h.accounts, identity, req.BidderAccountID, 0); err != nil {
 		return
 	}
+	// stock-service's OpenNegotiation dispatches a local saga OR a cross-bank
+	// SI-TX negotiation depending on whether :id is a local or remote listing.
+	// The remote branch fetches the account itself (for owner/active/currency
+	// validation) and reads the account number directly from account-service —
+	// no need for the gateway to pre-fetch and forward bidder_account_number.
 	resp, err := h.client.OpenNegotiation(c.Request.Context(), &stockpb.OpenNegotiationRequest{
 		ParentOfferId:       parentID,
 		BidderOwnerType:     identity.OwnerType,
@@ -133,6 +155,21 @@ func (h *OTCOptionsHandler) CounterMyNegotiation(c *gin.Context) {
 	if req.Quantity == "" || req.StrikePrice == "" || req.SettlementDate == "" {
 		apiError(c, http.StatusBadRequest, ErrValidation, "quantity, strike_price, settlement_date are required")
 		return
+	}
+	// Money-safety: same positivity checks as the bid path.
+	if err := positiveDecimalString("quantity", req.Quantity); err != nil {
+		apiError(c, http.StatusBadRequest, ErrValidation, err.Error())
+		return
+	}
+	if err := positiveDecimalString("strike_price", req.StrikePrice); err != nil {
+		apiError(c, http.StatusBadRequest, ErrValidation, err.Error())
+		return
+	}
+	if req.Premium != "" {
+		if err := nonNegativeDecimalString("premium", req.Premium); err != nil {
+			apiError(c, http.StatusBadRequest, ErrValidation, err.Error())
+			return
+		}
 	}
 	identity := c.MustGet("identity").(*middleware.ResolvedIdentity)
 	resp, err := h.client.CounterNegotiation(c.Request.Context(), &stockpb.CounterNegotiationRequest{
@@ -215,11 +252,12 @@ func (h *OTCOptionsHandler) AcceptMyNegotiation(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"winning":            resp.GetWinning(),
-		"parent_offer_id":    resp.GetParentOfferId(),
-		"parent_status":      resp.GetParentStatus(),
-		"cancelled_siblings": resp.GetCancelledSiblings(),
-		"contract":           resp.GetContract(),
+		"winning":                   resp.GetWinning(),
+		"parent_offer_id":           resp.GetParentOfferId(),
+		"parent_status":             resp.GetParentStatus(),
+		"cancelled_siblings":        resp.GetCancelledSiblings(),
+		"contract":                  resp.GetContract(),
+		"cross_bank_transaction_id": resp.GetCrossBankTransactionId(),
 	})
 }
 
@@ -308,8 +346,10 @@ func (h *OTCOptionsHandler) CancelMyListing(c *gin.Context) {
 	// Gateway-level ownership pre-check: fetch the offer and verify the
 	// caller is the initiator. The service-layer also checks (defense in
 	// depth) but per CLAUDE.md ownership must be verified before the gRPC
-	// call. GetOffer returns NotFound for non-participants which gives
-	// us a clean 404 for "offer doesn't exist or isn't mine".
+	// call. GetOffer now returns the offer to any authenticated caller
+	// (OTC offers are publicly discoverable), so a missing offer yields a
+	// clean 404 here while a non-initiator falls through to the explicit
+	// 403 below — never a 404 that would imply non-existence.
 	detail, gerr := h.client.GetOffer(c.Request.Context(), &stockpb.GetOTCOfferRequest{
 		OfferId:         offerID,
 		ActorUserId:     int64(ownerToLegacyUserID(identity.OwnerID)),
@@ -346,8 +386,8 @@ func (h *OTCOptionsHandler) CancelMyListing(c *gin.Context) {
 }
 
 // ListMyNegotiations godoc
-// @Summary      List the caller's OTC option negotiation chains
-// @Description  Returns chains where the caller is the bidder. Filter with `?statuses=open,countered,accepted,rejected,cancelled,expired`.
+// @Summary      List the caller's OTC option negotiation chains (local + remote, merged)
+// @Description  Returns a unified list of the caller's LOCAL (intra-bank bidder) and REMOTE (cross-bank peer) negotiation chains. Each item carries `kind` (local|remote), `routing_number`/`bank_code` provenance, and `me_owner` (true only when the caller is the parent listing's poster/seller). Filter with `?statuses=open,countered,accepted,rejected,cancelled,expired` (applied to both sets).
 // @Tags         OTCOptions
 // @Security     BearerAuth
 // @Produce      json

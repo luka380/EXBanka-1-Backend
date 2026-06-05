@@ -227,6 +227,14 @@ func SetupV3(r *gin.Engine, h *Handlers) {
 		// Cross-bank OTC trade status: resolve the SI-TX transaction id from a
 		// cross-bank trade's poll_url via PeerTxService.GetTxStatus.
 		me.GET("/otc/transactions/:txid/status", h.PeerTxDispatcher.GetCrossBankTxStatus)
+		// (SP-2b clean-cut, 2026-06-05) The /me/peer-otc/negotiations family
+		// and POST /me/otc/contracts/peer/:id/exercise were DELETED. Their
+		// cross-bank behaviour is now dispatched by stock-service behind the
+		// unified routes: bidding/countering/accepting/cancelling a remote
+		// negotiation go through /api/v3/otc/options/:id/bid + the
+		// /api/v3/me/otc/options/:id/negotiations/* per-chain ops (local +
+		// remote merged), listing via GET /api/v3/me/otc/options/negotiations,
+		// and exercise via the unified POST /api/v3/otc/contracts/:id/exercise.
 
 		// --- Phase 2: parallel-negotiation-chain marketplace ---
 		// Listing-poster sees all chains via the OPEN
@@ -247,25 +255,6 @@ func SetupV3(r *gin.Engine, h *Handlers) {
 		me.GET("/otc/stocks", bankIfEmp, h.OTCStock.ListMyOTCStocks)
 		me.POST("/otc/stocks", bankIfEmp, h.OTCStock.CreateOTCStockOffer)
 		me.DELETE("/otc/stocks/:id", bankIfEmp, h.OTCStock.CancelOTCStockOffer)
-
-		// Cross-bank OTC option exercise (Celina-5 SI-TX). Buyer-only
-		// (only the buyer's bank holds direction=CREDIT contracts);
-		// stock-service rejects non-buyer-side calls.
-		me.POST("/otc/contracts/peer/:id/exercise", bankIfEmp, h.OTCOptions.ExercisePeerContract)
-
-		// Cross-bank OTC negotiation initiation (Celina 5). Lets a
-		// buyer at this bank kick off a negotiation against a peer's
-		// listing — composes the SI-TX OtcOffer with the caller's
-		// JWT identity as buyerId and HTTP-POSTs to the seller bank's
-		// /api/v3/negotiations.
-		me.POST("/peer-otc/negotiations", h.PeerOTCInitiate.CreatePeerNegotiation)
-		// Discovery + client-facing negotiation controls (Phase 4 SI-TX
-		// follow-up). Both the buyer and the seller's own bank surface
-		// their own peer_otc_negotiations rows through these routes.
-		me.GET("/peer-otc/negotiations", h.PeerOTCInitiate.ListMyPeerNegotiations)
-		me.PUT("/peer-otc/negotiations/:rid/:id", h.PeerOTCInitiate.CounterPeerNegotiation)
-		me.POST("/peer-otc/negotiations/:rid/:id/accept", h.PeerOTCInitiate.AcceptPeerNegotiation)
-		me.DELETE("/peer-otc/negotiations/:rid/:id", h.PeerOTCInitiate.CancelPeerNegotiation)
 	}
 
 	// ── SI-TX canonical prefix ───────────────────────────────────────

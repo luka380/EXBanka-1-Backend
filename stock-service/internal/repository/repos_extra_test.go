@@ -389,7 +389,7 @@ func TestOptionContractRepository_GetByOfferIDAndDelete(t *testing.T) {
 	r := NewOptionContractRepository(db)
 	uid := uint64(7)
 	c := &model.OptionContract{
-		OfferID: 1, StockID: 42,
+		OfferID: uint64Ptr(1), StockID: 42,
 		Quantity:        decimal.NewFromInt(10),
 		StrikePrice:     decimal.NewFromInt(100),
 		PremiumPaid:     decimal.NewFromInt(20),
@@ -423,7 +423,7 @@ func TestOptionContractRepository_ListByOwnerAndExpiring(t *testing.T) {
 	r := NewOptionContractRepository(db)
 	uid := uint64(7)
 	c := &model.OptionContract{
-		OfferID: 1, StockID: 42,
+		OfferID: uint64Ptr(1), StockID: 42,
 		Quantity: decimal.NewFromInt(10), StrikePrice: decimal.NewFromInt(100), PremiumPaid: decimal.NewFromInt(20),
 		PremiumCurrency: "USD", StrikeCurrency: "USD",
 		SettlementDate: time.Now().Add(-24 * time.Hour),

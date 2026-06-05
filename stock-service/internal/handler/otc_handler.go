@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"log"
 	"strings"
 
 	"google.golang.org/grpc/codes"
@@ -24,6 +25,12 @@ type OTCHandler struct {
 	otcSvc      otcSvcFacade
 	cache       *otccache.Cache
 	optionCache *otccache.OptionCache // optional; Phase 6 cross-bank option discovery
+	// myNegs is optional; when wired, ListUnifiedOptionOffers stamps
+	// my_negotiation_id / my_negotiation_status on each offer the
+	// authenticated caller has an own (bidder) chain against (SP-2b).
+	// ownRouting keys the remote-chain → remote-offer match.
+	myNegs     MyNegotiationLister
+	ownRouting int64
 }
 
 // NewOTCHandler keeps the prior signature for backwards compatibility
@@ -46,6 +53,18 @@ func NewOTCHandlerWithCache(otcSvc *service.OTCService, cache *otccache.Cache) *
 func (h *OTCHandler) WithOptionCache(c *otccache.OptionCache) *OTCHandler {
 	cp := *h
 	cp.optionCache = c
+	return &cp
+}
+
+// WithMyNegotiations wires the caller's own (bidder) negotiation source so
+// ListUnifiedOptionOffers can stamp my_negotiation_id / my_negotiation_status
+// on each offer the authenticated caller is negotiating (SP-2b). ownRouting
+// keys the remote-chain → remote-offer match. Returns a copy so cmd/main.go can
+// chain wire-up calls.
+func (h *OTCHandler) WithMyNegotiations(l MyNegotiationLister, ownRouting int64) *OTCHandler {
+	cp := *h
+	cp.myNegs = l
+	cp.ownRouting = ownRouting
 	return &cp
 }
 
@@ -283,9 +302,21 @@ func (h *OTCHandler) ListUnifiedOptionOffers(ctx context.Context, req *pb.ListUn
 	if end > len(filtered) {
 		end = len(filtered)
 	}
+	actingOwnerType := req.GetActingOwnerType()
+	actingOwnerID := req.GetActingOwnerId()
+	// SP-2b — stamp the caller's own (bidder) chain per offer so the FE can
+	// jump straight to its chain. Built once over the caller's chains; absent
+	// (0 / "") for offers the caller has no chain on. A nil source contributes
+	// no stamps. Index errors are best-effort: log and continue without stamps
+	// rather than failing the discovery read.
+	myNegIdx, err := buildMyNegotiationIndex(h.myNegs, actingOwnerType, actingOwnerID, h.ownRouting)
+	if err != nil {
+		log.Printf("WARN ListUnifiedOptionOffers: my-negotiation index failed (continuing without my_negotiation_id): %v", err)
+		myNegIdx = myNegotiationIndex{}
+	}
 	out := make([]*pb.UnifiedOptionOffer, 0, end-start)
 	for _, o := range filtered[start:end] {
-		out = append(out, &pb.UnifiedOptionOffer{
+		item := &pb.UnifiedOptionOffer{
 			Kind:              o.Kind,
 			BankCode:          o.BankCode,
 			RoutingNumber:     o.RoutingNumber,
@@ -304,7 +335,25 @@ func (h *OTCHandler) ListUnifiedOptionOffers(ctx context.Context, req *pb.ListUn
 			BestBid:           o.BestBid,
 			BestAsk:           o.BestAsk,
 			ActiveChainsCount: o.ActiveChainsCount,
-		})
+			LocalId:           o.LocalID,
+			MeOwner:           otcMeOwner(actingOwnerType, actingOwnerID, o.Kind, o.SellerID),
+		}
+		// LOCAL offers: chain keyed by parent_offer_id == local offer id
+		// (== LocalID). REMOTE offers: chain keyed by the peer-hosted parent
+		// (routing, native) — the remote cache row carries native id in OfferID
+		// and the peer routing in RoutingNumber.
+		if o.Kind == "remote" {
+			if s, ok := myNegIdx.remoteFor(o.RoutingNumber, o.OfferID); ok {
+				item.MyNegotiationId = s.id
+				item.MyNegotiationStatus = s.status
+			}
+		} else {
+			if s, ok := myNegIdx.localFor(o.LocalID); ok {
+				item.MyNegotiationId = s.id
+				item.MyNegotiationStatus = s.status
+			}
+		}
+		out = append(out, item)
 	}
 	var lastRefreshUnix int64
 	if !snap.LastRefresh.IsZero() {

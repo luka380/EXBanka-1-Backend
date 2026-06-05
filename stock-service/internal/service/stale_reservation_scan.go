@@ -29,14 +29,14 @@ import (
 
 // StaleReservationScanner walks the holding_reservations table once per
 // tick and emits a WARN line for every active reservation whose linked
-// entity (Order / OptionContract / PeerOptionContract) is in a terminal
-// status. Wire it via Run; honors ctx cancellation.
+// entity (Order / local OptionContract / remote OptionContract) is in a
+// terminal status. Wire it via Run; honors ctx cancellation.
 type StaleReservationScanner struct {
 	db            *gorm.DB
 	resRepo       *repository.HoldingReservationRepository
 	orderRepo     *repository.OrderRepository
 	contractsRepo *repository.OptionContractRepository
-	peerContracts *repository.PeerOptionContractRepository // optional
+	peerContracts *repository.OptionContractRepository // optional; remote contract reads (unified table)
 
 	interval  time.Duration
 	threshold time.Duration
@@ -72,10 +72,10 @@ func NewStaleReservationScanner(
 	return s
 }
 
-// WithPeerContracts wires the cross-bank option-contract repo so the
-// scanner can also classify peer-OTC reservations. Optional — when
-// nil, only intra-bank order / OTC reservations are classified.
-func (s *StaleReservationScanner) WithPeerContracts(p *repository.PeerOptionContractRepository) *StaleReservationScanner {
+// WithPeerContracts wires the option-contract repo so the scanner can also
+// classify cross-bank (remote) OTC reservations via GetRemoteContractByID.
+// Optional — when nil, only intra-bank order / OTC reservations are classified.
+func (s *StaleReservationScanner) WithPeerContracts(p *repository.OptionContractRepository) *StaleReservationScanner {
 	s.peerContracts = p
 	return s
 }
@@ -176,7 +176,7 @@ func (s *StaleReservationScanner) classifyOTCBacked(r *model.HoldingReservation,
 }
 
 func (s *StaleReservationScanner) classifyPeerOTCBacked(r *model.HoldingReservation, stale *int) {
-	c, err := s.peerContracts.GetByID(*r.PeerOptionContractID)
+	c, err := s.peerContracts.GetRemoteContractByID(*r.PeerOptionContractID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			log.Printf("WARN: stale holding_reservation id=%d peer_option_contract_id=%d: peer contract MISSING — needs manual release",

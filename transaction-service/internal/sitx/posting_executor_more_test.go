@@ -573,6 +573,48 @@ func TestPostingExecutor_ResolveClientAccountID_NoMatch(t *testing.T) {
 	}
 }
 
+// TestPostingExecutor_ResolveBankAccountID_HappyPath verifies that a BANK
+// participant id ("employee-<N>" or "bank") on a credit leg resolves to the
+// bank's own active account in the requested currency (via the bank sentinel
+// owner id). Without this, a cross-bank OTC accept where THIS bank holds the
+// bank SELLER could not resolve the seller-credit posting and voted NO with
+// NO_SUCH_ACCOUNT — stranding the bank↔bank accept SI-TX in "committing".
+func TestPostingExecutor_ResolveBankAccountID_HappyPath(t *testing.T) {
+	const bankOwnerID uint64 = 1_000_000_000
+	var listedClientID uint64
+	stub := &stubAccountClientList{
+		stubAccountClient: stubAccountClient{
+			getAccountFn: func(ctx context.Context, in *accountpb.GetAccountByNumberRequest, opts ...grpc.CallOption) (*accountpb.AccountResponse, error) {
+				return &accountpb.AccountResponse{AccountNumber: in.AccountNumber, CurrencyCode: "USD", Status: "active"}, nil
+			},
+			reserveFn: func(ctx context.Context, in *accountpb.ReserveIncomingRequest, opts ...grpc.CallOption) (*accountpb.ReserveIncomingResponse, error) {
+				if in.AccountNumber != "111-BANK-USD-01" {
+					t.Errorf("expected resolved bank account number, got %q", in.AccountNumber)
+				}
+				return &accountpb.ReserveIncomingResponse{ReservationKey: in.ReservationKey}, nil
+			},
+		},
+		listFn: func(ctx context.Context, in *accountpb.ListAccountsByClientRequest, opts ...grpc.CallOption) (*accountpb.ListAccountsResponse, error) {
+			listedClientID = in.ClientId
+			return &accountpb.ListAccountsResponse{Accounts: []*accountpb.AccountResponse{
+				{AccountNumber: "111-BANK-USD-01", CurrencyCode: "USD", Status: "active", AccountType: "bank", OwnerId: bankOwnerID},
+			}}, nil
+		},
+	}
+	exec := sitx.NewPostingExecutor(stub, 111)
+	postings := []contractsitx.InternalPosting{
+		money(111, "employee-1", "USD", 5, contractsitx.DirectionCredit), // bank seller credit
+		money(222, "222-X", "USD", 5, contractsitx.DirectionDebit),       // buyer debit elsewhere
+	}
+	res := exec.Reserve(context.Background(), postings, "222", "idem-bank")
+	if res.Vote.Type != contractsitx.VoteYes {
+		t.Fatalf("expected YES (bank participant resolves to bank account), got %+v", res.Vote)
+	}
+	if listedClientID != bankOwnerID {
+		t.Errorf("expected bank participant resolved via bank sentinel owner id %d, listed %d", bankOwnerID, listedClientID)
+	}
+}
+
 // TestPostingExecutor_UnknownDirection_Unacceptable verifies the default branch.
 func TestPostingExecutor_UnknownDirection_Unacceptable(t *testing.T) {
 	stub := &stubAccountClient{

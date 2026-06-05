@@ -205,7 +205,7 @@ func main() {
 	peerBankRepo := repository.NewPeerBankRepository(db)
 	peerIdemRepo := repository.NewPeerIdempotenceRepository(db)
 
-	peerBankAdminHandler := handler.NewPeerBankAdminGRPCHandler(peerBankRepo)
+	peerBankAdminHandler := handler.NewPeerBankAdminGRPCHandler(peerBankRepo, cfg.OwnBankCode)
 
 	// SI-TX Phase 3 sender-side wiring.
 	ownRouting, _ := strconv.ParseInt(cfg.OwnBankCode, 10, 64)

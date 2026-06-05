@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/shopspring/decimal"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -124,6 +126,116 @@ func TestOTCOfferService_Create_StoresInitiatorAccount(t *testing.T) {
 	}
 	if out.InitiatorAccountID != 9001 {
 		t.Errorf("got %d, want 9001", out.InitiatorAccountID)
+	}
+}
+
+func TestOTCOfferService_Create_BankOffer_CapturesActingEmployeeID(t *testing.T) {
+	fx := newOTCCRUDFixture(t)
+	// Employee 17 creates a buy_initiated offer acting AS the bank: the
+	// gateway resolves the bank owner (actor_system_type "bank", actor_user_id
+	// 0) and threads the originating employee id separately.
+	emp := uint64(17)
+	out, err := fx.svc.Create(context.Background(), CreateOfferInput{
+		ActorUserID:      0,
+		ActorSystemType:  "bank",
+		ActingEmployeeID: &emp,
+		Direction:        model.OTCDirectionBuyInitiated,
+		StockID:          42,
+		Quantity:         decimal.NewFromInt(10),
+		StrikePrice:      decimal.NewFromInt(150),
+		Premium:          decimal.NewFromInt(20),
+		SettlementDate:   time.Now().AddDate(0, 0, 30),
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if out.InitiatorOwnerType != model.OwnerBank {
+		t.Errorf("initiator owner type = %v, want bank", out.InitiatorOwnerType)
+	}
+	if out.ActingEmployeeID == nil || *out.ActingEmployeeID != 17 {
+		t.Fatalf("ActingEmployeeID = %v, want 17", out.ActingEmployeeID)
+	}
+	// Persisted row carries it.
+	got, err := fx.offers.GetByID(out.ID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got.ActingEmployeeID == nil || *got.ActingEmployeeID != 17 {
+		t.Errorf("persisted ActingEmployeeID = %v, want 17", got.ActingEmployeeID)
+	}
+}
+
+func TestOTCOfferService_Create_OnBehalfOfClient_NoActingEmployeeID(t *testing.T) {
+	fx := newOTCCRUDFixture(t)
+	fx.seedHolding(t, 42, 7, 100)
+	// Employee acting on behalf of client 42: the gateway resolves the client
+	// owner (actor_system_type "client", actor_user_id 42). Even if an acting
+	// employee id is threaded, a client-owned offer must NOT carry it.
+	emp := uint64(17)
+	out, err := fx.svc.Create(context.Background(), CreateOfferInput{
+		ActorUserID:      42,
+		ActorSystemType:  "client",
+		ActingEmployeeID: &emp,
+		Direction:        model.OTCDirectionSellInitiated,
+		StockID:          7,
+		Quantity:         decimal.NewFromInt(10),
+		StrikePrice:      decimal.NewFromInt(150),
+		Premium:          decimal.NewFromInt(20),
+		SettlementDate:   time.Now().AddDate(0, 0, 30),
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if out.InitiatorOwnerType != model.OwnerClient {
+		t.Errorf("initiator owner type = %v, want client", out.InitiatorOwnerType)
+	}
+	if out.ActingEmployeeID != nil {
+		t.Errorf("ActingEmployeeID = %v, want nil for client-owned offer", *out.ActingEmployeeID)
+	}
+}
+
+func TestOTCOfferService_Create_ClientOffer_NoActingEmployeeID(t *testing.T) {
+	fx := newOTCCRUDFixture(t)
+	fx.seedHolding(t, 7, 42, 100)
+	out, err := fx.svc.Create(context.Background(), CreateOfferInput{
+		ActorUserID:     7,
+		ActorSystemType: "client",
+		Direction:       model.OTCDirectionSellInitiated,
+		StockID:         42,
+		Quantity:        decimal.NewFromInt(10),
+		StrikePrice:     decimal.NewFromInt(150),
+		Premium:         decimal.NewFromInt(20),
+		SettlementDate:  time.Now().AddDate(0, 0, 30),
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if out.ActingEmployeeID != nil {
+		t.Errorf("ActingEmployeeID = %v, want nil for client offer", *out.ActingEmployeeID)
+	}
+}
+
+func TestOTCOfferService_Create_BankOffer_NilActingEmployeeForSystemPath(t *testing.T) {
+	fx := newOTCCRUDFixture(t)
+	// Bank offer created by a non-employee/system path (no acting employee).
+	out, err := fx.svc.Create(context.Background(), CreateOfferInput{
+		ActorUserID:     0,
+		ActorSystemType: "bank",
+		Direction:       model.OTCDirectionBuyInitiated,
+		StockID:         42,
+		Quantity:        decimal.NewFromInt(10),
+		StrikePrice:     decimal.NewFromInt(150),
+		Premium:         decimal.NewFromInt(20),
+		SettlementDate:  time.Now().AddDate(0, 0, 30),
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if out.InitiatorOwnerType != model.OwnerBank {
+		t.Errorf("initiator owner type = %v, want bank", out.InitiatorOwnerType)
+	}
+	if out.ActingEmployeeID != nil {
+		t.Errorf("ActingEmployeeID = %v, want nil (system path)", *out.ActingEmployeeID)
 	}
 }
 
@@ -271,6 +383,48 @@ func TestOTCOfferService_Create_SellInitiated_InsufficientShares(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected insufficient-shares error")
+	}
+	// Must surface as a FailedPrecondition (business-rule violation → HTTP 409),
+	// not an opaque Unknown/Internal that the gateway maps to 500. A 500 here
+	// leaks an internal error class for what is a normal covered-call rejection.
+	if got := status.Code(err); got != codes.FailedPrecondition {
+		t.Fatalf("insufficient-shares code = %s, want FailedPrecondition", got)
+	}
+}
+
+// TestOTCOfferService_Create_ValidationErrorsAreInvalidArgument guards that the
+// create-time field validations carry codes.InvalidArgument (→ HTTP 400) rather
+// than the default Unknown/Internal that the gateway maps to 500.
+func TestOTCOfferService_Create_ValidationErrorsAreInvalidArgument(t *testing.T) {
+	base := func() CreateOfferInput {
+		return CreateOfferInput{
+			ActorUserID: 7, ActorSystemType: "client",
+			Direction: model.OTCDirectionSellInitiated, StockID: 42,
+			Quantity: decimal.NewFromInt(10), StrikePrice: decimal.NewFromInt(150),
+			Premium: decimal.NewFromInt(20), SettlementDate: time.Now().AddDate(0, 0, 30),
+		}
+	}
+	cases := map[string]func(CreateOfferInput) CreateOfferInput{
+		"zero quantity":    func(in CreateOfferInput) CreateOfferInput { in.Quantity = decimal.Zero; return in },
+		"zero strike":      func(in CreateOfferInput) CreateOfferInput { in.StrikePrice = decimal.Zero; return in },
+		"negative premium": func(in CreateOfferInput) CreateOfferInput { in.Premium = decimal.NewFromInt(-1); return in },
+		"past settlement": func(in CreateOfferInput) CreateOfferInput {
+			in.SettlementDate = time.Now().AddDate(0, 0, -1)
+			return in
+		},
+		"unknown direction": func(in CreateOfferInput) CreateOfferInput { in.Direction = "weird"; return in },
+		"counterparty half": func(in CreateOfferInput) CreateOfferInput { id := int64(9); in.CounterpartyUserID = &id; return in },
+	}
+	for name, mut := range cases {
+		fx2 := newOTCCRUDFixture(t)
+		fx2.seedHolding(t, 7, 42, 100)
+		_, err := fx2.svc.Create(context.Background(), mut(base()))
+		if err == nil {
+			t.Fatalf("%s: expected error", name)
+		}
+		if got := status.Code(err); got != codes.InvalidArgument {
+			t.Fatalf("%s: code = %s, want InvalidArgument", name, got)
+		}
 	}
 }
 
@@ -609,7 +763,9 @@ func TestOTCOfferService_GetOffer_HappyPath(t *testing.T) {
 	}
 }
 
-func TestOTCOfferService_GetOffer_NonParticipantRejected(t *testing.T) {
+// A non-participant can READ the offer (public discovery mirrors the unified
+// list) but never sees its revision history and triggers no read-receipt.
+func TestOTCOfferService_GetOffer_NonParticipantSeesOfferNotRevisions(t *testing.T) {
 	fx := newOTCCRUDFixture(t)
 	fx.seedHolding(t, 7, 42, 100)
 	out, _ := fx.svc.Create(context.Background(), CreateOfferInput{
@@ -618,9 +774,15 @@ func TestOTCOfferService_GetOffer_NonParticipantRejected(t *testing.T) {
 		Quantity: decimal.NewFromInt(10), StrikePrice: decimal.NewFromInt(150),
 		Premium: decimal.NewFromInt(20), SettlementDate: time.Now().AddDate(0, 0, 30),
 	})
-	_, _, err := fx.svc.GetOffer(out.ID, 999, "client")
-	if err == nil {
-		t.Fatal("expected non-participant rejection")
+	got, revs, err := fx.svc.GetOffer(out.ID, 999, "client")
+	if err != nil {
+		t.Fatalf("non-participant read should succeed, got: %v", err)
+	}
+	if got == nil || got.ID != out.ID {
+		t.Fatalf("non-participant should receive the offer; got %+v", got)
+	}
+	if len(revs) != 0 {
+		t.Errorf("non-participant must not receive revision history; got %d revs", len(revs))
 	}
 }
 
