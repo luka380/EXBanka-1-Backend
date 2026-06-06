@@ -70,7 +70,7 @@ type OTCOffer struct {
 	// never mutated. When true, the remote-only columns (NativeID, Remote*, the
 	// peer currencies, LastSeenAt) are NULL; when false, the local-only columns
 	// (e.g. InitiatorAccountID) are unused. Queries discriminate on this column.
-	Local bool `gorm:"not null;default:false;index" json:"local"`
+	Local                 bool            `gorm:"not null;default:false;index" json:"local"`
 	InitiatorOwnerType    OwnerType       `gorm:"size:8;not null;index:ix_otc_initiator,priority:1;check:initiator_owner_type IN ('client','bank')" json:"initiator_owner_type"`
 	InitiatorOwnerID      *uint64         `gorm:"index:ix_otc_initiator,priority:2" json:"initiator_owner_id,omitempty"`
 	InitiatorBankCode     *string         `gorm:"size:32" json:"initiator_bank_code,omitempty"`
@@ -88,15 +88,15 @@ type OTCOffer struct {
 	// LastModifiedByPrincipalType / ID is the principal (NOT owner) who last
 	// touched the offer. For employee-on-behalf actions this is the employee
 	// principal; the owner remains the client. Audit field only.
-	LastModifiedByPrincipalType string  `gorm:"size:10;not null" json:"last_modified_by_principal_type"`
-	LastModifiedByPrincipalID   uint64  `gorm:"not null" json:"last_modified_by_principal_id"`
+	LastModifiedByPrincipalType string `gorm:"size:10;not null" json:"last_modified_by_principal_type"`
+	LastModifiedByPrincipalID   uint64 `gorm:"not null" json:"last_modified_by_principal_id"`
 	// ActingEmployeeID is the employee who ORIGINATED this bank-owned resource.
 	// Non-nil ONLY when the owner is the bank and an employee created it. It is the
 	// STABLE SI-TX wire-identity source: the bank party publishes as
 	// "employee-<ActingEmployeeID>" on every wire action, regardless of which
 	// employee performs later actions. nil for client-owned resources and legacy/seed bank rows.
-	ActingEmployeeID *uint64 `gorm:"index" json:"acting_employee_id,omitempty"`
-	ExternalCorrelationID       *string `gorm:"size:64" json:"external_correlation_id,omitempty"`
+	ActingEmployeeID      *uint64 `gorm:"index" json:"acting_employee_id,omitempty"`
+	ExternalCorrelationID *string `gorm:"size:64" json:"external_correlation_id,omitempty"`
 	// InitiatorAccountID is the initiator's account bound at offer creation:
 	// it pays the premium on buy_initiated offers and receives it on
 	// sell_initiated offers. The counterparty's account is bound at accept.
@@ -104,9 +104,9 @@ type OTCOffer struct {
 	// Cross-bank visibility (Spec 4 / Celina 5). Public offers are listed via
 	// peer discovery; Private offers are only shown to the named bank in
 	// PrivateToBankCode. NULL bank codes mean a same-bank offer.
-	Public            bool      `gorm:"not null;default:true" json:"public"`
-	Private           bool      `gorm:"not null;default:false" json:"private"`
-	PrivateToBankCode *string   `gorm:"size:3" json:"private_to_bank_code,omitempty"`
+	Public            bool    `gorm:"not null;default:true" json:"public"`
+	Private           bool    `gorm:"not null;default:false" json:"private"`
+	PrivateToBankCode *string `gorm:"size:3" json:"private_to_bank_code,omitempty"`
 	// Remote-mirror columns (SP-2a). Populated ONLY on remote rows
 	// (routing_number != OwnRouting()), folded in from the retired
 	// remote_otc_offer mirror. NULL on local rows.
@@ -116,13 +116,13 @@ type OTCOffer struct {
 	//   RemoteSellerID — the SI-TX wire seller id ("client-<N>" | "bank").
 	//   LastSeenAt — last successful peer poll that listed the offer; the
 	//     reconcile flip (open->cancelled) keys off it.
-	StrikeCurrency    *string    `gorm:"size:8" json:"strike_currency,omitempty"`
-	PremiumCurrency   *string    `gorm:"size:8" json:"premium_currency,omitempty"`
-	RemoteSellerID    *string    `gorm:"size:128" json:"remote_seller_id,omitempty"`
-	LastSeenAt        *time.Time `gorm:"index" json:"last_seen_at,omitempty"`
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
-	Version           int64      `gorm:"not null;default:0" json:"-"`
+	StrikeCurrency  *string    `gorm:"size:8" json:"strike_currency,omitempty"`
+	PremiumCurrency *string    `gorm:"size:8" json:"premium_currency,omitempty"`
+	RemoteSellerID  *string    `gorm:"size:128" json:"remote_seller_id,omitempty"`
+	LastSeenAt      *time.Time `gorm:"index" json:"last_seen_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	Version         int64      `gorm:"not null;default:0" json:"-"`
 }
 
 // BeforeCreate stamps the own routing number on local rows. Remote rows

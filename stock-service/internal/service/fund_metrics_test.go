@@ -25,9 +25,10 @@ func approx(t *testing.T, label string, got decimal.Decimal, want, eps float64) 
 
 // Monthly series (one month-end point each): 100, 110, 104.5, 114.95.
 // Monthly returns: +0.10, -0.05, +0.10 → mean 0.05, sample stddev ~0.08660.
-//   volatility ≈ 8.660%, reward-to-variability ≈ 0.5774.
-//   max drawdown (110→104.5) = 5%.
-//   annualized: 114.95/100 over 89 days (Jan31→Apr30) ^(365/89) − 1 ≈ 77.1%.
+//
+//	volatility ≈ 8.660%, reward-to-variability ≈ 0.5774.
+//	max drawdown (110→104.5) = 5%.
+//	annualized: 114.95/100 over 89 days (Jan31→Apr30) ^(365/89) − 1 ≈ 77.1%.
 func TestComputeFundMetrics_KnownSeries(t *testing.T) {
 	points := []SnapshotPoint{
 		mkPoint(2026, time.January, 31, 100),

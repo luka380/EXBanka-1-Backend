@@ -55,9 +55,9 @@ type templateServiceFacade interface {
 
 type GRPCHandler struct {
 	notifpb.UnimplementedNotificationServiceServer
-	emailSender    emailSenderFacade
-	inboxRepo      inboxRepoFacade
-	notifRepo      notifRepoFacade
+	emailSender       emailSenderFacade
+	inboxRepo         inboxRepoFacade
+	notifRepo         notifRepoFacade
 	templateSvc       templateServiceFacade
 	adminAuditRepo    adminAuditRepoFacade
 	businessAuditRepo businessAuditRepoFacade

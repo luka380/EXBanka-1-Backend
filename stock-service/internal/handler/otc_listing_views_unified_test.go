@@ -353,8 +353,8 @@ func TestListingNegotiations_BankOwnedOffer_PeerBid(t *testing.T) {
 func seedBankListingNoNative(t *testing.T, db *gorm.DB, offerID uint64) {
 	t.Helper()
 	o := &model.OTCOffer{
-		ID:                          offerID,
-		RoutingNumber:               model.OwnRouting(),
+		ID:            offerID,
+		RoutingNumber: model.OwnRouting(),
 		// NativeID intentionally nil (matches a real local offer).
 		InitiatorOwnerType:          model.OwnerBank,
 		InitiatorOwnerID:            nil,

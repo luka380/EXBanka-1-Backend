@@ -150,8 +150,9 @@ func TestCredit_GetMyLoanRequest_OwnerOK(t *testing.T) {
 
 func TestCredit_GetMyLoanRequest_NotOwner404(t *testing.T) {
 	cc := &stubCreditClient{
-		getReqFn: func(in *creditpb.GetLoanRequestReq) (*creditpb.LoanRequestResponse, error) {
-			return &creditpb.LoanRequestResponse{Id: in.Id, ClientId: 999}, nil // owned by someone else
+		getReqFn: func(_ *creditpb.GetLoanRequestReq) (*creditpb.LoanRequestResponse, error) {
+			// OWN-1: credit-service returns 404 for a foreign loan request; gateway surfaces it.
+			return nil, status.Error(codes.NotFound, "loan request not found")
 		},
 	}
 	r := creditRouter(handler.NewCreditHandler(cc))

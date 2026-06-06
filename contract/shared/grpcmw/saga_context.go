@@ -21,7 +21,17 @@ const (
 func UnaryClientSagaContextInterceptor() grpc.UnaryClientInterceptor {
 	return func(ctx context.Context, method string, req, reply interface{},
 		cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-		md := metadata.MD{}
+		// MERGE onto any existing outgoing metadata — do NOT start fresh, or we
+		// clobber metadata other layers already appended (the OWN-1 caller
+		// identity x-principal-type/-id and the x-changed-by audit key). A fresh
+		// metadata.MD{} + NewOutgoingContext drops them, which silently disabled
+		// service-side ownership enforcement (and audit attribution).
+		md, ok := metadata.FromOutgoingContext(ctx)
+		if ok {
+			md = md.Copy()
+		} else {
+			md = metadata.MD{}
+		}
 		if id, ok := saga.SagaIDFromContext(ctx); ok {
 			md.Set(mdSagaID, id)
 		}

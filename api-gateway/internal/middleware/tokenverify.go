@@ -10,8 +10,9 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/redis/go-redis/v9"
 
-	"github.com/exbanka/contract/authredis"
 	authpb "github.com/exbanka/contract/authpb"
+	"github.com/exbanka/contract/authredis"
+	"github.com/exbanka/contract/identity"
 )
 
 // KeyProvider hands out ES256 public keys by kid (implemented by jwks.Cache).
@@ -209,4 +210,15 @@ func setPrincipalContext(c *gin.Context, p *Principal) {
 	c.Set("last_name", p.LastName)
 	c.Set("account_active", p.AccountActive)
 	c.Set("biometrics_enabled", p.BiometricsEnabled)
+
+	// OWN-1: propagate the caller identity to downstream services over gRPC
+	// metadata so each owning service can enforce ownership of its own
+	// resources. Stamped on c.Request's context so both reads (which pass
+	// c.Request.Context() directly) and mutations (which wrap it via
+	// GRPCContextWithChangedBy) carry it. On-behalf-of-client is layered on
+	// per-route where applicable.
+	c.Request = c.Request.WithContext(identity.Inject(c.Request.Context(), identity.Caller{
+		PrincipalType: p.PrincipalType,
+		PrincipalID:   p.PrincipalID,
+	}))
 }

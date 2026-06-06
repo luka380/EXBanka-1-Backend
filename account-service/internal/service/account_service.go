@@ -192,7 +192,7 @@ func (s *AccountService) UpdateAccountName(id, clientID uint64, newName string, 
 	if err := s.repo.UpdateName(id, clientID, newName); err != nil {
 		return err
 	}
-	s.invalidateAccountCache(id, "")
+	s.invalidateAccountCache(id, account.AccountNumber)
 
 	// Record changelog after successful mutation.
 	entries := changelog.Diff("account", int64(id), changedBy, "", []changelog.FieldChange{
@@ -248,7 +248,7 @@ func (s *AccountService) UpdateAccountLimits(id uint64, dailyLimit, monthlyLimit
 	if err := s.repo.UpdateLimits(id, updates); err != nil {
 		return err
 	}
-	s.invalidateAccountCache(id, "")
+	s.invalidateAccountCache(id, account.AccountNumber)
 
 	// Record changelog after successful mutation.
 	entries := changelog.Diff("account", int64(id), changedBy, "", changes)
@@ -287,7 +287,7 @@ func (s *AccountService) UpdateAccountStatus(id uint64, newStatus string, change
 		return err
 	}
 	AccountStatusChangesTotal.WithLabelValues(newStatus).Inc()
-	s.invalidateAccountCache(id, "")
+	s.invalidateAccountCache(id, account.AccountNumber)
 
 	// Record changelog after successful mutation.
 	if s.changelogRepo != nil {

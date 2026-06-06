@@ -34,7 +34,12 @@ type stubCardService struct {
 func (s *stubCardService) CreateCard(ctx context.Context, accountNumber string, ownerID uint64, ownerType, cardBrand string) (*model.Card, string, error) {
 	return s.createCardFn(ctx, accountNumber, ownerID, ownerType, cardBrand)
 }
-func (s *stubCardService) GetCard(id uint64) (*model.Card, error) { return s.getCardFn(id) }
+func (s *stubCardService) GetCard(id uint64) (*model.Card, error) {
+	if s.getCardFn != nil {
+		return s.getCardFn(id)
+	}
+	return sampleCard(), nil
+}
 func (s *stubCardService) ListCardsByAccount(accountNumber string) ([]model.Card, error) {
 	return s.listCardsByAccountFn(accountNumber)
 }

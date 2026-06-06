@@ -533,7 +533,7 @@ func TestGuard_ListExpiringOn_ExcludesRemote(t *testing.T) {
 	// Target day: two days from now (ensures it is not the same day as
 	// "past" contracts already seeded by seedGuardFixtures, so the window
 	// [day, day+1) contains ONLY these two purpose-built rows).
-	targetDay := time.Now().UTC().Truncate(24 * time.Hour).AddDate(0, 0, 2)
+	targetDay := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, 2)
 
 	bidder1 := uint64(11)
 	bidder2 := uint64(12)

@@ -335,7 +335,7 @@ func TestInbound_AcceptNegotiation_LegitOppositePartyAccept_Succeeds(t *testing.
 // child of a CANCELLED local listing must be rejected (FailedPrecondition),
 // authoritatively (regardless of cascade timing), with NO settlement dispatched.
 func TestInbound_AcceptNegotiation_OrphanCancelledParent_Rejected(t *testing.T) {
-	h, db, peerTx, _ := newPeerOtcHandler(t) // ownRouting 111
+	h, db, peerTx, _ := newPeerOtcHandler(t)                     // ownRouting 111
 	parentChecker := &fakeParentChecker{open: map[uint64]bool{}} // parent 42 NOT open
 	h = h.WithParentChecker(parentChecker)
 

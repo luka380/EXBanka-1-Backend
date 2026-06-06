@@ -652,7 +652,7 @@ func TestAccount_GetMyAccount_Owner(t *testing.T) {
 func TestAccount_GetMyAccount_NotOwner(t *testing.T) {
 	acc := &accountFullStub{
 		getFn: func(_ *accountpb.GetAccountRequest) (*accountpb.AccountResponse, error) {
-			return &accountpb.AccountResponse{Id: 7, OwnerId: 999}, nil
+			return nil, status.Error(codes.NotFound, "account not found")
 		},
 	}
 	h := handler.NewAccountHandler(acc, &stubBankAccountClient{}, nil, nil)
@@ -660,7 +660,7 @@ func TestAccount_GetMyAccount_NotOwner(t *testing.T) {
 	req := httptest.NewRequest("GET", "/me/accounts/7", nil)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
-	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 func TestAccount_GetMyAccount_BadID(t *testing.T) {
@@ -696,7 +696,7 @@ func TestAccount_GetMyAccountActivity_Owner(t *testing.T) {
 func TestAccount_GetMyAccountActivity_NotOwner(t *testing.T) {
 	acc := &accountFullStub{
 		getFn: func(_ *accountpb.GetAccountRequest) (*accountpb.AccountResponse, error) {
-			return &accountpb.AccountResponse{Id: 7, OwnerId: 999}, nil
+			return nil, status.Error(codes.NotFound, "account not found")
 		},
 	}
 	h := handler.NewAccountHandler(acc, &stubBankAccountClient{}, nil, nil)
@@ -704,7 +704,7 @@ func TestAccount_GetMyAccountActivity_NotOwner(t *testing.T) {
 	req := httptest.NewRequest("GET", "/me/accounts/7/activity", nil)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
-	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 func TestAccount_GetMyAccountActivity_PageSizeCap(t *testing.T) {

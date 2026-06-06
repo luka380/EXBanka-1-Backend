@@ -287,9 +287,6 @@ func (h *CreditHandler) ListLoansByClient(c *gin.Context) {
 		apiError(c, 400, ErrValidation, "invalid client_id")
 		return
 	}
-	if !enforceClientSelf(c, clientID) {
-		return
-	}
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
 
@@ -372,9 +369,6 @@ func (h *CreditHandler) ListLoansByClientPath(c *gin.Context) {
 		apiError(c, 400, ErrValidation, "invalid client id")
 		return
 	}
-	if !enforceClientSelf(c, clientID) {
-		return
-	}
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
 	resp, err := h.creditClient.ListLoansByClient(c.Request.Context(), &creditpb.ListLoansByClientReq{
@@ -449,9 +443,6 @@ func (h *CreditHandler) ListLoanRequestsByClient(c *gin.Context) {
 	clientID, err := strconv.ParseUint(c.Param("client_id"), 10, 64)
 	if err != nil {
 		apiError(c, 400, ErrValidation, "invalid client_id")
-		return
-	}
-	if !enforceClientSelf(c, clientID) {
 		return
 	}
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
@@ -828,9 +819,6 @@ func (h *CreditHandler) GetMyLoan(c *gin.Context) {
 		handleGRPCError(c, err)
 		return
 	}
-	if ownErr := enforceOwnership(c, resp.ClientId); ownErr != nil {
-		return
-	}
 	c.JSON(http.StatusOK, loanToJSON(resp))
 }
 
@@ -881,9 +869,6 @@ func (h *CreditHandler) GetMyLoanRequest(c *gin.Context) {
 	resp, err := h.creditClient.GetLoanRequest(c.Request.Context(), &creditpb.GetLoanRequestReq{Id: id})
 	if err != nil {
 		handleGRPCError(c, err)
-		return
-	}
-	if ownErr := enforceOwnership(c, resp.GetClientId()); ownErr != nil {
 		return
 	}
 	c.JSON(http.StatusOK, loanRequestToJSON(resp))

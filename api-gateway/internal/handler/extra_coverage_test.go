@@ -254,10 +254,13 @@ func TestTx_UpdatePaymentRecipient_BadBody(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
-func TestTx_UpdatePaymentRecipient_OwnershipMismatch(t *testing.T) {
+// OWN-1: ownership now lives in transaction-service (which returns NotFound for a
+// foreign/non-existent recipient). The gateway just forwards that 404 — verify it
+// maps the service's NotFound through unchanged rather than doing its own check.
+func TestTx_UpdatePaymentRecipient_ForwardsServiceNotFound(t *testing.T) {
 	tx := &stubTransactionClient{
-		getRecipFn: func(in *transactionpb.GetPaymentRecipientRequest) (*transactionpb.PaymentRecipientResponse, error) {
-			return &transactionpb.PaymentRecipientResponse{Id: in.Id, ClientId: 999}, nil
+		updateRecipFn: func(*transactionpb.UpdatePaymentRecipientRequest) (*transactionpb.PaymentRecipientResponse, error) {
+			return nil, status.Error(codes.NotFound, "payment recipient not found")
 		},
 	}
 	h := newTxHandler(tx, &stubFeeClient{}, &accountFullStub{}, &stubExchangeClient{})

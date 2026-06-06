@@ -31,12 +31,12 @@ type stubHoldingChecker struct {
 	resp *stockpb.CheckSellerCanDeliverResponse
 	err  error
 	// reserve/release tracking (Celina-5 vote-time share hold)
-	reserveCalls       int
-	releaseCalls       int
-	lastReserveTxID    string
-	lastReleaseTxID    string
-	lastReserveTicker  string
-	lastReserveQty     int64
+	reserveCalls      int
+	releaseCalls      int
+	lastReserveTxID   string
+	lastReleaseTxID   string
+	lastReserveTicker string
+	lastReserveQty    int64
 	// money-leg validation (forged-strike defense). validateOK defaults to true
 	// (nil) so existing tests keep voting YES; set validateDeny to force a NO.
 	validateCalls int
@@ -377,7 +377,7 @@ func TestPostingExecutor_ExerciseForgedStrike_NoVote(t *testing.T) {
 	exec.SetHoldingChecker(chk)
 	od := `{"negotiationId":{"routingNumber":222,"id":"neg-1"},"stock":{"ticker":"MA"},"pricePerUnit":{"amount":250,"currency":"RSD"},"settlementDate":"","amount":2}`
 	postings := []contractsitx.InternalPosting{
-		option(222, "client-1", od, 2, contractsitx.DirectionDebit),     // seller option leg (own routing)
+		option(222, "client-1", od, 2, contractsitx.DirectionDebit),    // seller option leg (own routing)
 		money(222, "client-1", "RSD", 1, contractsitx.DirectionCredit), // forged strike = 1 (should be 500)
 		money(111, "111-BUY", "RSD", 1, contractsitx.DirectionDebit),
 	}
@@ -415,7 +415,7 @@ func TestPostingExecutor_ExerciseBuyerOvercharge_NoVote(t *testing.T) {
 	exec.SetHoldingChecker(chk)
 	od := `{"negotiationId":{"routingNumber":222,"id":"neg-9"},"stock":{"ticker":"MA"},"pricePerUnit":{"amount":250,"currency":"RSD"},"settlementDate":"","amount":2}`
 	postings := []contractsitx.InternalPosting{
-		option(111, "client-1", od, 2, contractsitx.DirectionCredit),            // buyer option leg (own routing)
+		option(111, "client-1", od, 2, contractsitx.DirectionCredit),           // buyer option leg (own routing)
 		money(111, "111-BUYER-ACCT", "RSD", 9000, contractsitx.DirectionDebit), // forged-high strike 9000 (should be 500)
 		money(222, "client-1", "RSD", 9000, contractsitx.DirectionCredit),
 	}

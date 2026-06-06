@@ -18,9 +18,10 @@ import (
 //	tax → the buyer has a realised gain and was taxed.
 //
 // Uses the real intra-bank OTC negotiation flow:
-//   POST /me/otc/options  →  POST /otc/options/:id/bid  →
-//   POST /me/otc/options/:id/negotiations/:nid/accept  →
-//   POST /otc/contracts/:id/exercise
+//
+//	POST /me/otc/options  →  POST /otc/options/:id/bid  →
+//	POST /me/otc/options/:id/negotiations/:nid/accept  →
+//	POST /otc/contracts/:id/exercise
 func TestWF_OptionExerciseTaxCycle(t *testing.T) {
 	adminC := loginAsAdmin(t)
 

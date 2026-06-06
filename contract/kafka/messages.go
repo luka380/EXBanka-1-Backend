@@ -18,9 +18,9 @@ const (
 // NotificationDeadLetterMessage wraps a message that a notification-service
 // consumer could not process after its bounded retries.
 type NotificationDeadLetterMessage struct {
-	Source   string `json:"source"`   // consumer name (e.g. "email", "admin_audit")
-	Payload  string `json:"payload"`  // original message bytes (UTF-8/JSON)
-	Error    string `json:"error"`    // last processing error
+	Source   string `json:"source"`    // consumer name (e.g. "email", "admin_audit")
+	Payload  string `json:"payload"`   // original message bytes (UTF-8/JSON)
+	Error    string `json:"error"`     // last processing error
 	FailedAt int64  `json:"failed_at"` // unix seconds
 }
 
@@ -819,9 +819,9 @@ const TopicBusinessAuditAction = "admin.business-action"
 
 // BusinessAuditActionMessage is one audited business action.
 type BusinessAuditActionMessage struct {
-	Action          string    `json:"action"`             // limit.set | limit.used_reset | order.approve | order.decline | permissions.set | tax.collect
-	ActorEmployeeID int64     `json:"actor_employee_id"`  // JWT user_id of the actor
-	TargetType      string    `json:"target_type"`        // employee | order | role | tax
+	Action          string    `json:"action"`            // limit.set | limit.used_reset | order.approve | order.decline | permissions.set | tax.collect
+	ActorEmployeeID int64     `json:"actor_employee_id"` // JWT user_id of the actor
+	TargetType      string    `json:"target_type"`       // employee | order | role | tax
 	TargetID        string    `json:"target_id"`
 	Detail          string    `json:"detail"`
 	Timestamp       time.Time `json:"timestamp"`

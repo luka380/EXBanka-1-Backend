@@ -14,7 +14,16 @@ import (
 	"github.com/exbanka/account-service/internal/service"
 	pb "github.com/exbanka/contract/accountpb"
 	"github.com/exbanka/contract/changelog"
+	"github.com/exbanka/contract/identity"
 )
+
+// ownsAccount reports whether the gRPC caller (from identity metadata) may access
+// an account owned by ownerID. OWN-1: client → own only; employee-on-behalf →
+// bound client; employee/admin + trusted service → allowed. A false result is
+// mapped by callers to ErrAccountNotFound (don't leak existence across tenants).
+func ownsAccount(ctx context.Context, ownerID uint64) bool {
+	return identity.FromIncoming(ctx).OwnsResource(int64(ownerID))
+}
 
 // accountSvcFacade is the subset of *service.AccountService used by AccountGRPCHandler.
 type accountSvcFacade interface {
@@ -446,6 +455,10 @@ func (h *AccountGRPCHandler) GetAccount(ctx context.Context, req *pb.GetAccountR
 		}
 		return nil, err
 	}
+	// OWN-1: a client may only read its own account (others → 404, no leak).
+	if !ownsAccount(ctx, account.OwnerID) {
+		return nil, service.ErrAccountNotFound
+	}
 	return toAccountResponse(account), nil
 }
 
@@ -457,10 +470,17 @@ func (h *AccountGRPCHandler) GetAccountByNumber(ctx context.Context, req *pb.Get
 		}
 		return nil, err
 	}
+	if !ownsAccount(ctx, account.OwnerID) {
+		return nil, service.ErrAccountNotFound
+	}
 	return toAccountResponse(account), nil
 }
 
 func (h *AccountGRPCHandler) ListAccountsByClient(ctx context.Context, req *pb.ListAccountsByClientRequest) (*pb.ListAccountsResponse, error) {
+	// OWN-1: a client may only list its own accounts.
+	if !ownsAccount(ctx, req.ClientId) {
+		return nil, service.ErrForbidden
+	}
 	accounts, total, err := h.accountService.ListAccountsByClient(
 		req.ClientId, int(req.Page), int(req.PageSize),
 	)
@@ -762,6 +782,19 @@ func (h *AccountGRPCHandler) GetLedgerEntries(ctx context.Context, req *pb.GetLe
 	}
 	if pageSize < 1 {
 		pageSize = 20
+	}
+
+	// OWN-1: a client may only read the ledger of an account it owns. Resolve the
+	// account's owner first (cheap indexed lookup) and gate on it.
+	acct, err := h.accountService.GetAccountByNumber(req.AccountNumber)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, service.ErrAccountNotFound
+		}
+		return nil, err
+	}
+	if !ownsAccount(ctx, acct.OwnerID) {
+		return nil, service.ErrAccountNotFound
 	}
 
 	entries, total, err := h.ledgerService.GetLedgerEntries(req.AccountNumber, page, pageSize)

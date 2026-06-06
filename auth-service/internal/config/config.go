@@ -6,15 +6,15 @@ import (
 )
 
 type Config struct {
-	DBHost                 string
-	DBPort                 string
-	DBUser                 string
-	DBPassword             string
-	DBName                 string
-	GRPCAddr               string
-	UserGRPCAddr           string
-	KafkaBrokers           string
-	JWTSecret              string
+	DBHost       string
+	DBPort       string
+	DBUser       string
+	DBPassword   string
+	DBName       string
+	GRPCAddr     string
+	UserGRPCAddr string
+	KafkaBrokers string
+	JWTSecret    string
 	// JWTECPrivateKey is a PEM-encoded ECDSA P-256 private key used to sign
 	// access tokens (ES256). When empty, auth-service generates an ephemeral
 	// key at startup. JWTECKid is its optional key id (for rotation).

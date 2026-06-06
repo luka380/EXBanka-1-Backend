@@ -18,8 +18,15 @@ import (
 )
 
 var (
-	// ErrAccountNotFound — the account does not exist.
+	// ErrAccountNotFound — the account does not exist. Also returned to a client
+	// that asks for an account it does not own (OWN-1: existence must not leak
+	// across tenants, so 404 not 403).
 	ErrAccountNotFound = svcerr.New(codes.NotFound, "account not found")
+
+	// ErrForbidden — the caller is authenticated but not permitted to access the
+	// requested resource set (OWN-1: e.g. a client listing another client's
+	// accounts).
+	ErrForbidden = svcerr.New(codes.PermissionDenied, "forbidden")
 
 	// ErrInsufficientBalance — debit / reservation requires more funds than
 	// the account has available.

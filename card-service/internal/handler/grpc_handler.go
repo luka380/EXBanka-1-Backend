@@ -71,6 +71,10 @@ func (h *CardGRPCHandler) GetCard(ctx context.Context, req *pb.GetCardRequest) (
 		}
 		return nil, err
 	}
+	// OWN-1: a client may only read its own card (others → 404, no leak).
+	if !ownsCard(ctx, card.OwnerID) {
+		return nil, service.ErrCardNotFound
+	}
 	return toCardResponse(card), nil
 }
 
@@ -88,6 +92,10 @@ func (h *CardGRPCHandler) ListCardsByAccount(ctx context.Context, req *pb.ListCa
 }
 
 func (h *CardGRPCHandler) ListCardsByClient(ctx context.Context, req *pb.ListCardsByClientRequest) (*pb.ListCardsResponse, error) {
+	// OWN-1: a client may only list its own cards.
+	if !ownsCard(ctx, req.ClientId) {
+		return nil, service.ErrForbidden
+	}
 	cards, err := h.cardService.ListCardsByClient(req.ClientId)
 	if err != nil {
 		return nil, err
@@ -101,6 +109,10 @@ func (h *CardGRPCHandler) ListCardsByClient(ctx context.Context, req *pb.ListCar
 }
 
 func (h *CardGRPCHandler) BlockCard(ctx context.Context, req *pb.BlockCardRequest) (*pb.CardResponse, error) {
+	// OWN-1: a client may only block its own card.
+	if err := requireCardOwnerByID(ctx, h.cardService, req.Id); err != nil {
+		return nil, err
+	}
 	changedBy := changelog.ExtractChangedBy(ctx)
 	card, err := h.cardService.BlockCard(req.Id, changedBy)
 	if err != nil {

@@ -334,6 +334,20 @@ The Notification Service has a PostgreSQL database (`notification_db`, port 5441
 - Fix any lint errors in code you touched before committing. You are not required to fix pre-existing lint issues in code you did not modify.
 - Requires `golangci-lint` installed (`go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`).
 
+## Continuous Integration (CI) Requirement
+
+**Before finishing any change, run the ENTIRE CI pipeline locally and make it green.** This is a hard requirement — not optional. Committing/declaring done without a full local CI pass is not acceptable.
+
+The CI pipeline is defined in `.github/workflows/ci.yml` and has five jobs that ALL must pass — run every one locally before finishing, not just the parts you think you touched:
+
+1. **Build** — every service builds: for each service dir, `go build -o bin/<svc> ./cmd` (or `make build`).
+2. **Unit Tests** — every module passes: for each (incl. `contract`), `CGO_ENABLED=1 go test ./... -count=1` (or `make test`). SQLite tests need cgo/gcc.
+3. **Lint** — every service: `cd <svc> && golangci-lint run --timeout=90s ./...` (or `make lint`).
+4. **Format Check** — `gofmt -l .` must print NOTHING. If it lists files, run `gofmt -w <files>` and re-check. This is repo-wide — a formatting violation in ANY file (even one you didn't touch) turns the whole pipeline red, so the format check only passes when the entire tree is gofmt-clean.
+5. **Go Mod Tidy Check** — for each module, `go mod tidy` must produce no diff in `go.mod`/`go.sum`.
+
+A convenience target `make ci` runs all five locally in one shot; use it (or run the five steps manually) and confirm a clean pass before considering the work done. Fix anything it surfaces — including repo-wide `gofmt` violations — before committing.
+
 ## Kafka Event Publishing Requirement
 
 **All services must publish Kafka events for every significant action they perform.** This is a hard requirement — not optional.
@@ -417,8 +431,9 @@ The Notification Service has a PostgreSQL database (`notification_db`, port 5441
 - gRPC addresses must use Docker service names, not `localhost` (e.g., `client-service:50054`, not `localhost:50054`).
 - If a service depends on another service at runtime (DB, Kafka, Redis, or another gRPC service), add a `depends_on:` entry for it.
 - When adding a new service, add its DB, its service definition, the volume, and wire it into the `api-gateway` environment and `depends_on`.
-- `docker-compose.yml` must be committed alongside service changes.
-- **`docker-compose-remote.yml` must be kept in sync with `docker-compose.yml`.** When adding/changing environment variables, ports, volumes, or services in `docker-compose.yml`, apply the same changes to `docker-compose-remote.yml` (which uses pre-built images from ghcr.io instead of building from source). The only difference between the two files is the `build:` vs `image:` directives — environment, ports, volumes, depends_on, and healthchecks must match.
+- `docker-compose.yml` must be committed alongside service changes. (There is a
+  single compose file — `docker-compose.yml`. The old `docker-compose-remote.yml`
+  was removed and is not coming back; do not recreate it or try to keep it in sync.)
 
 ## API Versioning Compatibility Requirement
 

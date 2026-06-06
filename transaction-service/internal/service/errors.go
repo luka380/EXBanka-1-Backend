@@ -21,7 +21,8 @@ var (
 	// ErrTransferNotFound — transfer lookup failed.
 	ErrTransferNotFound = svcerr.New(codes.NotFound, "transfer not found")
 
-	// ErrPaymentNotFound — payment lookup failed.
+	// ErrPaymentNotFound — payment lookup failed. Also returned to a client that
+	// asks for a payment it does not own (OWN-1: 404, no cross-tenant leak).
 	ErrPaymentNotFound = svcerr.New(codes.NotFound, "payment not found")
 
 	// ErrInsufficientBalance — debit / reservation requires more funds than

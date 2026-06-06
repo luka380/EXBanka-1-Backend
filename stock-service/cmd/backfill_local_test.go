@@ -55,7 +55,7 @@ func TestBackfillLocalDiscriminator(t *testing.T) {
 
 	// Skip hooks so the wrong Local value is persisted verbatim.
 	tx := db.Session(&gorm.Session{SkipHooks: true})
-	localWrong := mk(111, "", false)  // local row wrongly stamped false
+	localWrong := mk(111, "", false)   // local row wrongly stamped false
 	remoteWrong := mk(222, "r1", true) // remote row wrongly stamped true
 	if err := tx.Create(localWrong).Error; err != nil {
 		t.Fatalf("seed localWrong: %v", err)

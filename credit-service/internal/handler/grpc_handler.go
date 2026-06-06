@@ -138,10 +138,18 @@ func (h *CreditGRPCHandler) GetLoanRequest(ctx context.Context, req *pb.GetLoanR
 	if err != nil {
 		return nil, err
 	}
+	// OWN-1: a client may only read its own loan request (others → 404, no leak).
+	if !ownsLoan(ctx, loanReq.ClientID) {
+		return nil, service.ErrLoanRequestNotFound
+	}
 	return toLoanRequestResponse(loanReq), nil
 }
 
 func (h *CreditGRPCHandler) ListLoanRequests(ctx context.Context, req *pb.ListLoanRequestsReq) (*pb.ListLoanRequestsResponse, error) {
+	// OWN-1: a client may only list its own loan requests (must filter by self).
+	if !ownsLoan(ctx, req.ClientIdFilter) {
+		return nil, service.ErrForbidden
+	}
 	requests, total, err := h.loanRequestService.ListLoanRequests(
 		req.LoanTypeFilter, req.AccountNumberFilter, req.StatusFilter,
 		req.ClientIdFilter, int(req.Page), int(req.PageSize),
@@ -237,10 +245,18 @@ func (h *CreditGRPCHandler) GetLoan(ctx context.Context, req *pb.GetLoanReq) (*p
 	if err != nil {
 		return nil, err
 	}
+	// OWN-1: a client may only read its own loan (others → 404, no leak).
+	if !ownsLoan(ctx, loan.ClientID) {
+		return nil, service.ErrLoanNotFound
+	}
 	return toLoanResponse(loan), nil
 }
 
 func (h *CreditGRPCHandler) ListLoansByClient(ctx context.Context, req *pb.ListLoansByClientReq) (*pb.ListLoansResponse, error) {
+	// OWN-1: a client may only list its own loans.
+	if !ownsLoan(ctx, req.ClientId) {
+		return nil, service.ErrForbidden
+	}
 	loans, total, err := h.loanService.ListLoansByClient(req.ClientId, int(req.Page), int(req.PageSize))
 	if err != nil {
 		return nil, err
@@ -272,6 +288,15 @@ func (h *CreditGRPCHandler) ListAllLoans(ctx context.Context, req *pb.ListAllLoa
 }
 
 func (h *CreditGRPCHandler) GetInstallmentsByLoan(ctx context.Context, req *pb.GetInstallmentsByLoanReq) (*pb.ListInstallmentsResponse, error) {
+	// OWN-1: a client may only read installments of a loan it owns. Resolve the
+	// loan's owner first and gate on it.
+	loan, err := h.loanService.GetLoan(req.LoanId)
+	if err != nil {
+		return nil, err
+	}
+	if !ownsLoan(ctx, loan.ClientID) {
+		return nil, service.ErrLoanNotFound
+	}
 	installments, err := h.installmentService.GetInstallmentsByLoan(req.LoanId)
 	if err != nil {
 		return nil, err

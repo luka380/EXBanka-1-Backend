@@ -206,6 +206,11 @@ func newGRPCHandlerFixture(t *testing.T) (*AccountGRPCHandler, *grpcHandlerFixtu
 		db:          db,
 		idem:        idem,
 	}
+	// Default: account lookups resolve (owner 1). OWN-1 ownership checks pass for
+	// the (identity-less → service) test caller. Not-found tests override this.
+	f.accountSvc.getAccountByNumberFn = func(n string) (*model.Account, error) {
+		return &model.Account{AccountNumber: n, OwnerID: 1}, nil
+	}
 	h := &AccountGRPCHandler{
 		accountService:  f.accountSvc,
 		companyService:  f.companySvc,
@@ -372,7 +377,10 @@ func TestGetAccountByNumber_Success(t *testing.T) {
 }
 
 func TestGetAccountByNumber_NotFound(t *testing.T) {
-	h, _ := newGRPCHandlerFixture(t)
+	h, f := newGRPCHandlerFixture(t)
+	f.accountSvc.getAccountByNumberFn = func(string) (*model.Account, error) {
+		return nil, gorm.ErrRecordNotFound
+	}
 
 	_, err := h.GetAccountByNumber(context.Background(), &pb.GetAccountByNumberRequest{AccountNumber: "NONEXISTENT"})
 	require.Error(t, err)
@@ -490,9 +498,6 @@ func TestUpdateAccountName_ServiceError(t *testing.T) {
 	assert.Equal(t, codes.AlreadyExists, status.Code(err))
 }
 
-
-
-
 // ---------------------------------------------------------------------------
 // UpdateAccountLimits tests
 // ---------------------------------------------------------------------------
@@ -540,9 +545,6 @@ func TestUpdateAccountLimits_InvalidValue(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, codes.InvalidArgument, status.Code(err))
 }
-
-
-
 
 // ---------------------------------------------------------------------------
 // UpdateAccountStatus tests
@@ -599,10 +601,6 @@ func TestUpdateAccountStatus_AlreadyInState(t *testing.T) {
 // ---------------------------------------------------------------------------
 // In-app notification emit tests (Plan B4: ACCOUNT_OPENED / ACCOUNT_STATUS_CHANGED)
 // ---------------------------------------------------------------------------
-
-
-
-
 
 // ---------------------------------------------------------------------------
 // UpdateBalance tests

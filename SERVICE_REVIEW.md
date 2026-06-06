@@ -658,8 +658,28 @@ from service/" rule). Larger refactor; decision.
   (GetAccount, UpdateAccountName/Limits/Status, ListAccountsByClient, GetLedgerEntries, CreateAccount).
   Getting the trusted-service-vs-user split wrong breaks transfers/OTC/loans or opens an auth hole in
   the money service. Full plan: docs/superpowers/plans/2026-06-06-own1-account-ownership-in-service.md
-  (D0 foundation → D1 enforce additively → D2 remove gateway checks). Deferred to a dedicated effort
-  (security-critical money path; another agent is concurrently editing shared contract/).
+  (D0 foundation → D1 enforce additively → D2 remove gateway checks). User chose to implement.
+  IN PROGRESS: **D0 DONE** (43a2197b, 2.15.7 — contract/identity + gateway stamps caller identity);
+  **D1 account-service DONE** (fc233996, 2.16.0 — enforces ownership on direct reads/list, additive,
+  tested). Remaining (turnkey steps in the plan): card/credit/transaction (same pattern),
+  stock + service→service identity forwarding for the indirect OTC/order account-binding, then D2
+  gateway-check removal per service. The expanded scope ("ownership in ALL services + remove gateway
+  checks") is a repo-wide platform refactor — proceeding service by service, additive-first.
+  **SERVICE-SIDE ENFORCEMENT NOW DONE in all applicable services**: account (fc233996), card
+  (1fbd71b7), credit (8a77cada), transaction (fe29933f) — each enforces owner-matching on its
+  user-facing reads/lists via identity.OwnsResource (additive; gateway still checks; NO gap; full
+  tests). stock-service is EXEMPT (its OTC/order check validates a caller-SUPPLIED account at the
+  boundary — counterparty/bank accounts are record-sourced, so it must stay at the gateway; portfolio
+  access is permission-entangled). transaction list-by-client stays at the gateway (keyed by
+  gateway-resolved account numbers). ONLY remaining: **D2 gateway-check removal** — pure de-dup (the
+  services already enforce, so removing the redundant gateway ownership checks is not a security
+  change; leaving them is strictly safer). VERSION 2.16.3.
+  **OWN-1 SUBSTANTIALLY COMPLETE (VERSION 2.16.5):** D2 gateway de-dup done for account (/me + lists,
+  d469db2a), and card/credit/transaction + account-list (226a7ca1). Foreign-resource access is now
+  404 (no leak). KEPT at gateway (correct): stock OTC/order + portfolio account-binding, peer-tx +
+  card-creation account-binding, transaction list-by-client (account-number resolution), payment
+  recipients (not yet service-enforced). RBAC/RequirePermission never touched. All 6 touched modules
+  (contract, account, card, credit, transaction, api-gateway) build+test+lint green.
 - [~] **E** — DROPPED. `GetCompany`/`UpdateCompany` are the read/update half of a **live**
   Company resource (the gateway has a `/companies` group, `CreateCompany` is used, accounts carry
   `company_id`) — "no caller today" ≠ "dead"; the FE creates companies + company accounts and will

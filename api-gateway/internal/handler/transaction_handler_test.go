@@ -484,7 +484,7 @@ func TestTx_ListMyPayments_BadUserContext(t *testing.T) {
 func TestTx_GetMyPayment_OwnershipMismatch_Returns404(t *testing.T) {
 	tx := &stubTransactionClient{
 		getPaymentFn: func(*transactionpb.GetPaymentRequest) (*transactionpb.PaymentResponse, error) {
-			return &transactionpb.PaymentResponse{Id: 1, ClientId: 99}, nil
+			return nil, status.Error(codes.NotFound, "payment not found") // OWN-1: service enforces
 		},
 	}
 	h := newTxHandler(tx, &stubFeeClient{}, &accountFullStub{}, &stubExchangeClient{})
@@ -543,7 +543,7 @@ func TestTx_ListMyTransfers_BadUserContext(t *testing.T) {
 func TestTx_GetMyTransfer_OwnershipMismatch_Returns404(t *testing.T) {
 	tx := &stubTransactionClient{
 		getTransferFn: func(*transactionpb.GetTransferRequest) (*transactionpb.TransferResponse, error) {
-			return &transactionpb.TransferResponse{Id: 1, ClientId: 99}, nil
+			return nil, status.Error(codes.NotFound, "transfer not found") // OWN-1: service enforces
 		},
 	}
 	h := newTxHandler(tx, &stubFeeClient{}, &accountFullStub{}, &stubExchangeClient{})
@@ -875,7 +875,7 @@ func TestTx_GetMyPaymentStatus_Success(t *testing.T) {
 func TestTx_GetMyPaymentStatus_NotOwner_404(t *testing.T) {
 	tx := &stubTransactionClient{
 		getPaymentFn: func(*transactionpb.GetPaymentRequest) (*transactionpb.PaymentResponse, error) {
-			return &transactionpb.PaymentResponse{Id: 99, ClientId: 999, Status: "completed"}, nil
+			return nil, status.Error(codes.NotFound, "payment not found") // OWN-1: service enforces
 		},
 	}
 	h := newTxHandler(tx, &stubFeeClient{}, &accountFullStub{}, &stubExchangeClient{})

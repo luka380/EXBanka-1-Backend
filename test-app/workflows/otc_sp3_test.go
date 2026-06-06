@@ -49,11 +49,11 @@ import (
 // behind the bankIfEmp middleware (OwnerIsBankIfEmployee), so an employee caller
 // resolves to owner_type="bank" and the listing is created BANK-owned. We assert:
 //
-//   1. The create response's offer carries the bank seller id (seller_id="bank"
-//      on this LOCAL read view — the cross-bank wire id "employee-<N>" is only
-//      composed on the SI-TX publish path, not surfaced here).
-//   2. The same offer appears in the bank's own listing
-//      (GET /api/v3/me/otc/options) stamped me_owner=true.
+//  1. The create response's offer carries the bank seller id (seller_id="bank"
+//     on this LOCAL read view — the cross-bank wire id "employee-<N>" is only
+//     composed on the SI-TX publish path, not surfaced here).
+//  2. The same offer appears in the bank's own listing
+//     (GET /api/v3/me/otc/options) stamped me_owner=true.
 //
 // All ids come from REST responses (FE-style); the holding the sell_initiated
 // offer needs is seeded by the bank itself via a /me/orders buy (which also

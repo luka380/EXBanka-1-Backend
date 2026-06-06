@@ -4,9 +4,9 @@
 // native_id=<peer foreign id>. These tests cover the three remote-scoped
 // methods that replaced the retired remote_otc_offer mirror:
 //   - UpsertRemote          (idempotent on the natural key, stable surrogate
-//                            id, reopen on re-upsert)
+//     id, reopen on re-upsert)
 //   - ReconcileRemoteNotSeen (flips not-seen remote rows to cancelled; never
-//                            touches local or other-peer rows)
+//     touches local or other-peer rows)
 //   - GetRemoteByID         (returns a remote row; NotFound for a local id)
 package repository
 

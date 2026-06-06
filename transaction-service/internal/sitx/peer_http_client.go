@@ -177,4 +177,3 @@ func (c *PeerHTTPClient) postEnvelope(ctx context.Context, target *PeerHTTPTarge
 
 	return c.httpClient.Do(req)
 }
-
