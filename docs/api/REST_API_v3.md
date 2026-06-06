@@ -32,7 +32,42 @@ The unified login endpoint auto-detects whether the principal is an employee or 
 
 Employee routes additionally require specific permissions (see per-endpoint notes). Client routes require `role="client"` in the JWT.
 
-Access tokens expire after 15 minutes. Use the refresh token to obtain a new pair.
+Access tokens are **ES256-signed JWTs** (15 min). The gateway verifies them
+locally against auth-service's published public keys (no per-request validation
+hop) and consults a revocation denylist. Two distinct 401 outcomes tell the
+client what to do:
+
+- **`401 token_expired`** — the access token is past `exp`, OR its claims are
+  stale (permissions/roles/account state changed). **Refresh** the token (the
+  refresh token is still valid) and retry — do **not** log the user out.
+- **`401 unauthorized`** — the token is invalid/malformed, or the session was
+  revoked (logout / revoke-session / revoke-all). The refresh token is also
+  dead; the client must **re-authenticate** (log in again).
+
+Use the refresh token (`POST /api/v3/auth/refresh`) to obtain a new pair.
+
+---
+
+## Rate Limiting
+
+The gateway applies Redis-backed fixed-window rate limits (per client IP):
+
+- **Global ceiling** — a generous per-IP cap across **all** routes
+  (`RATE_LIMIT_GLOBAL_PER_MIN`, default **3000/min**). It is sized well above
+  normal frontend polling and only trips for runaway/abusive clients.
+- **`POST /api/v3/auth/login`** — strict per-IP bucket
+  (`RATE_LIMIT_LOGIN_PER_5MIN`, default **20 per 5 min**).
+- **`POST /api/v3/auth/password/reset-request`** — strict per-IP bucket
+  (`RATE_LIMIT_RESET_PER_5MIN`, default **5 per 5 min**).
+
+Exceeding any bucket returns **HTTP 429** with body
+`{"error":{"code":"rate_limited","message":"too many requests, slow down"}}` and a
+`Retry-After` header (seconds). This is an additive failure mode — no success-path
+contract changed. The limiter **fails open**: if Redis is unavailable, requests are
+allowed through rather than blocked.
+
+Every response carries an **`X-Request-Id`** header (echoing an inbound
+`X-Request-Id` if present, else a fresh UUID) for log correlation.
 
 ---
 
@@ -8447,9 +8482,9 @@ List the negotiation chains against a listing. `:id` is the stable surrogate id 
 
 **LOCAL `:id` — unchanged audience + behavior.** Returns **every** chain on the listing (any status). **Restricted audience:** only the listing's poster (a client whose `principal_id` matches the offer's initiator) or an employee holding the `otc.read.all` permission may call this. A competing bidder — or any other client — receives **403**; bidders see only their own chain via `GET /api/v3/me/otc/options/negotiations`. Each item is now stamped `kind="local"` + own `routing_number` / `bank_code`; `me_owner` is `false` (the field reflects the *chain's* bidder ownership, not the listing's — a bidder is never the owner).
 
-> **Bank-owned LOCAL listing — peer bids included (SP-3 Task 5b).** When the LOCAL listing is **bank-owned** (`owner_type="bank"`) and a **peer** bank bid on it cross-bank, those peer bids live as REMOTE chains where we host the seller as the bank (party id `employee-<N>`). For a bank caller, the response now also merges those peer bids — correlated to this listing by the remote chain's `(remote_parent_routing, remote_parent_native_id)` lot key == the offer's `(routing_number, native_id)`, so only bids on *this* listing appear (each `kind="remote"`, `me_owner=true` because the bank owns the listing). Client-owned listings are unaffected (no bank merge).
+> **LOCAL listing — peer bids included for BOTH bank- and client-owned listings (2026-06-06 local/remote parity).** When a **peer** bank bids on a LOCAL listing we host, that bid lives as a REMOTE chain where we host the seller (the listing's poster). The response merges those peer bids for the owner-side view, correlated to this listing by the remote chain's `(remote_parent_routing, remote_parent_native_id)` lot key == the offer's `(routing_number, native_id)`, so only bids on *this* listing appear (each `kind="remote"`, `me_owner=true` because the owner hosts the seller). The seller principal is derived from the listing's **initiator**: a bank-owned listing matches `employee-<N>` seller chains; a **client-owned** listing matches the poster's `client-<initiatorID>` seller chains — so both the poster and a permission-gated employee (`otc.read.all`) see the cross-bank bids. *(Previously only bank-owned listings merged peer bids; client-owned listings showed local chains only.)*
 
-**REMOTE `:id` — caller's own chain(s) only.** We do not host the listing, so we can only surface the **caller's own** chain(s) against it — never other parties' chains. Returns the caller's `peer_otc_negotiation` rows whose `(ParentOfferRouting, ParentOfferID)` lot key matches the mirror's `(PeerRoutingNumber, ForeignOfferID)`, each stamped `kind="remote"` with counterparty provenance and `me_owner` per the seller-side rule. If the caller has no chain on it → **empty list** (not 403/404). **Both a client AND the bank have a cross-bank bidder identity (SP-3 Task 5b):** a client matches its exact `client-<N>` chains; an employee acting as the bank matches its `employee-<N>` bid chains (prefix-matched). Any other caller yields an empty list. The two principal scopes never cross.
+**REMOTE `:id` — caller's own chain(s) only.** We do not host the listing, so we can only surface the **caller's own** chain(s) against it — never other parties' chains. Returns the caller's remote negotiation rows whose `(remote_parent_routing, remote_parent_native_id)` lot key matches the mirror's `(routing_number, native_id)`, each stamped `kind="remote"` with counterparty provenance and `me_owner` per the seller-side rule. If the caller has no chain on it → **empty list** (not 403/404). **Both a client AND the bank have a cross-bank bidder identity:** a client matches its exact `client-<N>` chains; an employee acting as the bank matches its `employee-<N>` bid chains (prefix-matched). Any other caller yields an empty list. The two principal scopes never cross. *(2026-06-06: this path now fires reliably — the per-listing read no longer pre-empts the remote fallback when the folded-in mirror offer shares the local `otc_offers` table.)*
 
 **Response 200:** `{ "negotiations": [OTCNegotiationResponse...], "total": int }`.
 
@@ -8463,9 +8498,9 @@ List the negotiation chains against a listing. `:id` is the stable surrogate id 
 
 Cross-chain interaction timeline for an offer. `:id` may resolve to a **LOCAL** listing or a **REMOTE** mirror (SP-1 Task 8b extends this to remote ids).
 
-**LOCAL `:id` — unchanged:** the offer plus **every** negotiation chain's revisions, merged into a single stream sorted ascending by `created_at`. This is the offer-owner "front page" view — one call returns the whole offer's history across all bidders, so the frontend never needs to fan out per chain. Each entry carries its chain's `negotiation_id` and bidder identity, so the client can render one flat timeline or regroup into per-bidder swimlanes. **Restricted audience:** identical to `GET /api/v3/otc/options/:id/negotiations` — listing poster or employee with `otc.read.all` only. Competing bidders receive **403**.
+**LOCAL `:id` — local chains PLUS remote peer bids (2026-06-06 local/remote parity):** the offer plus **every** negotiation chain merged into a single stream sorted ascending by `created_at`. This includes both the LOCAL chains' full per-revision history AND the REMOTE chains a peer placed on this listing — each now also expanded into its **full recorded history** (one entry per BID/COUNTER/ACCEPT/REJECT, with `action_by_wire_id` carrying the mover's opaque id; legacy remote chains with no recorded revisions fall back to a single current-terms entry) — correlated to this listing by the same `(remote_parent_routing, remote_parent_native_id)` lot key as the per-listing view. This is the offer-owner "front page" view — one call returns the whole offer's history across all bidders, local and cross-bank, so the frontend never needs to fan out per chain. **Restricted audience:** identical to `GET /api/v3/otc/options/:id/negotiations` — listing poster or employee with `otc.read.all` only. Competing bidders receive **403**. *(Previously the timeline showed LOCAL chains only; remote peer bids on the listing were omitted.)*
 
-**REMOTE `:id` — caller's own chain(s) only:** we do not host the listing, so the timeline surfaces only the **caller's own** chain(s) against it (never other parties'). The folded-in remote `OTCOffer` row provides the `offer` header (`kind="remote"`); each of the caller's matching peer chains (lot key `(ParentOfferRouting, ParentOfferID)` == remote row `(routing_number, native_id)`) becomes **one** timeline entry — the remote row keeps only current terms, not a per-revision history, so there is one entry per chain with `action="COUNTER"`. No matching chain → offer header + **empty timeline** (not 403/404). Only client principals have a cross-bank identity.
+**REMOTE `:id` — caller's own chain(s) only:** we do not host the listing, so the timeline surfaces only the **caller's own** chain(s) against it (never other parties'). The folded-in remote `OTCOffer` row provides the `offer` header (`kind="remote"`); each of the caller's matching peer chains (lot key `(remote_parent_routing, remote_parent_native_id)` == remote row `(routing_number, native_id)`) expands into its **full recorded history** — one entry per move (BID/COUNTER/ACCEPT/REJECT) — merged chronologically. Each remote entry carries `action_by_principal_type` = the mover's role (`buyer`/`seller`) and `action_by_wire_id` = the mover's opaque SI-TX id (`client-N`/`employee-N`/`bank`). A chain created before history logging (2026-06-06) with no recorded revisions falls back to a single current-terms entry. No matching chain → offer header + **empty timeline** (not 403/404). **Both a client and the bank have a cross-bank bidder identity** (client matches exact `client-<N>`; the bank matches `employee-<N>` prefix).
 
 **Path:** `:id` — the surrogate listing id (local OTCOffer or folded-in remote OTCOffer row).
 
@@ -8564,11 +8599,11 @@ never receives client chains.
 
 #### GET /api/v3/me/otc/options/negotiations/:nid/revisions
 
-Retrieve the full revision chain (bid, counter, counter, accept/reject) for a single negotiation. Either the bidder or the parent listing's poster may call this endpoint. A third-party caller receives 403.
+Retrieve the full revision chain (bid, counter, counter, accept/reject) for a single negotiation. `:nid` may be a **LOCAL** chain or a folded-in **REMOTE** (cross-bank) chain — both return their full recorded history (2026-06-06 parity). For a LOCAL chain either the bidder or the parent listing's poster may call this; a third-party gets 403. For a REMOTE chain the caller must be the party WE host on it (the hosted `client-<N>`, or an employee acting as the bank for an `employee-<N>` side); a non-party gets **404** (existence is not leaked cross-party).
 
 **Authentication:** Any JWT + `ResolveIdentity` (AnyAuth — clients and employees accepted)
 
-**Path:** `:nid` — the negotiation chain id.
+**Path:** `:nid` — the negotiation chain id (local surrogate id, including the local id of a remote mirror chain).
 
 **Response 200:**
 
@@ -8586,17 +8621,18 @@ Retrieve the full revision chain (bid, counter, counter, accept/reject) for a si
       "settlement_date":          "2026-07-01T00:00:00Z",
       "action_by_principal_type": "client",
       "action_by_principal_id":   42,
+      "action_by_wire_id":        "",
       "created_at":               "2026-06-01T12:00:00Z"
     }
   ]
 }
 ```
 
-Revisions are ordered by `revision_number ASC`.
+Revisions are ordered by `revision_number ASC`. For **remote** chains, `action_by_principal_type` is the mover's role (`buyer`/`seller`), `action_by_principal_id` is `0`, and `action_by_wire_id` carries the mover's opaque SI-TX id (`client-N`/`employee-N`/`bank`). For **local** chains `action_by_wire_id` is an empty string.
 
-**Response 403:** Caller is neither the bidder nor the listing's poster.
+**Response 403:** (LOCAL chain) caller is neither the bidder nor the listing's poster.
 
-**Response 404:** Negotiation not found.
+**Response 404:** Negotiation not found, or (REMOTE chain) the caller is not a party to it.
 
 ---
 

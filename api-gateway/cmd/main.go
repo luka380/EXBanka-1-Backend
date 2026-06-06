@@ -17,7 +17,9 @@ import (
 	"github.com/exbanka/api-gateway/internal/config"
 	grpcclients "github.com/exbanka/api-gateway/internal/grpc"
 	"github.com/exbanka/api-gateway/internal/handler"
+	"github.com/exbanka/api-gateway/internal/jwks"
 	gatewaykafka "github.com/exbanka/api-gateway/internal/kafka"
+	"github.com/exbanka/api-gateway/internal/middleware"
 	"github.com/exbanka/api-gateway/internal/router"
 	"github.com/exbanka/contract/metrics"
 )
@@ -274,6 +276,15 @@ func main() {
 
 	redisClient := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
 	defer redisClient.Close()
+
+	// Local ES256 token verification: fetch + cache auth-service's public
+	// signing keys (JWKS) so AuthMiddleware/AnyAuthMiddleware verify tokens
+	// locally and consult the Redis denylists, instead of a per-request
+	// ValidateToken gRPC hop. Falls back to gRPC ValidateToken until keys load.
+	jwksCache := jwks.New(authClient, 10*time.Minute)
+	jwksCache.Start(ctx)
+	tokenVerifier := middleware.NewTokenVerifier(jwksCache, redisClient, authClient)
+
 	peerNonceStore := cache.NewPeerNonceStore(redisClient, 10*time.Minute)
 	peerBankResolver := &grpcclients.PeerBankResolverAdapter{Client: peerBankAdminClient}
 
@@ -357,6 +368,13 @@ func main() {
 		PeerOTCClient:        peerOTCClient,
 		AdminCronClients:     adminCronClients,
 		AuditProducer:        auditProducer,
+		RateLimit: router.RateLimitConfig{
+			Redis:        redisClient,
+			GlobalPerMin: cfg.RateLimitGlobalPerMin,
+			LoginPer5Min: cfg.RateLimitLoginPer5Min,
+			ResetPer5Min: cfg.RateLimitResetPer5Min,
+		},
+		TokenVerifier: tokenVerifier,
 	}
 	h := router.NewHandlers(deps)
 	router.SetupV3(r, h)

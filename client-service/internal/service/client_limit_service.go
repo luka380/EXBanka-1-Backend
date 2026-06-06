@@ -101,7 +101,8 @@ func (s *ClientLimitService) SetClientLimits(ctx context.Context, limit model.Cl
 	}
 
 	if err := s.limitRepo.Upsert(&limit); err != nil {
-		return nil, err
+		log.Printf("warn: SetClientLimits upsert failed for client %d: %v", limit.ClientID, err)
+		return nil, ErrLimitPersistFailed
 	}
 	ClientLimitUpdatesTotal.Inc()
 

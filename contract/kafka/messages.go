@@ -8,7 +8,21 @@ const (
 	TopicEmailSent = "notification.email-sent"
 	TopicSendPush  = "notification.send-push"
 	TopicPushSent  = "notification.push-sent"
+
+	// TopicNotificationDeadLetter receives messages that exhausted their
+	// in-consumer retries, so a poison message never silently disappears or
+	// stalls a partition. Carries the original payload + failure context.
+	TopicNotificationDeadLetter = "notification.dead-letter"
 )
+
+// NotificationDeadLetterMessage wraps a message that a notification-service
+// consumer could not process after its bounded retries.
+type NotificationDeadLetterMessage struct {
+	Source   string `json:"source"`   // consumer name (e.g. "email", "admin_audit")
+	Payload  string `json:"payload"`  // original message bytes (UTF-8/JSON)
+	Error    string `json:"error"`    // last processing error
+	FailedAt int64  `json:"failed_at"` // unix seconds
+}
 
 type EmailType string
 

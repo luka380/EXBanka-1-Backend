@@ -1043,8 +1043,13 @@ func (h *PeerTxGRPCHandler) GetTxStatus(ctx context.Context, req *transactionpb.
 		}
 		if found {
 			lastActionAt := rec.CreatedAt.UTC().Format(time.RFC3339)
+			if rec.CommittedAt != nil {
+				lastActionAt = rec.CommittedAt.UTC().Format(time.RFC3339)
+			} else if rec.RolledBackAt != nil {
+				lastActionAt = rec.RolledBackAt.UTC().Format(time.RFC3339)
+			}
 			return &transactionpb.GetTxStatusResponse{
-				State:        "committed",
+				State:        receiverState(rec),
 				OurRole:      "receiver",
 				LastActionAt: lastActionAt,
 				LastError:    "",
@@ -1059,6 +1064,37 @@ func (h *PeerTxGRPCHandler) GetTxStatus(ctx context.Context, req *transactionpb.
 		LastActionAt: "",
 		LastError:    "",
 	}, nil
+}
+
+// receiverState maps a receiver-side idempotence record to the public
+// CHECK_STATUS vocabulary. It must NEVER report "committed" before COMMIT_TX
+// actually landed: a peer that polls our status and hears "committed" will
+// settle its own side, so a premature "committed" on a transaction we may yet
+// roll back would desync the two ledgers (this was the always-"committed" bug).
+//
+//   - RolledBackAt set        → "rolled_back" (we released our reservations).
+//   - CommittedAt set         → "committed"   (COMMIT_TX applied; money moved).
+//   - still preparing (async) → "prepared".
+//   - vote cached as NO       → "rolled_back" (the tx will not commit here).
+//   - otherwise (voted YES, holding reservations, awaiting COMMIT/ROLLBACK)
+//     → "prepared".
+func receiverState(rec *model.PeerIdempotenceRecord) string {
+	if rec.RolledBackAt != nil {
+		return "rolled_back"
+	}
+	if rec.CommittedAt != nil {
+		return "committed"
+	}
+	if rec.Status == "pending" {
+		return "prepared" // 202-async reserve still running; no vote/commit yet
+	}
+	var cached struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(rec.ResponsePayloadJSON), &cached); err == nil && cached.Type == contractsitx.VoteNo {
+		return "rolled_back"
+	}
+	return "prepared"
 }
 
 // senderState maps the internal outbound_peer_tx status to the public

@@ -71,6 +71,27 @@ func TestReserveOutgoing_InsufficientAvailable(t *testing.T) {
 	assert.Equal(t, codes.FailedPrecondition, status.Code(err))
 }
 
+// TestReserveOutgoing_DailySpendingLimit gates cross-bank outflows by the daily
+// limit (mirrors UpdateBalance), so a client can't bypass their limit via SI-TX.
+func TestReserveOutgoing_DailySpendingLimit(t *testing.T) {
+	svc, db := newOutgoingReservationService(t)
+	// Plenty of available balance, but a daily limit of 500.
+	seedAccount(t, db, "111-A", decimal.NewFromInt(10_000), decimal.NewFromInt(500))
+
+	// Over the daily limit → rejected (FailedPrecondition → NO vote), generic msg.
+	_, err := svc.ReserveOutgoing(context.Background(), "111-A", decimal.NewFromInt(600), "RSD", "k1")
+	require.Error(t, err)
+	assert.Equal(t, codes.FailedPrecondition, status.Code(err))
+	assert.Contains(t, status.Convert(err).Message(), "daily_spending_limit_exceeded")
+	// The rejected hold must not have touched the balance.
+	acct := reloadAccount(t, db, "111-A")
+	assert.True(t, acct.AvailableBalance.Equal(decimal.NewFromInt(10_000)), "rejected hold must not deduct, got %s", acct.AvailableBalance)
+
+	// Under the limit → allowed.
+	_, err = svc.ReserveOutgoing(context.Background(), "111-A", decimal.NewFromInt(400), "RSD", "k2")
+	require.NoError(t, err)
+}
+
 // TestSettleOutgoing_DebitsBalanceAndWritesLedger verifies settle moves Balance
 // down (Available already reduced), writes a debit ledger entry, and is idempotent.
 func TestSettleOutgoing_DebitsBalanceAndWritesLedger(t *testing.T) {

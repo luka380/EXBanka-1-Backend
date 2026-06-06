@@ -97,7 +97,7 @@ func newPeerOtcHandler(t *testing.T) (*handler.PeerOTCGRPCHandler, *gorm.DB, *fa
 	// SP-2a: remote negotiations AND remote option contracts live in the
 	// unified otc_negotiations / option_contracts tables.
 	model.SetOwnRouting("111")
-	if err := db.AutoMigrate(&model.OTCNegotiation{}, &model.OptionContract{}); err != nil {
+	if err := db.AutoMigrate(&model.OTCNegotiation{}, &model.OTCNegotiationRevision{}, &model.OptionContract{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	repo := repository.NewOTCNegotiationRepository(db)

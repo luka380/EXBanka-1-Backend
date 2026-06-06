@@ -78,7 +78,7 @@ func newUnifiedNegFixture(t *testing.T, ownRouting int64, ownBankCode string, pe
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	if err := db.AutoMigrate(&model.OTCOffer{}, &model.OTCNegotiation{}); err != nil {
+	if err := db.AutoMigrate(&model.OTCOffer{}, &model.OTCNegotiation{}, &model.OTCNegotiationRevision{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	offerRepo := repository.NewOTCOfferRepository(db)

@@ -31,6 +31,8 @@ type WatchlistAlertConsumer struct {
 	reader    *kafkago.Reader
 	notifRepo watchlistNotifCreator
 	templates templateRenderer
+	dlq       DeadLetterWriter
+	dedup     Deduper
 }
 
 // NewWatchlistAlertConsumer creates a consumer backed by a real Kafka reader.
@@ -38,6 +40,8 @@ func NewWatchlistAlertConsumer(
 	brokers string,
 	notifRepo *repository.GeneralNotificationRepository,
 	templateSvc *service.TemplateService,
+	dlq DeadLetterWriter,
+	dedup Deduper,
 ) *WatchlistAlertConsumer {
 	reader := kafkago.NewReader(kafkago.ReaderConfig{
 		Brokers:  strings.Split(brokers, ","),
@@ -50,6 +54,8 @@ func NewWatchlistAlertConsumer(
 		reader:    reader,
 		notifRepo: &watchlistNotifCreatorAdapter{repo: notifRepo},
 		templates: templateSvc,
+		dlq:       dlq,
+		dedup:     dedup,
 	}
 }
 
@@ -60,28 +66,14 @@ func newWatchlistAlertConsumerForTest(repo watchlistNotifCreator, r templateRend
 }
 
 func (c *WatchlistAlertConsumer) Start(ctx context.Context) {
-	go func() {
-		log.Println("watchlist alert consumer started, listening on", kafkamsg.TopicWatchlistAlert)
-		for {
-			msg, err := c.reader.ReadMessage(ctx)
-			if err != nil {
-				if ctx.Err() != nil {
-					log.Println("watchlist alert consumer shutting down")
-					return
-				}
-				log.Printf("watchlist alert consumer: read error: %v", err)
-				continue
-			}
-			c.handleMessage(msg.Value)
-		}
-	}()
+	go runConsumer(ctx, "watchlist_alert", c.reader, c.dlq, c.dedup, c.handleMessage)
 }
 
-func (c *WatchlistAlertConsumer) handleMessage(data []byte) {
+func (c *WatchlistAlertConsumer) handleMessage(_ context.Context, data []byte) error {
 	var event kafkamsg.WatchlistPriceMoveMessage
 	if err := json.Unmarshal(data, &event); err != nil {
-		log.Printf("watchlist alert consumer: unmarshal error: %v", err)
-		return
+		log.Printf("watchlist alert consumer: dropping malformed message: %v", err)
+		return nil // not retryable
 	}
 
 	// Render the WATCHLIST_PRICE_MOVE push template.
@@ -91,8 +83,8 @@ func (c *WatchlistAlertConsumer) handleMessage(data []byte) {
 		"current_price": event.CurrentPrice,
 	})
 	if err != nil {
-		log.Printf("watchlist alert consumer: render failed for user %d ticker %s: %v", event.UserID, event.Ticker, err)
-		return
+		log.Printf("watchlist alert consumer: render failed for user %d ticker %s (not retryable): %v", event.UserID, event.Ticker, err)
+		return nil
 	}
 
 	notif := &model.GeneralNotification{
@@ -104,12 +96,12 @@ func (c *WatchlistAlertConsumer) handleMessage(data []byte) {
 	}
 	created, err := c.notifRepo.CreateWithIdempotency(notif, event.IdempotencyKey)
 	if err != nil {
-		log.Printf("watchlist alert consumer: create error for user %d: %v", event.UserID, err)
-		return
+		return err // transient DB failure — retry then dead-letter (idempotent, safe)
 	}
 	if !created {
 		log.Printf("watchlist alert consumer: dedup hit — already notified user %d for %s (key=%s)", event.UserID, event.Ticker, event.IdempotencyKey)
 	}
+	return nil
 }
 
 func (c *WatchlistAlertConsumer) Close() error {

@@ -47,6 +47,23 @@ type RolePermPublisher interface {
 	PublishRolePermissionsChanged(ctx context.Context, msg kafkamsg.RolePermissionsChangedMessage) error
 }
 
+// EmployeeCacheEvictor is the slice of the Redis cache RoleService needs: it
+// evicts an employee's cached record after a role-permission change so the next
+// GetEmployee reflects the new permission set. *cache.RedisCache satisfies it;
+// an interface so the eviction is unit-testable.
+type EmployeeCacheEvictor interface {
+	Delete(ctx context.Context, key string) error
+}
+
+// EmployeeEventPublisher is the narrow Kafka surface EmployeeService needs.
+// An interface (not the concrete producer) so the publish paths — including the
+// per-employee force-refresh via RolePermissionsChanged — are unit-testable.
+type EmployeeEventPublisher interface {
+	PublishEmployeeCreated(ctx context.Context, msg kafkamsg.EmployeeCreatedMessage) error
+	PublishEmployeeUpdated(ctx context.Context, msg kafkamsg.EmployeeCreatedMessage) error
+	PublishRolePermissionsChanged(ctx context.Context, msg kafkamsg.RolePermissionsChangedMessage) error
+}
+
 type PermissionRepo interface {
 	Create(p *model.Permission) error
 	GetByCode(code string) (*model.Permission, error)

@@ -160,6 +160,22 @@ func (h *OTCOptionsHandler) resolveRemoteNegAction(
 	}, true, nil
 }
 
+// parseSITXDate parses an SI-TX settlement date (RFC3339 or YYYY-MM-DD) into a
+// time, falling back to the zero time on an unparseable/empty input. Mirrors the
+// parse in buildRemoteNeg so revision settlement dates round-trip consistently.
+func parseSITXDate(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	if t, e := time.Parse(time.RFC3339, s); e == nil {
+		return t
+	}
+	if t, e := time.Parse("2006-01-02", s); e == nil {
+		return t
+	}
+	return time.Time{}
+}
+
 // isBankWireID reports whether an SI-TX party id denotes the bank party. The
 // bank publishes "employee-<N>" (the stable acting-employee wire identity);
 // clients publish "client-<N>". Anything without the employee- prefix is a
@@ -234,7 +250,19 @@ func (h *OTCOptionsHandler) counterRemoteNegotiation(
 		LastModifiedBy:  contractsitx.ForeignBankId{RoutingNumber: h.ownRouting, ID: hostedPartyID},
 	}
 	mirrorJSON, _ := json.Marshal(mirrorOffer)
-	if err := h.remoteNegOps.UpdateRemoteNegOffer(rc.row.RoutingNumber, rc.foreignID, string(mirrorJSON)); err != nil {
+	// Record the counter as a revision (full-history parity). The mover is the
+	// side WE host (this is our outbound counter); role + wire id come from the row.
+	role, wireID := remoteSideAtRouting(rc.row, h.ownRouting)
+	counterRev := &model.OTCNegotiationRevision{
+		Quantity:                qty,
+		StrikePrice:             strike,
+		Premium:                 premium,
+		SettlementDate:          settle,
+		Action:                  model.OTCNegotiationActionCounter,
+		ModifiedByPrincipalType: role,
+		RemoteActorWireID:       &wireID,
+	}
+	if err := h.remoteNegOps.UpdateRemoteNegOfferWithRevision(rc.row.RoutingNumber, rc.foreignID, string(mirrorJSON), counterRev); err != nil {
 		return nil, status.Errorf(codes.Internal, "mirror counter offer: %v", err)
 	}
 
@@ -317,10 +345,22 @@ func (h *OTCOptionsHandler) acceptRemoteNegotiation(
 		}
 	}
 
-	// Flip the local mirror to accepted (ongoing → accepted). The CAS serialises
-	// concurrent accepts so only one wins; a no-match is tolerated (the row may
-	// already be accepted via a peer-driven webhook).
-	if _, serr := h.remoteNegOps.CompareAndSetRemoteNegStatus(rc.row.RoutingNumber, rc.foreignID, "ongoing", "accepted"); serr != nil {
+	// Flip the local mirror to accepted (ongoing → accepted) AND record the ACCEPT
+	// revision atomically (full-history parity). The CAS serialises concurrent
+	// accepts so only one wins; a no-match is tolerated (the row may already be
+	// accepted via a peer-driven webhook) and records no duplicate revision. The
+	// acceptor is the side WE host (this is our outbound accept).
+	acceptRole, acceptWire := remoteSideAtRouting(rc.row, h.ownRouting)
+	acceptRev := &model.OTCNegotiationRevision{
+		Quantity:                decimal.NewFromInt(rc.offer.Amount),
+		StrikePrice:             rc.offer.PricePerStock,
+		Premium:                 rc.offer.Premium,
+		SettlementDate:          parseSITXDate(rc.offer.SettlementDate),
+		Action:                  model.OTCNegotiationActionAccept,
+		ModifiedByPrincipalType: acceptRole,
+		RemoteActorWireID:       &acceptWire,
+	}
+	if _, serr := h.remoteNegOps.CompareAndSetRemoteNegStatusWithRevision(rc.row.RoutingNumber, rc.foreignID, "ongoing", "accepted", acceptRev); serr != nil {
 		return nil, status.Errorf(codes.Internal, "mirror accept status: %v", serr)
 	}
 
@@ -394,7 +434,7 @@ func (h *OTCOptionsHandler) cascadeCancelRemoteSiblings(
 // the SI-TX DELETE terminal (spec §3.5). It relocates the gateway's
 // CancelPeerNegotiation → proxyPeerNegotiation(DELETE, "") + status mirror.
 func (h *OTCOptionsHandler) cancelRemoteNegotiation(
-	ctx context.Context, rc *remoteNegContext,
+	ctx context.Context, rc *remoteNegContext, recordReject bool,
 ) (*stockpb.OTCNegotiationResponse, error) {
 	resp, code, err := h.peerDispatch.Proxy(ctx, rc.counterpartyCode, rc.rid, rc.foreignID, "DELETE", "", nil)
 	if err != nil {
@@ -403,7 +443,25 @@ func (h *OTCOptionsHandler) cancelRemoteNegotiation(
 	if code < 200 || code >= 300 {
 		return nil, status.Errorf(codes.FailedPrecondition, "peer rejected cancel (%d): %s", code, string(resp))
 	}
-	if err := h.remoteNegOps.UpdateRemoteNegStatus(rc.row.RoutingNumber, rc.foreignID, "cancelled"); err != nil {
+	// A two-party REJECT records a terminal revision (full-history parity, same as
+	// the local RejectNegotiation); a bidder's own CANCEL does not (parity with
+	// local CancelNegotiation, which appends no revision). Both map to the SI-TX
+	// DELETE terminal, so the RPC that called us decides via recordReject.
+	if recordReject {
+		rejRole, rejWire := remoteSideAtRouting(rc.row, h.ownRouting)
+		rejectRev := &model.OTCNegotiationRevision{
+			Quantity:                decimal.NewFromInt(rc.offer.Amount),
+			StrikePrice:             rc.offer.PricePerStock,
+			Premium:                 rc.offer.Premium,
+			SettlementDate:          parseSITXDate(rc.offer.SettlementDate),
+			Action:                  model.OTCNegotiationActionReject,
+			ModifiedByPrincipalType: rejRole,
+			RemoteActorWireID:       &rejWire,
+		}
+		if _, serr := h.remoteNegOps.SetRemoteNegStatusWithRevision(rc.row.RoutingNumber, rc.foreignID, "cancelled", rejectRev); serr != nil {
+			return nil, status.Errorf(codes.Internal, "mirror cancel status: %v", serr)
+		}
+	} else if err := h.remoteNegOps.UpdateRemoteNegStatus(rc.row.RoutingNumber, rc.foreignID, "cancelled"); err != nil {
 		return nil, status.Errorf(codes.Internal, "mirror cancel status: %v", err)
 	}
 	updated, gerr := h.remoteNegOps.GetRemoteNegByID(rc.row.ID)

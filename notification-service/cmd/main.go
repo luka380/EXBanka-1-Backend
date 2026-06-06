@@ -8,6 +8,7 @@ import (
 
 	adminpb "github.com/exbanka/contract/adminpb"
 	"github.com/exbanka/contract/cronreg"
+	kafkamsg "github.com/exbanka/contract/kafka"
 	"github.com/exbanka/contract/metrics"
 	notifpb "github.com/exbanka/contract/notificationpb"
 	shared "github.com/exbanka/contract/shared"
@@ -36,7 +37,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to connect to database: %v", err)
 	}
-	if err := db.AutoMigrate(&model.MobileInboxItem{}, &model.GeneralNotification{}, &model.NotificationTemplate{}, &cronreg.CronPauseState{}, &model.AdminAuditLog{}, &model.BusinessAuditLog{}); err != nil {
+	if err := db.AutoMigrate(&model.MobileInboxItem{}, &model.GeneralNotification{}, &model.NotificationTemplate{}, &cronreg.CronPauseState{}, &model.AdminAuditLog{}, &model.BusinessAuditLog{}, &model.ProcessedMessage{}); err != nil {
 		log.Fatalf("failed to migrate: %v", err)
 	}
 	// Partial unique index for watchlist-alert (and any future) idempotency keys.
@@ -58,6 +59,9 @@ func main() {
 	templateRepo := repository.NewTemplateRepository(db)
 	adminAuditRepo := repository.NewAdminAuditLogRepository(db)
 	businessAuditRepo := repository.NewBusinessAuditLogRepository(db)
+	// Consumer-side idempotency: dedups Kafka at-least-once redeliveries by the
+	// per-message idempotency-key header. Passed to every consumer.
+	dedup := repository.NewProcessedMessageRepository(db)
 
 	// Template service (registry-backed render + admin CRUD)
 	templateSvc := service.NewTemplateService(templateRepo)
@@ -83,39 +87,42 @@ func main() {
 		"notification.watchlist-alert",
 		"admin.cron-action",
 		"admin.business-action",
+		kafkamsg.TopicNotificationDeadLetter,
 	)
 
-	// Kafka consumer (email events)
-	emailConsumer := consumer.NewEmailConsumer(cfg.KafkaBrokers, emailSender, producer, templateSvc)
-	defer emailConsumer.Close()
-
-	// Start consumers in background
+	// All consumers use manual-commit + bounded retry + dead-letter (the shared
+	// producer is the DeadLetterWriter). This replaces the prior auto-commit
+	// loop that silently dropped events on a transient DB/SMTP failure.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go emailConsumer.Start(ctx)
+
+	// Kafka consumer (email events)
+	emailConsumer := consumer.NewEmailConsumer(cfg.KafkaBrokers, emailSender, producer, templateSvc, producer, dedup)
+	defer emailConsumer.Close()
+	emailConsumer.Start(ctx)
 
 	// Verification consumer (challenge events → email or mobile inbox)
-	verificationConsumer := consumer.NewVerificationConsumer(cfg.KafkaBrokers, emailSender, producer, inboxRepo, templateSvc)
+	verificationConsumer := consumer.NewVerificationConsumer(cfg.KafkaBrokers, emailSender, producer, inboxRepo, templateSvc, producer, dedup)
 	verificationConsumer.Start(ctx)
 	defer verificationConsumer.Close()
 
 	// General notification consumer (persistent user notifications)
-	generalConsumer := consumer.NewGeneralNotificationConsumer(cfg.KafkaBrokers, notifRepo, templateSvc)
+	generalConsumer := consumer.NewGeneralNotificationConsumer(cfg.KafkaBrokers, notifRepo, templateSvc, producer, dedup)
 	generalConsumer.Start(ctx)
 	defer generalConsumer.Close()
 
 	// Watchlist alert consumer (persists daily price-move alerts to general_notifications)
-	watchlistAlertConsumer := consumer.NewWatchlistAlertConsumer(cfg.KafkaBrokers, notifRepo, templateSvc)
+	watchlistAlertConsumer := consumer.NewWatchlistAlertConsumer(cfg.KafkaBrokers, notifRepo, templateSvc, producer, dedup)
 	watchlistAlertConsumer.Start(ctx)
 	defer func() { _ = watchlistAlertConsumer.Close() }()
 
 	// Admin cron audit consumer (persists admin.cron-action events to admin_audit_logs)
-	adminAuditConsumer := consumer.NewAdminAuditConsumer(cfg.KafkaBrokers, db)
+	adminAuditConsumer := consumer.NewAdminAuditConsumer(cfg.KafkaBrokers, db, producer, dedup)
 	adminAuditConsumer.Start(ctx)
 	defer adminAuditConsumer.Close()
 
 	// Business audit consumer (persists admin.business-action events to business_audit_logs)
-	businessAuditConsumer := consumer.NewBusinessAuditConsumer(cfg.KafkaBrokers, db)
+	businessAuditConsumer := consumer.NewBusinessAuditConsumer(cfg.KafkaBrokers, db, producer, dedup)
 	businessAuditConsumer.Start(ctx)
 	defer businessAuditConsumer.Close()
 

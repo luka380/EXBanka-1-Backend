@@ -5,8 +5,9 @@ package notification;
 option go_package = "github.com/exbanka/contract/notificationpb;notificationpb";
 
 service NotificationService {
-  rpc SendEmail(SendEmailRequest) returns (SendEmailResponse);
-  rpc GetDeliveryStatus(GetDeliveryStatusRequest) returns (GetDeliveryStatusResponse);
+  // Email is delivered via the Kafka notification.send-email topic (consumed by
+  // EmailConsumer); there is no synchronous SendEmail RPC. Delivery status is
+  // signalled back via the notification.email-sent topic.
   rpc GetPendingMobileItems(GetPendingMobileRequest) returns (PendingMobileResponse);
   rpc AckMobileItem(AckMobileRequest) returns (AckMobileResponse);
 
@@ -31,27 +32,6 @@ service NotificationService {
   // usedLimit resets, order approve/reject, permission changes, manual tax
   // collection). Global, paginated, filterable. Gateway gates on admin.audit.view.
   rpc ListBusinessAuditLogs(ListBusinessAuditLogsRequest) returns (ListBusinessAuditLogsResponse);
-}
-
-message SendEmailRequest {
-  string to = 1;
-  string email_type = 2;
-  map<string, string> data = 3;
-}
-
-message SendEmailResponse {
-  bool success = 1;
-  string message = 2;
-}
-
-message GetDeliveryStatusRequest {
-  string message_id = 1;
-}
-
-message GetDeliveryStatusResponse {
-  string message_id = 1;
-  string status = 2;
-  string delivered_at = 3;
 }
 
 message GetPendingMobileRequest {

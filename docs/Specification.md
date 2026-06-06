@@ -150,7 +150,7 @@ Client (HTTP/JSON) → API Gateway (Gin, :8080)
 |---|---|
 | api-gateway | auth, user, client, account, card, transaction, credit, exchange, verification, notification, stock (StockExchange / Security / Order / Portfolio / OTC / Tax / SourceAdmin / **InvestmentFund** (Celina 4) / **OTCOptions** (Spec 2)) |
 | stock-service | account-service (debit/credit/reservations/bank-account), exchange-service (FX), user-service (employee names + actuary limits), client-service (client name resolution), **transaction-service (Spec 3 InterBankService for cross-bank Phase 3 + ReverseInterBankTransfer)** |
-| auth-service | user-service (employee lookup), client-service (client login) |
+| auth-service | user-service (employee lookup). NOTE: auth owns **all** credentials in its own `accounts` table (one row per principal, `principal_type` ∈ {employee, client}); it does **not** gRPC-call client-service for login. Client Accounts are provisioned by auth consuming the `client.client-created` Kafka event. |
 | user-service | auth-service (activation tokens) |
 | client-service | auth-service (activation tokens) |
 | card-service | account-service (account validation), client-service (client validation) |

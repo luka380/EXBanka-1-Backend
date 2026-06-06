@@ -203,7 +203,7 @@ The Notification Service has a PostgreSQL database (`notification_db`, port 5441
 - Middleware uses `system_type` to route to `AuthMiddleware` (employee) or `AnyAuthMiddleware` (client + employee).
 
 **Token types** (auth-service):
-- Access token: short-lived JWT (15 min), stateless validation. Claims include `user_id`, `roles []string`, `permissions []string`, and `system_type` (`employee` or `client`).
+- Access token: short-lived JWT (15 min), **ES256-signed (asymmetric)**. auth-service holds the private key and exposes the public keys via the `GetSigningKeys` gRPC (JWKS-style, with `kid` + rotation overlap). The **api-gateway verifies access tokens LOCALLY** (caching the public keys; no per-request `ValidateToken` hop) and consults two Redis denylists written by auth: `blacklist:sid:<sid>` (hard revocation — logout/revoke → gateway returns 401 `unauthorized`) and `user_revoked_at:<principal_id>` (per-user epoch vs the token's `iat` — claims changed/revoke-all → gateway returns 401 `token_expired` so the client silently refreshes). Redis key formats live in `contract/authredis`. Claims include `principal_id`, `principal_type`, `roles`, `permissions`, and `sid` (session id). `JWT_SECRET` is legacy (no longer signs); set `JWT_EC_PRIVATE_KEY`/`JWT_EC_KID` for a persistent key, else one is generated at startup.
 - Refresh token: long-lived (168h), stored in `auth_db` and revocable
 - Activation token: 24h, triggers email with activation link via Kafka → notification-service
 - Password reset token: 1h, triggers email with reset link via Kafka → notification-service
@@ -212,7 +212,9 @@ The Notification Service has a PostgreSQL database (`notification_db`, port 5441
 
 **Employee creation flow:** API Gateway → User service (create employee) → Auth service (create activation token) → Kafka → Notification service (send activation email).
 
-**Client login flow:** API Gateway (`POST /api/auth/client-login`) → Auth service (`ClientLogin` RPC) → Client service (`ValidateCredentials` RPC) → Auth service generates JWT with `role="client"` and issues refresh token. The client JWT is validated by `AnyAuthMiddleware` in the API Gateway for `/api/me/*` routes.
+**Client login flow:** Clients and employees share one unified login: API Gateway (`POST /api/v3/auth/login`) → Auth service (`Login` RPC). **Auth-service owns all credentials** in its own `accounts` table — every row carries a `principal_type` of `employee` or `client`, and `Login` looks the account up by email and verifies the password against that row's hash. There is **no** client-service `ValidateCredentials` hop (client-service stores only the client *profile*). A client's auth Account is provisioned asynchronously: client-service publishes `client.client-created` to Kafka and auth-service's `client_consumer` creates the corresponding Account. On success `Login` mints an ES256 JWT whose `principal_type`/`system_type` is `client` and issues a refresh token; the gateway verifies it locally and `AnyAuthMiddleware` admits it on `/api/me/*` routes.
+
+**Client (and employee) deactivation → force-refresh:** Disabling an account via `SetAccountStatus(active=false)` revokes all of that account's refresh sessions **and** bumps the per-principal revocation epoch (`user_revoked_at:<principal_id>` in Redis), so the gateway rejects the still-valid access token immediately (401 `token_expired`). This is principal-type-agnostic — client deactivation is fully covered by the same path as employee deactivation; there is no separate client claims-invalidation channel.
 
 **JMBG (Jedinstveni Matični Broj Građana):**
 - Unique 13-digit national identification number required for all employees

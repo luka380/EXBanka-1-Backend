@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"gorm.io/gorm"
 )
 
 // ---------------------------------------------------------------------------
@@ -90,16 +91,12 @@ func (m *mockClientRepo) Create(client *model.Client) error {
 	if m.createFn != nil {
 		return m.createFn(client)
 	}
-	// Check email uniqueness
+	// Simulate the real repo under gorm's TranslateError: a unique-constraint
+	// violation surfaces as the portable gorm.ErrDuplicatedKey sentinel (NOT a
+	// driver string that echoes the colliding email/JMBG).
 	for _, c := range m.clients {
-		if c.Email == client.Email {
-			return errors.New("UNIQUE constraint failed: clients.email")
-		}
-	}
-	// Check JMBG uniqueness
-	for _, c := range m.clients {
-		if c.JMBG == client.JMBG {
-			return errors.New("UNIQUE constraint failed: clients.jmbg")
+		if c.Email == client.Email || c.JMBG == client.JMBG {
+			return gorm.ErrDuplicatedKey
 		}
 	}
 	client.ID = m.nextID
@@ -129,10 +126,10 @@ func (m *mockClientRepo) GetByEmail(email string) (*model.Client, error) {
 }
 
 func (m *mockClientRepo) Update(client *model.Client) error {
-	// Check email uniqueness against other clients
+	// Email collision with another client → gorm.ErrDuplicatedKey (see Create).
 	for _, c := range m.clients {
 		if c.Email == client.Email && c.ID != client.ID {
-			return errors.New("UNIQUE constraint failed: clients.email")
+			return gorm.ErrDuplicatedKey
 		}
 	}
 	stored := *client
@@ -325,7 +322,9 @@ func TestCreateClient_DuplicateEmail(t *testing.T) {
 	c2.JMBG = "0201990710025" // different JMBG, same email
 	err := svc.CreateClient(context.Background(), c2)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "email")
+	// Maps to the 409 sentinel — and the clean message must NOT echo the email (PII).
+	assert.ErrorIs(t, err, ErrClientAlreadyExists)
+	assert.NotContains(t, err.Error(), "john@example.com")
 }
 
 func TestCreateClient_DuplicateJMBG(t *testing.T) {
@@ -339,7 +338,9 @@ func TestCreateClient_DuplicateJMBG(t *testing.T) {
 	c2.Email = "other@example.com" // different email, same JMBG
 	err := svc.CreateClient(context.Background(), c2)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "jmbg")
+	// Maps to the 409 sentinel — and the clean message must NOT echo the JMBG (PII).
+	assert.ErrorIs(t, err, ErrClientAlreadyExists)
+	assert.NotContains(t, err.Error(), "0101990710024")
 }
 
 func TestCreateClient_InvalidJMBG(t *testing.T) {
@@ -493,7 +494,9 @@ func TestUpdateClient_EmailUniquenessEnforced(t *testing.T) {
 		"email": "john@example.com",
 	}, 0)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "email")
+	// Maps to the 409 sentinel — clean message, no email echoed back.
+	assert.ErrorIs(t, err, ErrClientAlreadyExists)
+	assert.NotContains(t, err.Error(), "john@example.com")
 }
 
 func TestUpdateClient_JMBGImmutable(t *testing.T) {

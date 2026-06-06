@@ -19,8 +19,6 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	NotificationService_SendEmail_FullMethodName                = "/notification.NotificationService/SendEmail"
-	NotificationService_GetDeliveryStatus_FullMethodName        = "/notification.NotificationService/GetDeliveryStatus"
 	NotificationService_GetPendingMobileItems_FullMethodName    = "/notification.NotificationService/GetPendingMobileItems"
 	NotificationService_AckMobileItem_FullMethodName            = "/notification.NotificationService/AckMobileItem"
 	NotificationService_ListNotifications_FullMethodName        = "/notification.NotificationService/ListNotifications"
@@ -39,8 +37,9 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type NotificationServiceClient interface {
-	SendEmail(ctx context.Context, in *SendEmailRequest, opts ...grpc.CallOption) (*SendEmailResponse, error)
-	GetDeliveryStatus(ctx context.Context, in *GetDeliveryStatusRequest, opts ...grpc.CallOption) (*GetDeliveryStatusResponse, error)
+	// Email is delivered via the Kafka notification.send-email topic (consumed by
+	// EmailConsumer); there is no synchronous SendEmail RPC. Delivery status is
+	// signalled back via the notification.email-sent topic.
 	GetPendingMobileItems(ctx context.Context, in *GetPendingMobileRequest, opts ...grpc.CallOption) (*PendingMobileResponse, error)
 	AckMobileItem(ctx context.Context, in *AckMobileRequest, opts ...grpc.CallOption) (*AckMobileResponse, error)
 	// General notifications (persistent, read/unread, no expiry)
@@ -69,26 +68,6 @@ type notificationServiceClient struct {
 
 func NewNotificationServiceClient(cc grpc.ClientConnInterface) NotificationServiceClient {
 	return &notificationServiceClient{cc}
-}
-
-func (c *notificationServiceClient) SendEmail(ctx context.Context, in *SendEmailRequest, opts ...grpc.CallOption) (*SendEmailResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(SendEmailResponse)
-	err := c.cc.Invoke(ctx, NotificationService_SendEmail_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *notificationServiceClient) GetDeliveryStatus(ctx context.Context, in *GetDeliveryStatusRequest, opts ...grpc.CallOption) (*GetDeliveryStatusResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(GetDeliveryStatusResponse)
-	err := c.cc.Invoke(ctx, NotificationService_GetDeliveryStatus_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 func (c *notificationServiceClient) GetPendingMobileItems(ctx context.Context, in *GetPendingMobileRequest, opts ...grpc.CallOption) (*PendingMobileResponse, error) {
@@ -215,8 +194,9 @@ func (c *notificationServiceClient) ListBusinessAuditLogs(ctx context.Context, i
 // All implementations must embed UnimplementedNotificationServiceServer
 // for forward compatibility.
 type NotificationServiceServer interface {
-	SendEmail(context.Context, *SendEmailRequest) (*SendEmailResponse, error)
-	GetDeliveryStatus(context.Context, *GetDeliveryStatusRequest) (*GetDeliveryStatusResponse, error)
+	// Email is delivered via the Kafka notification.send-email topic (consumed by
+	// EmailConsumer); there is no synchronous SendEmail RPC. Delivery status is
+	// signalled back via the notification.email-sent topic.
 	GetPendingMobileItems(context.Context, *GetPendingMobileRequest) (*PendingMobileResponse, error)
 	AckMobileItem(context.Context, *AckMobileRequest) (*AckMobileResponse, error)
 	// General notifications (persistent, read/unread, no expiry)
@@ -247,12 +227,6 @@ type NotificationServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedNotificationServiceServer struct{}
 
-func (UnimplementedNotificationServiceServer) SendEmail(context.Context, *SendEmailRequest) (*SendEmailResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method SendEmail not implemented")
-}
-func (UnimplementedNotificationServiceServer) GetDeliveryStatus(context.Context, *GetDeliveryStatusRequest) (*GetDeliveryStatusResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method GetDeliveryStatus not implemented")
-}
 func (UnimplementedNotificationServiceServer) GetPendingMobileItems(context.Context, *GetPendingMobileRequest) (*PendingMobileResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetPendingMobileItems not implemented")
 }
@@ -308,42 +282,6 @@ func RegisterNotificationServiceServer(s grpc.ServiceRegistrar, srv Notification
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&NotificationService_ServiceDesc, srv)
-}
-
-func _NotificationService_SendEmail_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SendEmailRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(NotificationServiceServer).SendEmail(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: NotificationService_SendEmail_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(NotificationServiceServer).SendEmail(ctx, req.(*SendEmailRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _NotificationService_GetDeliveryStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(GetDeliveryStatusRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(NotificationServiceServer).GetDeliveryStatus(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: NotificationService_GetDeliveryStatus_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(NotificationServiceServer).GetDeliveryStatus(ctx, req.(*GetDeliveryStatusRequest))
-	}
-	return interceptor(ctx, in, info, handler)
 }
 
 func _NotificationService_GetPendingMobileItems_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -569,14 +507,6 @@ var NotificationService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "notification.NotificationService",
 	HandlerType: (*NotificationServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
-		{
-			MethodName: "SendEmail",
-			Handler:    _NotificationService_SendEmail_Handler,
-		},
-		{
-			MethodName: "GetDeliveryStatus",
-			Handler:    _NotificationService_GetDeliveryStatus_Handler,
-		},
 		{
 			MethodName: "GetPendingMobileItems",
 			Handler:    _NotificationService_GetPendingMobileItems_Handler,

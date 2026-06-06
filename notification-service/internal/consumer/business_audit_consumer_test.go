@@ -1,6 +1,7 @@
 package consumer
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -32,7 +33,7 @@ func TestBusinessAuditConsumer_HandleMessage_WritesRow(t *testing.T) {
 		Timestamp:       ts,
 	})
 
-	c.handleMessage(payload)
+	_ = c.handleMessage(context.Background(), payload)
 
 	var rows []model.BusinessAuditLog
 	if err := db.Find(&rows).Error; err != nil {
@@ -47,7 +48,7 @@ func TestBusinessAuditConsumer_HandleMessage_WritesRow(t *testing.T) {
 	}
 
 	// Malformed JSON is ignored (no panic, no row).
-	c.handleMessage([]byte("not json"))
+	_ = c.handleMessage(context.Background(), []byte("not json"))
 	var count int64
 	db.Model(&model.BusinessAuditLog{}).Count(&count)
 	if count != 1 {

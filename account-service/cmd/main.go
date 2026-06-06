@@ -35,6 +35,11 @@ func main() {
 
 	db, err := gorm.Open(postgres.Open(cfg.DSN()), &gorm.Config{
 		NowFunc: func() time.Time { return time.Now().UTC() },
+		// Translate driver-specific errors (e.g. Postgres unique-violation) into
+		// portable gorm sentinels (gorm.ErrDuplicatedKey) so the service layer can
+		// map a duplicate company registration/tax number to AlreadyExists (409)
+		// instead of leaking the raw constraint string (which contains the numbers).
+		TranslateError: true,
 	})
 	if err != nil {
 		log.Fatalf("failed to connect to database: %v", err)
@@ -111,15 +116,16 @@ func main() {
 	outgoingReservationRepo := repository.NewOutgoingReservationRepository(db)
 	idempRepo := repository.NewIdempotencyRepository(db)
 
-	accountService := service.NewAccountService(accountRepo, db, redisCache, changelogRepo)
+	accountService := service.NewAccountService(accountRepo, db, redisCache, changelogRepo).
+		WithEvents(producer).WithClientLookup(clientClient)
 	accountService.SetBankRepo(bankRepo)
 	companyService := service.NewCompanyService(companyRepo)
 	currencyService := service.NewCurrencyService(currencyRepo)
 	ledgerService := service.NewLedgerService(ledgerRepo, db)
 	changelogSvc := service.NewChangelogService(changelogRepo)
 	reservationService := service.NewReservationService(db, accountRepo, reservationRepo, ledgerRepo).WithCache(redisCache)
-	incomingReservationService := service.NewIncomingReservationService(db, accountRepo, incomingReservationRepo)
-	outgoingReservationService := service.NewOutgoingReservationService(db, accountRepo, outgoingReservationRepo)
+	incomingReservationService := service.NewIncomingReservationService(db, accountRepo, incomingReservationRepo).WithCache(redisCache)
+	outgoingReservationService := service.NewOutgoingReservationService(db, accountRepo, outgoingReservationRepo).WithCache(redisCache)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -207,8 +213,8 @@ func main() {
 	reconcileSvc.CheckAllBalances(ctx)
 
 	reservationHandler := handler.NewReservationHandler(reservationService)
-	grpcHandler := handler.NewAccountGRPCHandler(accountService, companyService, currencyService, ledgerService, reservationHandler, incomingReservationService, outgoingReservationService, producer, clientClient, db, idempRepo, changelogSvc)
-	bankAccountHandler := handler.NewBankAccountGRPCHandler(accountService, producer)
+	grpcHandler := handler.NewAccountGRPCHandler(accountService, companyService, currencyService, ledgerService, reservationHandler, incomingReservationService, outgoingReservationService, db, idempRepo, changelogSvc)
+	bankAccountHandler := handler.NewBankAccountGRPCHandler(accountService)
 
 	markReady, addReadinessCheck, metricsShutdown := metrics.StartMetricsServer(cfg.MetricsPort)
 	defer func() { _ = metricsShutdown(context.Background()) }()

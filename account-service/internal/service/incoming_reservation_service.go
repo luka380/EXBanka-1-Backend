@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/exbanka/account-service/internal/cache"
 	"github.com/exbanka/account-service/internal/model"
 	"github.com/exbanka/account-service/internal/repository"
 	shared "github.com/exbanka/contract/shared"
@@ -34,6 +35,7 @@ type IncomingReservationService struct {
 	db          *gorm.DB
 	accountRepo *repository.AccountRepository
 	resRepo     *repository.IncomingReservationRepository
+	cache       *cache.RedisCache // optional; invalidated after the commit credit
 }
 
 func NewIncomingReservationService(
@@ -42,6 +44,15 @@ func NewIncomingReservationService(
 	resRepo *repository.IncomingReservationRepository,
 ) *IncomingReservationService {
 	return &IncomingReservationService{db: db, accountRepo: accountRepo, resRepo: resRepo}
+}
+
+// WithCache wires the shared account Redis cache so CommitIncoming (the only
+// balance-mutating step) evicts the cached account, keeping GetAccount reads
+// fresh. ReserveIncoming/ReleaseIncoming don't touch the balance, so they need
+// no eviction. Returns the service for chaining.
+func (s *IncomingReservationService) WithCache(c *cache.RedisCache) *IncomingReservationService {
+	s.cache = c
+	return s
 }
 
 // ReserveIncoming creates a pending credit reservation. Idempotent on
@@ -169,6 +180,10 @@ func (s *IncomingReservationService) CommitIncoming(ctx context.Context, key, me
 		out = &acct
 		return nil
 	})
+	if err == nil && out != nil {
+		// Credit applied → drop the stale cached account (both keys).
+		evictAccountCache(s.cache, out.ID, out.AccountNumber)
+	}
 	return out, err
 }
 

@@ -393,6 +393,40 @@ func TestRoleService_UpdateRolePermissions_PublishesEvent(t *testing.T) {
 	}
 }
 
+// spyEvictor records the cache keys RoleService evicts on a role-perm change.
+type spyEvictor struct {
+	deleted []string
+}
+
+func (s *spyEvictor) Delete(_ context.Context, key string) error {
+	s.deleted = append(s.deleted, key)
+	return nil
+}
+
+// TestRoleService_UpdateRolePermissions_EvictsAffectedEmployeeCaches: changing a
+// role's permissions must evict the cached record of every employee holding it
+// (so GetEmployee no longer returns the stale resolved-permission set).
+func TestRoleService_UpdateRolePermissions_EvictsAffectedEmployeeCaches(t *testing.T) {
+	roleRepo := newMockRoleRepo()
+	permRepo := newMockPermRepo()
+	role := &model.Role{Name: "EmployeeAgent"}
+	if err := roleRepo.Create(role); err != nil {
+		t.Fatalf("create role: %v", err)
+	}
+	if err := permRepo.Create(&model.Permission{Code: "clients.read.all"}); err != nil {
+		t.Fatalf("create perm: %v", err)
+	}
+	roleRepo.employeesByRole[role.ID] = []int64{42, 43}
+
+	ev := &spyEvictor{}
+	svc := NewRoleService(roleRepo, permRepo).WithCache(ev)
+
+	if err := svc.UpdateRolePermissions(role.ID, []string{"clients.read.all"}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	assert.ElementsMatch(t, []string{"employee:id:42", "employee:id:43"}, ev.deleted)
+}
+
 func TestRoleService_UpdateRolePermissions_KafkaFailureDoesNotFailUpdate(t *testing.T) {
 	roleRepo := newMockRoleRepo()
 	permRepo := newMockPermRepo()

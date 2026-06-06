@@ -112,6 +112,9 @@ func (s *stubAuthClient) Login(_ context.Context, in *authpb.LoginRequest, _ ...
 	}
 	return &authpb.LoginResponse{}, nil
 }
+func (s *stubAuthClient) GetSigningKeys(_ context.Context, _ *authpb.GetSigningKeysRequest, _ ...grpc.CallOption) (*authpb.GetSigningKeysResponse, error) {
+	return &authpb.GetSigningKeysResponse{}, nil
+}
 func (s *stubAuthClient) ValidateToken(_ context.Context, in *authpb.ValidateTokenRequest, _ ...grpc.CallOption) (*authpb.ValidateTokenResponse, error) {
 	if s.validateTokenFn != nil {
 		return s.validateTokenFn(in)
@@ -165,9 +168,6 @@ func (s *stubAuthClient) GetAccountStatusBatch(_ context.Context, in *authpb.Get
 		return s.getStatusBatchFn(in)
 	}
 	return &authpb.GetAccountStatusBatchResponse{}, nil
-}
-func (s *stubAuthClient) CreateAccount(_ context.Context, _ *authpb.CreateAccountRequest, _ ...grpc.CallOption) (*authpb.CreateAccountResponse, error) {
-	return &authpb.CreateAccountResponse{}, nil
 }
 func (s *stubAuthClient) ResendActivationEmail(_ context.Context, in *authpb.ResendActivationEmailRequest, _ ...grpc.CallOption) (*authpb.ResendActivationEmailResponse, error) {
 	if s.resendActivationFn != nil {
@@ -922,12 +922,6 @@ type stubNotificationClient struct {
 	listBusinessAuditFn func(*notificationpb.ListBusinessAuditLogsRequest) (*notificationpb.ListBusinessAuditLogsResponse, error)
 }
 
-func (s *stubNotificationClient) SendEmail(_ context.Context, _ *notificationpb.SendEmailRequest, _ ...grpc.CallOption) (*notificationpb.SendEmailResponse, error) {
-	return &notificationpb.SendEmailResponse{}, nil
-}
-func (s *stubNotificationClient) GetDeliveryStatus(_ context.Context, _ *notificationpb.GetDeliveryStatusRequest, _ ...grpc.CallOption) (*notificationpb.GetDeliveryStatusResponse, error) {
-	return &notificationpb.GetDeliveryStatusResponse{}, nil
-}
 func (s *stubNotificationClient) GetPendingMobileItems(_ context.Context, in *notificationpb.GetPendingMobileRequest, _ ...grpc.CallOption) (*notificationpb.PendingMobileResponse, error) {
 	if s.pendingFn != nil {
 		return s.pendingFn(in)

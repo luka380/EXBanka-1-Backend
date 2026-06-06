@@ -3,21 +3,17 @@ package handler
 import (
 	"context"
 	"errors"
-	"log"
 
 	"github.com/shopspring/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"gorm.io/gorm"
 
-	kafkaprod "github.com/exbanka/account-service/internal/kafka"
 	"github.com/exbanka/account-service/internal/model"
 	"github.com/exbanka/account-service/internal/repository"
 	"github.com/exbanka/account-service/internal/service"
 	pb "github.com/exbanka/contract/accountpb"
 	"github.com/exbanka/contract/changelog"
-	clientpb "github.com/exbanka/contract/clientpb"
-	kafkamsg "github.com/exbanka/contract/kafka"
 )
 
 // accountSvcFacade is the subset of *service.AccountService used by AccountGRPCHandler.
@@ -51,16 +47,6 @@ type ledgerSvcFacade interface {
 	GetLedgerEntries(accountNumber string, page, pageSize int) ([]model.LedgerEntry, int64, error)
 }
 
-// accountProducer is the subset of *kafkaprod.Producer used by AccountGRPCHandler.
-type accountProducer interface {
-	PublishAccountCreated(ctx context.Context, msg kafkamsg.AccountCreatedMessage) error
-	PublishAccountStatusChanged(ctx context.Context, msg kafkaprod.AccountStatusChangedMsg) error
-	PublishAccountNameUpdated(ctx context.Context, msg kafkamsg.AccountNameUpdatedMessage) error
-	PublishAccountLimitsUpdated(ctx context.Context, msg kafkamsg.AccountLimitsUpdatedMessage) error
-	PublishGeneralNotification(ctx context.Context, msg kafkamsg.GeneralNotificationMessage) error
-	SendEmail(ctx context.Context, msg kafkamsg.SendEmailMessage) error
-}
-
 type AccountGRPCHandler struct {
 	pb.UnimplementedAccountServiceServer
 	accountService      accountSvcFacade
@@ -70,8 +56,6 @@ type AccountGRPCHandler struct {
 	reservation         *ReservationHandler
 	incomingReservation *service.IncomingReservationService
 	outgoingReservation *service.OutgoingReservationService
-	producer            accountProducer
-	clientClient        clientpb.ClientServiceClient
 	changelogService    *service.ChangelogService
 	// db + idem wire saga-step idempotency for handlers that follow the
 	// IdempotencyRepository.Run pattern (UpdateBalance is the lighthouse
@@ -88,8 +72,6 @@ func NewAccountGRPCHandler(
 	reservation *ReservationHandler,
 	incomingReservation *service.IncomingReservationService,
 	outgoingReservation *service.OutgoingReservationService,
-	producer *kafkaprod.Producer,
-	clientClient clientpb.ClientServiceClient,
 	db *gorm.DB,
 	idem *repository.IdempotencyRepository,
 	changelogService *service.ChangelogService,
@@ -102,8 +84,6 @@ func NewAccountGRPCHandler(
 		reservation:         reservation,
 		incomingReservation: incomingReservation,
 		outgoingReservation: outgoingReservation,
-		producer:            producer,
-		clientClient:        clientClient,
 		changelogService:    changelogService,
 		db:                  db,
 		idem:                idem,
@@ -453,47 +433,8 @@ func (h *AccountGRPCHandler) CreateAccount(ctx context.Context, req *pb.CreateAc
 	if err := h.accountService.CreateAccount(account); err != nil {
 		return nil, err
 	}
-
-	_ = h.producer.PublishAccountCreated(ctx, kafkamsg.AccountCreatedMessage{
-		AccountNumber: account.AccountNumber,
-		OwnerID:       account.OwnerID,
-		AccountKind:   account.AccountKind,
-		CurrencyCode:  account.CurrencyCode,
-	})
-
-	// In-app notification (rendered downstream via the push template registry).
-	// Skip for bank-owned accounts — they have no human recipient.
-	if !account.IsBankAccount && account.OwnerID != 1_000_000_000 {
-		_ = h.producer.PublishGeneralNotification(ctx, kafkamsg.GeneralNotificationMessage{
-			UserID:  account.OwnerID,
-			Type:    "ACCOUNT_OPENED",
-			Data:    map[string]string{"account_number": account.AccountNumber, "currency": account.CurrencyCode},
-			RefType: "account",
-			RefID:   account.ID,
-		})
-	}
-
-	// Send email notification to account owner.
-	if h.clientClient != nil && h.producer != nil {
-		clientResp, clientErr := h.clientClient.GetClient(ctx, &clientpb.GetClientRequest{Id: account.OwnerID})
-		if clientErr == nil {
-			emailErr := h.producer.SendEmail(ctx, kafkamsg.SendEmailMessage{
-				To:        clientResp.Email,
-				EmailType: kafkamsg.EmailTypeAccountCreated,
-				Data: map[string]string{
-					"account_number": account.AccountNumber,
-					"account_name":   account.AccountName,
-					"currency":       account.CurrencyCode,
-				},
-			})
-			if emailErr != nil {
-				log.Printf("warn: failed to send account creation email to %s: %v", clientResp.Email, emailErr)
-			}
-		} else {
-			log.Printf("warn: failed to fetch client %d for account creation email: %v", account.OwnerID, clientErr)
-		}
-	}
-
+	// Events (account-created + in-app notification + welcome email) are published
+	// by the service layer (see AccountService.emitAccountCreated).
 	return toAccountResponse(account), nil
 }
 
@@ -565,27 +506,7 @@ func (h *AccountGRPCHandler) UpdateAccountName(ctx context.Context, req *pb.Upda
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to fetch updated account: %v", err)
 	}
-
-	// Domain audit event — fires regardless of ownership (bank-owned accounts
-	// still get an entry on the changelog channel).
-	_ = h.producer.PublishAccountNameUpdated(ctx, kafkamsg.AccountNameUpdatedMessage{
-		AccountID:     account.ID,
-		AccountNumber: account.AccountNumber,
-		NewName:       account.AccountName,
-	})
-
-	// In-app notification (rendered downstream via the push template registry).
-	// Skip for bank-owned accounts — they have no human recipient.
-	if !account.IsBankAccount && account.OwnerID != 1_000_000_000 {
-		_ = h.producer.PublishGeneralNotification(ctx, kafkamsg.GeneralNotificationMessage{
-			UserID:  account.OwnerID,
-			Type:    "ACCOUNT_NAME_UPDATED",
-			Data:    map[string]string{"account_number": account.AccountNumber, "new_name": account.AccountName},
-			RefType: "account",
-			RefID:   account.ID,
-		})
-	}
-
+	// Domain event + notification published by the service layer.
 	return toAccountResponse(account), nil
 }
 
@@ -602,28 +523,7 @@ func (h *AccountGRPCHandler) UpdateAccountLimits(ctx context.Context, req *pb.Up
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to fetch updated account: %v", err)
 	}
-
-	// Domain audit event — fires regardless of ownership (bank-owned accounts
-	// still get an entry on the changelog channel).
-	_ = h.producer.PublishAccountLimitsUpdated(ctx, kafkamsg.AccountLimitsUpdatedMessage{
-		AccountID:     account.ID,
-		AccountNumber: account.AccountNumber,
-		DailyLimit:    account.DailyLimit.StringFixed(2),
-		MonthlyLimit:  account.MonthlyLimit.StringFixed(2),
-	})
-
-	// In-app notification (rendered downstream via the push template registry).
-	// Skip for bank-owned accounts — they have no human recipient.
-	if !account.IsBankAccount && account.OwnerID != 1_000_000_000 {
-		_ = h.producer.PublishGeneralNotification(ctx, kafkamsg.GeneralNotificationMessage{
-			UserID:  account.OwnerID,
-			Type:    "ACCOUNT_LIMITS_UPDATED",
-			Data:    map[string]string{"account_number": account.AccountNumber, "daily_limit": account.DailyLimit.StringFixed(2), "monthly_limit": account.MonthlyLimit.StringFixed(2)},
-			RefType: "account",
-			RefID:   account.ID,
-		})
-	}
-
+	// Domain event + notification published by the service layer.
 	return toAccountResponse(account), nil
 }
 
@@ -640,24 +540,7 @@ func (h *AccountGRPCHandler) UpdateAccountStatus(ctx context.Context, req *pb.Up
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to fetch updated account: %v", err)
 	}
-
-	_ = h.producer.PublishAccountStatusChanged(ctx, kafkaprod.AccountStatusChangedMsg{
-		AccountNumber: account.AccountNumber,
-		Status:        account.Status,
-	})
-
-	// In-app notification (rendered downstream via the push template registry).
-	// Skip for bank-owned accounts — they have no human recipient.
-	if !account.IsBankAccount && account.OwnerID != 1_000_000_000 {
-		_ = h.producer.PublishGeneralNotification(ctx, kafkamsg.GeneralNotificationMessage{
-			UserID:  account.OwnerID,
-			Type:    "ACCOUNT_STATUS_CHANGED",
-			Data:    map[string]string{"account_number": account.AccountNumber, "new_status": account.Status},
-			RefType: "account",
-			RefID:   account.ID,
-		})
-	}
-
+	// Domain event + notification published by the service layer.
 	return toAccountResponse(account), nil
 }
 

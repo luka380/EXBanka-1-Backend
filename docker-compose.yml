@@ -321,6 +321,11 @@ services:
       USER_GRPC_ADDR: "user-service:50052"
       KAFKA_BROKERS: kafka:9092
       JWT_SECRET: docker-test-secret-change-me
+      # Access tokens are signed with ES256. Set JWT_EC_PRIVATE_KEY to a PEM
+      # ECDSA P-256 key (with JWT_EC_KID) to keep tokens valid across restarts;
+      # left unset, auth-service generates an ephemeral key at startup (dev).
+      JWT_EC_PRIVATE_KEY: "${JWT_EC_PRIVATE_KEY:-}"
+      JWT_EC_KID: "${JWT_EC_KID:-}"
       JWT_ACCESS_EXPIRY: 15m
       JWT_REFRESH_EXPIRY: 168h
       REDIS_ADDR: redis:6379
@@ -688,6 +693,9 @@ services:
       REDIS_ADDR: "redis:6379"
       OWN_BANK_CODE: "${OWN_BANK_CODE:-111}"
       OWN_BANK_NAME: "${OWN_BANK_NAME:-EXBanka}"
+      RATE_LIMIT_GLOBAL_PER_MIN: "${RATE_LIMIT_GLOBAL_PER_MIN:-3000}"
+      RATE_LIMIT_LOGIN_PER_5MIN: "${RATE_LIMIT_LOGIN_PER_5MIN:-20}"
+      RATE_LIMIT_RESET_PER_5MIN: "${RATE_LIMIT_RESET_PER_5MIN:-5}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
@@ -750,6 +758,67 @@ services:
         condition: service_started
     restart: on-failure
 
+  interbank-db:
+    image: postgres:17-alpine
+    environment:
+      TZ: UTC
+      POSTGRES_DB: interbankdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5443:5432"
+    volumes:
+      - interbank-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Cross-bank SI-TX settlement engine. DORMANT: it runs (ready to serve the
+  # whole /cross-bank-protocol surface) but nothing routes to it yet — the
+  # api-gateway still points its peer clients at transaction-service / stock-service
+  # until the integration cutover (see docs/superpowers/plans/2026-06-06-interbank-*).
+  interbank-service:
+    build:
+      context: .
+      dockerfile: interbank-service/Dockerfile
+    environment:
+      TZ: UTC
+      INTERBANK_DB_HOST: interbank-db
+      INTERBANK_DB_PORT: "5432"
+      INTERBANK_DB_USER: postgres
+      INTERBANK_DB_PASSWORD: postgres
+      INTERBANK_DB_NAME: interbankdb
+      INTERBANK_GRPC_ADDR: ":50062"
+      INTERBANK_METRICS_PORT: "9108"
+      ACCOUNT_GRPC_ADDR: "account-service:50055"
+      STOCK_GRPC_ADDR: "stock-service:50060"
+      CLIENT_GRPC_ADDR: "client-service:50054"
+      USER_GRPC_ADDR: "user-service:50052"
+      OWN_BANK_CODE: "${OWN_BANK_CODE:-111}"
+      OWN_BANK_DISPLAY_NAME: "${OWN_BANK_DISPLAY_NAME:-EXBanka}"
+      SITX_RECEIVE_SYNC_DEADLINE: "${SITX_RECEIVE_SYNC_DEADLINE:-5s}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "50062:50062"
+      - "9108:9108"
+    depends_on:
+      interbank-db:
+        condition: service_healthy
+      account-service:
+        condition: service_started
+      client-service:
+        condition: service_started
+      user-service:
+        condition: service_started
+      # stock-service intentionally NOT a hard dep: at integration stock-service
+      # depends on interbank-service (cross-bank egress via ProxyToPeer), so a
+      # hard dep here would cycle. The stock gRPC client (OTC forwarding + option
+      # legs) is lazy/best-effort at startup.
+    restart: on-failure
+
 volumes:
   user_db_data:
   auth_db_data:
@@ -764,5 +833,6 @@ volumes:
   influxdb_data:
   verification-db-data:
   notification-db-data:
+  interbank-db-data:
   prometheus_data:
   grafana_data:

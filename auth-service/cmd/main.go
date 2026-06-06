@@ -78,7 +78,27 @@ func main() {
 	loginAttemptRepo := repository.NewLoginAttemptRepository(db)
 	accountRepo := repository.NewAccountRepository(db)
 	totpRepo := repository.NewTOTPRepository(db)
-	jwtService := service.NewJWTService(cfg.JWTSecret, cfg.AccessExpiry)
+	// Access tokens are signed with ES256 (asymmetric): the private key lives
+	// here; the gateway fetches the public half via GetSigningKeys and verifies
+	// locally. A configured PEM key persists across restarts; otherwise a fresh
+	// ephemeral key is generated (dev only — restart invalidates live tokens).
+	var signingKey *service.SigningKey
+	if cfg.JWTECPrivateKey != "" {
+		k, kerr := service.LoadSigningKeyFromPEM(cfg.JWTECKid, cfg.JWTECPrivateKey)
+		if kerr != nil {
+			log.Fatalf("failed to load JWT ES256 signing key: %v", kerr)
+		}
+		signingKey = k
+	} else {
+		k, kerr := service.GenerateSigningKey()
+		if kerr != nil {
+			log.Fatalf("failed to generate JWT ES256 signing key: %v", kerr)
+		}
+		log.Printf("warn: JWT_EC_PRIVATE_KEY unset — generated ephemeral ES256 key kid=%s (tokens will not survive a restart)", k.Kid)
+		signingKey = k
+	}
+	keyManager := service.NewKeyManager(signingKey)
+	jwtService := service.NewJWTService(keyManager, cfg.AccessExpiry)
 	totpSvc := service.NewTOTPService()
 	authService := service.NewAuthService(tokenRepo, sessionRepo, loginAttemptRepo, totpRepo, totpSvc, jwtService, accountRepo, userClient, producer, redisCache, cfg.RefreshExpiry, cfg.MobileRefreshExpiry, cfg.FrontendBaseURL, cfg.PasswordPepper)
 

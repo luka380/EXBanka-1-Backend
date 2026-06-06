@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"time"
 
 	notifpb "github.com/exbanka/contract/notificationpb"
@@ -72,36 +71,6 @@ func NewGRPCHandler(emailSender *sender.EmailSender, inboxRepo *repository.Mobil
 // dependencies for use in unit tests.
 func newGRPCHandlerForTest(emailSender emailSenderFacade, inboxRepo inboxRepoFacade, notifRepo notifRepoFacade, templateSvc templateServiceFacade) *GRPCHandler {
 	return &GRPCHandler{emailSender: emailSender, inboxRepo: inboxRepo, notifRepo: notifRepo, templateSvc: templateSvc}
-}
-
-func (h *GRPCHandler) SendEmail(ctx context.Context, req *notifpb.SendEmailRequest) (*notifpb.SendEmailResponse, error) {
-	if req.To == "" {
-		return nil, fmt.Errorf("SendEmail: recipient required: %w", service.ErrInvalidEmailRequest)
-	}
-
-	subject, body, err := h.templateSvc.Render(req.EmailType, "email", req.Data)
-	if err != nil {
-		return &notifpb.SendEmailResponse{Success: false, Message: err.Error()}, nil
-	}
-
-	if err := h.emailSender.Send(req.To, subject, body); err != nil {
-		log.Printf("gRPC SendEmail failed for %s: %v", req.To, err)
-		return &notifpb.SendEmailResponse{
-			Success: false,
-			Message: err.Error(),
-		}, nil
-	}
-
-	log.Printf("gRPC SendEmail succeeded for %s", req.To)
-	return &notifpb.SendEmailResponse{
-		Success: true,
-		Message: "email sent",
-	}, nil
-}
-
-func (h *GRPCHandler) GetDeliveryStatus(ctx context.Context, req *notifpb.GetDeliveryStatusRequest) (*notifpb.GetDeliveryStatusResponse, error) {
-	// Placeholder — will be backed by a database or Redis in a future iteration
-	return nil, service.ErrDeliveryStatusUnimplemented
 }
 
 func (h *GRPCHandler) GetPendingMobileItems(ctx context.Context, req *notifpb.GetPendingMobileRequest) (*notifpb.PendingMobileResponse, error) {

@@ -148,7 +148,7 @@ func TestCreateAccount_DuplicateNameForSameOwner(t *testing.T) {
 	}
 	err := svc.CreateAccount(second)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "already exists")
+	assert.ErrorIs(t, err, ErrAccountNameDuplicate)
 }
 
 func TestCreateAccount_MaintenanceFeeByType(t *testing.T) {
@@ -305,7 +305,7 @@ func TestUpdateAccountName_DuplicateForSameClient(t *testing.T) {
 	// Try to rename second to same name as first.
 	err := svc.UpdateAccountName(second.ID, 42, "Alpha", 0)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "already exists")
+	assert.ErrorIs(t, err, ErrAccountNameDuplicate)
 }
 
 // ---------------------------------------------------------------------------
@@ -522,7 +522,9 @@ func TestUpdateBalance_InsufficientFunds(t *testing.T) {
 
 	err := svc.UpdateBalance("111000100000003011", decimal.NewFromInt(-200), true)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "insufficient funds")
+	// Coded sentinel (FailedPrecondition→409), not a raw 500 leaking the balance.
+	assert.ErrorIs(t, err, ErrInsufficientBalance)
+	assert.NotContains(t, err.Error(), "111000100000003011", "must not leak the account number")
 }
 
 func TestUpdateBalance_NotFound(t *testing.T) {
@@ -532,6 +534,23 @@ func TestUpdateBalance_NotFound(t *testing.T) {
 
 	err := svc.UpdateBalance("000000000000000000", decimal.NewFromInt(100), true)
 	assert.Error(t, err)
+	// Coded sentinel (404), not a raw gorm error → 500.
+	assert.ErrorIs(t, err, ErrAccountNotFound)
+}
+
+func TestUpdateBalance_SpendingLimitExceeded(t *testing.T) {
+	db := newTestDB(t)
+	repo := repository.NewAccountRepository(db)
+	svc := NewAccountService(repo, db, nil)
+
+	// Plenty of balance, but a low daily limit.
+	seedAccount(t, db, "111000100000009011", decimal.NewFromInt(1_000_000), decimal.NewFromInt(500))
+
+	err := svc.UpdateBalance("111000100000009011", decimal.NewFromInt(-600), true)
+	require.Error(t, err)
+	// Maps to ResourceExhausted (429), not a 500 leaking the account number/limits.
+	assert.ErrorIs(t, err, ErrSpendingLimitExceeded)
+	assert.NotContains(t, err.Error(), "111000100000009011", "must not leak the account number")
 }
 
 // ---------------------------------------------------------------------------
@@ -665,7 +684,7 @@ func TestCreateBankAccount_DuplicateName(t *testing.T) {
 
 	_, err = svc.CreateBankAccount("EUR", "foreign", "Bank Main", decimal.Zero)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "already exists")
+	assert.ErrorIs(t, err, ErrAccountNameDuplicate)
 }
 
 func TestListBankAccounts(t *testing.T) {

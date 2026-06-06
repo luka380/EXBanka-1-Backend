@@ -11,8 +11,13 @@ type ForeignBankId struct {
 	ID            string `json:"id"`
 }
 
-// OtcOffer is the in-flight SI-TX offer body. Sent on POST /negotiations
-// (initial offer) and PUT /negotiations/{rid}/{id} (counter-offers).
+// OtcOffer is the INTERNAL flat mirror of an OTC offer (stored in
+// RemoteOfferJSON, carried over gRPC). It is NOT the SI-TX wire shape: the spec
+// OtcOffer (§8) nests stock/pricePerUnit/premium and carries buyerId + sellerId.
+// The wire↔internal translation lives at the api-gateway boundary
+// (peerOtcOfferReq/offerReqToProto inbound, protoOfferToJSON outbound) and in
+// stock-service's outbound offer map. Do NOT marshal this struct straight to a
+// peer — that would emit the non-conformant flat dialect.
 type OtcOffer struct {
 	Ticker          string          `json:"ticker"`
 	Amount          int64           `json:"amount"`
@@ -46,15 +51,12 @@ type OtcOffer struct {
 	BuyerAccountNumber string `json:"buyerAccountNumber,omitempty"`
 }
 
-// OtcNegotiation is the full negotiation record (offer + meta).
-type OtcNegotiation struct {
-	ID        ForeignBankId `json:"id"`
-	BuyerID   ForeignBankId `json:"buyerId"`
-	SellerID  ForeignBankId `json:"sellerId"`
-	Offer     OtcOffer      `json:"offer"`
-	Status    string        `json:"status"` // ongoing | accepted | cancelled | expired
-	UpdatedAt string        `json:"updatedAt"`
-}
+// (Removed) The former `OtcNegotiation` struct was a non-conformant, unused
+// mirror shape ({id,buyerId,sellerId,offer,status,updatedAt}). The SI-TX wire
+// GET /negotiations/{rn}/{id} response is `OtcOffer & { isOngoing }` (§8.4),
+// which the api-gateway composes inline (protoOfferToJSON + isOngoing); the
+// reconciler reads only {isOngoing}. Keeping a divergent typed struct invited
+// emitting the wrong shape, so it was deleted (2026-06-06 spec-purity pass).
 
 // OptionDescription is the §2.7.2 option asset payload (asset Type "OPTION").
 // Spec shape: nested stock + pricePerUnit, no internal "intent" field — the

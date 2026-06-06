@@ -94,7 +94,10 @@ func (h *UserGRPCHandler) CreateEmployee(ctx context.Context, req *pb.CreateEmpl
 func (h *UserGRPCHandler) GetEmployee(ctx context.Context, req *pb.GetEmployeeRequest) (*pb.EmployeeResponse, error) {
 	emp, err := h.empService.GetEmployee(req.Id)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "employee not found")
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, service.ErrEmployeeNotFound
+		}
+		return nil, err
 	}
 	return toEmployeeResponse(emp, h.empService), nil
 }
@@ -105,7 +108,7 @@ func (h *UserGRPCHandler) ListEmployeeFullNames(ctx context.Context, req *pb.Lis
 	}
 	rows, err := h.empService.GetByIDs(req.EmployeeIds)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "list employees: %v", err)
+		return nil, status.Error(codes.Internal, "failed to list employees")
 	}
 	out := make(map[int64]string, len(rows))
 	for _, e := range rows {
@@ -182,7 +185,10 @@ func (h *UserGRPCHandler) ListRoles(ctx context.Context, req *pb.ListRolesReques
 func (h *UserGRPCHandler) GetRole(ctx context.Context, req *pb.GetRoleRequest) (*pb.RoleResponse, error) {
 	role, err := h.roleSvc.GetRole(req.Id)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "role not found")
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, service.ErrRoleNotFound
+		}
+		return nil, err
 	}
 	return toRoleResponse(role), nil
 }
@@ -203,7 +209,7 @@ func (h *UserGRPCHandler) UpdateRolePermissions(ctx context.Context, req *pb.Upd
 	}
 	role, err := h.roleSvc.GetRole(req.RoleId)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "role not found after update")
+		return nil, service.ErrRoleNotFound
 	}
 	return toRoleResponse(role), nil
 }
@@ -253,7 +259,7 @@ func (h *UserGRPCHandler) SetEmployeeRoles(ctx context.Context, req *pb.SetEmplo
 	}
 	emp, err := h.empService.GetEmployee(req.EmployeeId)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "employee not found")
+		return nil, service.ErrEmployeeNotFound
 	}
 	return toEmployeeResponse(emp, h.empService), nil
 }
@@ -266,7 +272,7 @@ func (h *UserGRPCHandler) SetEmployeeAdditionalPermissions(ctx context.Context, 
 	}
 	emp, err := h.empService.GetEmployee(req.EmployeeId)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "employee not found")
+		return nil, service.ErrEmployeeNotFound
 	}
 	return toEmployeeResponse(emp, h.empService), nil
 }

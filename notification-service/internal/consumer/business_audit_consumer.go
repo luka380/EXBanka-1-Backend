@@ -19,11 +19,13 @@ import (
 type BusinessAuditConsumer struct {
 	reader *kafkago.Reader
 	db     *gorm.DB
+	dlq    DeadLetterWriter
+	dedup  Deduper
 }
 
 // NewBusinessAuditConsumer constructs a BusinessAuditConsumer and configures the
 // Kafka reader. The caller must call Start(ctx) to begin consuming.
-func NewBusinessAuditConsumer(brokers string, db *gorm.DB) *BusinessAuditConsumer {
+func NewBusinessAuditConsumer(brokers string, db *gorm.DB, dlq DeadLetterWriter, dedup Deduper) *BusinessAuditConsumer {
 	reader := kafkago.NewReader(kafkago.ReaderConfig{
 		Brokers:  strings.Split(brokers, ","),
 		Topic:    kafkamsg.TopicBusinessAuditAction,
@@ -31,34 +33,19 @@ func NewBusinessAuditConsumer(brokers string, db *gorm.DB) *BusinessAuditConsume
 		MinBytes: 1,
 		MaxBytes: 10e6,
 	})
-	return &BusinessAuditConsumer{reader: reader, db: db}
+	return &BusinessAuditConsumer{reader: reader, db: db, dlq: dlq, dedup: dedup}
 }
 
-// Start launches the consumer loop in a goroutine. It reads until ctx is
-// cancelled, logging and continuing on transient errors.
+// Start launches the consumer loop in a goroutine (manual-commit + retry + DLQ).
 func (c *BusinessAuditConsumer) Start(ctx context.Context) {
-	go func() {
-		log.Println("business audit consumer started, listening on", kafkamsg.TopicBusinessAuditAction)
-		for {
-			msg, err := c.reader.ReadMessage(ctx)
-			if err != nil {
-				if ctx.Err() != nil {
-					log.Println("business audit consumer shutting down")
-					return
-				}
-				log.Printf("business audit consumer: read error: %v", err)
-				continue
-			}
-			c.handleMessage(msg.Value)
-		}
-	}()
+	go runConsumer(ctx, "business_audit", c.reader, c.dlq, c.dedup, c.handleMessage)
 }
 
-func (c *BusinessAuditConsumer) handleMessage(data []byte) {
+func (c *BusinessAuditConsumer) handleMessage(_ context.Context, data []byte) error {
 	var event kafkamsg.BusinessAuditActionMessage
 	if err := json.Unmarshal(data, &event); err != nil {
-		log.Printf("business audit consumer: unmarshal error: %v", err)
-		return
+		log.Printf("business audit consumer: dropping malformed message: %v", err)
+		return nil // not retryable
 	}
 
 	row := &model.BusinessAuditLog{
@@ -70,9 +57,11 @@ func (c *BusinessAuditConsumer) handleMessage(data []byte) {
 		Timestamp:  event.Timestamp,
 	}
 	if err := c.db.Create(row).Error; err != nil {
-		log.Printf("business audit consumer: db insert error (action=%s actor=%d target=%s/%s): %v",
-			event.Action, event.ActorEmployeeID, event.TargetType, event.TargetID, err)
+		// Transient DB failure — retry then dead-letter. Audit records must
+		// never be silently dropped.
+		return err
 	}
+	return nil
 }
 
 // Close releases the Kafka reader.

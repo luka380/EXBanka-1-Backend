@@ -275,6 +275,23 @@ func TestCompanyService_CreateGetUpdate(t *testing.T) {
 	assert.Equal(t, "Acme Renamed", again.CompanyName)
 }
 
+func TestCompanyService_CreateDuplicate_Returns409NoPII(t *testing.T) {
+	svc := newCompanyService(t)
+
+	require.NoError(t, svc.Create(&model.Company{
+		CompanyName: "Acme", RegistrationNumber: "12345678", TaxNumber: "123456789", OwnerID: 5,
+	}))
+
+	// Same registration number → 409 sentinel, and the message must NOT echo the
+	// colliding registration/tax number (PII) the way a raw PG error would.
+	err := svc.Create(&model.Company{
+		CompanyName: "Acme2", RegistrationNumber: "12345678", TaxNumber: "999999999", OwnerID: 6,
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrCompanyDuplicate)
+	assert.NotContains(t, err.Error(), "12345678")
+}
+
 func TestCompanyService_GetByOwnerID(t *testing.T) {
 	svc := newCompanyService(t)
 	require.NoError(t, svc.Create(&model.Company{

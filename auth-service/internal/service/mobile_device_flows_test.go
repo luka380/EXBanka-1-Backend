@@ -21,7 +21,7 @@ func newMobileSvcWithStubs(t *testing.T, db *gorm.DB) (*MobileDeviceService, *fa
 	activationRepo := repository.NewMobileActivationRepository(db)
 	accountRepo := repository.NewAccountRepository(db)
 	tokenRepo := repository.NewTokenRepository(db)
-	jwtSvc := NewJWTService("test-secret-256bit", 15*time.Minute)
+	jwtSvc := NewJWTService(mustTestKeyManager(), 15*time.Minute)
 	producer := &fakeProducer{}
 	svc := newMobileDeviceServiceForTest(
 		deviceRepo, activationRepo, accountRepo, tokenRepo,

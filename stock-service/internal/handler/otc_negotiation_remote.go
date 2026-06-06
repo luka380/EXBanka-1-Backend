@@ -271,7 +271,20 @@ func (h *OTCOptionsHandler) openRemoteNegotiation(
 		emp := actingEmployeeID
 		mirror.ActingEmployeeID = &emp
 	}
-	if err := h.remoteNegWriter.UpsertRemoteNeg(mirror); err != nil {
+	// Record the opening BID as the chain's first revision (full-history parity
+	// with local chains). We are the BUYER on an outbound bid; the wire id is the
+	// composed buyerID. Idempotent: a retried create won't double-append.
+	bidWire := buyerID
+	bidRev := &model.OTCNegotiationRevision{
+		Quantity:                qty,
+		StrikePrice:             strike,
+		Premium:                 premium,
+		SettlementDate:          settle,
+		Action:                  model.OTCNegotiationActionBid,
+		ModifiedByPrincipalType: "buyer",
+		RemoteActorWireID:       &bidWire,
+	}
+	if err := h.remoteNegWriter.UpsertRemoteNegWithRevision(mirror, bidRev); err != nil {
 		return nil, false, status.Errorf(codes.Internal, "record remote negotiation mirror: %v", err)
 	}
 

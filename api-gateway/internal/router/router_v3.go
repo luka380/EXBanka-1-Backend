@@ -3,6 +3,7 @@ package router
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -20,17 +21,32 @@ import (
 // Per-version pattern: each version is an explicit, self-contained router
 // file. There is no transparent fallback. See router_versioning.md.
 func NewRouter() *gin.Engine {
-	r := gin.Default()
+	// gin.New() (not gin.Default()) so we use our own structured RequestLogger
+	// instead of gin's text Logger, while keeping panic Recovery.
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.Use(middleware.RequestLogger())
 	r.Use(apimetrics.GinMiddleware())
 	r.Use(cors.New(cors.Config{
 		AllowAllOrigins:  true,
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
-		ExposeHeaders:    []string{"Content-Length"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "X-Request-Id", "X-Device-Id", "X-Device-Signature"},
+		ExposeHeaders:    []string{"Content-Length", "X-Request-Id"},
 		AllowCredentials: false,
 	}))
 	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 	return r
+}
+
+// strictLimiter returns the strict per-IP+route rate-limit middleware for a
+// sensitive auth route, or nil (no limiter) when rate limiting is disabled.
+func (h *Handlers) strictLimiter(name string, per5min int) []gin.HandlerFunc {
+	if h.RateLimit.Redis == nil || per5min <= 0 {
+		return nil
+	}
+	return []gin.HandlerFunc{middleware.RateLimit(h.RateLimit.Redis,
+		middleware.RateLimitRule{Name: name, Limit: per5min, Window: 5 * time.Minute},
+		middleware.RouteIPKey)}
 }
 
 // SetupV3 registers every /api/v3 route on the given engine. v3 is the
@@ -48,18 +64,29 @@ func NewRouter() *gin.Engine {
 func SetupV3(r *gin.Engine, h *Handlers) {
 	v3 := r.Group("/api/v3")
 
+	// Generous per-IP safety ceiling across every v3 route. Sized well above
+	// the frontend's ~1s multi-route polling (default 3000/min) — it only
+	// catches runaway/abusive clients. Disabled when RateLimit.Redis is nil.
+	if h.RateLimit.Redis != nil && h.RateLimit.GlobalPerMin > 0 {
+		v3.Use(middleware.RateLimit(h.RateLimit.Redis,
+			middleware.RateLimitRule{Name: "global", Limit: h.RateLimit.GlobalPerMin, Window: time.Minute},
+			middleware.ClientIPKey))
+	}
+
 	// Forward X-Saga-* fault-injection headers to downstream saga executors.
 	// No-op in production builds (saga.FaultsEnabled == false); active only in
 	// the fault-enabled test image used by the SG-* saga integration suite.
 	v3.Use(middleware.FaultHeaderForwarder())
 
 	// ── Public auth routes (no middleware) ───────────────────────
+	// login + password reset-request carry strict per-IP buckets (brute-force
+	// surface); the rest are covered by the global ceiling only.
 	auth := v3.Group("/auth")
 	{
-		auth.POST("/login", h.Auth.Login)
+		auth.POST("/login", append(h.strictLimiter("login", h.RateLimit.LoginPer5Min), h.Auth.Login)...)
 		auth.POST("/refresh", h.Auth.RefreshToken)
 		auth.POST("/logout", h.Auth.Logout)
-		auth.POST("/password/reset-request", h.Auth.RequestPasswordReset)
+		auth.POST("/password/reset-request", append(h.strictLimiter("reset", h.RateLimit.ResetPer5Min), h.Auth.RequestPasswordReset)...)
 		auth.POST("/password/reset", h.Auth.ResetPassword)
 		auth.POST("/activate", h.Auth.ActivateAccount)
 		auth.POST("/resend-activation", h.Auth.ResendActivationEmail)
@@ -76,7 +103,7 @@ func SetupV3(r *gin.Engine, h *Handlers) {
 
 	// ── /me/* (AnyAuthMiddleware) ────────────────────────────────
 	me := v3.Group("/me")
-	me.Use(middleware.AnyAuthMiddleware(h.Auth.Client()))
+	me.Use(middleware.AnyAuthMiddleware(h.TokenVerifier))
 	{
 		me.GET("", middleware.RequireClientToken(), h.Me.GetMe)
 
@@ -285,7 +312,7 @@ func SetupV3(r *gin.Engine, h *Handlers) {
 
 	// ── Stock exchanges (AnyAuth — market data is browsable) ────
 	stockExchanges := v3.Group("/stock-exchanges")
-	stockExchanges.Use(middleware.AnyAuthMiddleware(h.Auth.Client()))
+	stockExchanges.Use(middleware.AnyAuthMiddleware(h.TokenVerifier))
 	{
 		stockExchanges.GET("", h.StockExchange.ListExchanges)
 		stockExchanges.GET("/:id", h.StockExchange.GetExchange)
@@ -293,7 +320,7 @@ func SetupV3(r *gin.Engine, h *Handlers) {
 
 	// ── Securities (AnyAuth — market data is browsable) ─────────
 	securities := v3.Group("/securities")
-	securities.Use(middleware.AnyAuthMiddleware(h.Auth.Client()))
+	securities.Use(middleware.AnyAuthMiddleware(h.TokenVerifier))
 	{
 		securities.GET("/stocks", h.Securities.ListStocks)
 		securities.GET("/stocks/:id", h.Securities.GetStock)
@@ -313,12 +340,12 @@ func SetupV3(r *gin.Engine, h *Handlers) {
 	// legacy /api/v3/otc/offers group). Browsing is AnyAuth; buying
 	// requires the securities/otc trade permission.
 	otcStocksRead := v3.Group("/otc/stocks")
-	otcStocksRead.Use(middleware.AnyAuthMiddleware(h.Auth.Client()))
+	otcStocksRead.Use(middleware.AnyAuthMiddleware(h.TokenVerifier))
 	{
 		otcStocksRead.GET("", h.Portfolio.ListOTCOffers)
 	}
 	otcStocksTrade := v3.Group("/otc/stocks")
-	otcStocksTrade.Use(middleware.AnyAuthMiddleware(h.Auth.Client()))
+	otcStocksTrade.Use(middleware.AnyAuthMiddleware(h.TokenVerifier))
 	otcStocksTrade.Use(middleware.RequirePermissionOrClient(middleware.PermAny, perms.Otc.Trade.Accept, perms.Securities.Trade.Any))
 	otcStocksTrade.Use(middleware.ResolveIdentity(middleware.OwnerIsBankIfEmployee))
 	{
@@ -331,7 +358,7 @@ func SetupV3(r *gin.Engine, h *Handlers) {
 
 	// ── OTC option trading (Spec 2) — read endpoints ─────────────
 	otcRead := v3.Group("/otc")
-	otcRead.Use(middleware.AnyAuthMiddleware(h.Auth.Client()))
+	otcRead.Use(middleware.AnyAuthMiddleware(h.TokenVerifier))
 	otcRead.Use(middleware.ResolveIdentity(middleware.OwnerIsBankIfEmployee))
 	{
 		// (Phase 8) /otc/offers/:id renamed to /otc/options/:id.
@@ -356,7 +383,7 @@ func SetupV3(r *gin.Engine, h *Handlers) {
 	}
 	// Trading actions require both securities.trade AND otc.trade.
 	otcOptionsTrade := v3.Group("/otc")
-	otcOptionsTrade.Use(middleware.AnyAuthMiddleware(h.Auth.Client()))
+	otcOptionsTrade.Use(middleware.AnyAuthMiddleware(h.TokenVerifier))
 	otcOptionsTrade.Use(middleware.RequirePermissionOrClient(middleware.PermAll, perms.Securities.Trade.Any, perms.Otc.Trade.Accept))
 	otcOptionsTrade.Use(middleware.ResolveIdentity(middleware.OwnerIsBankIfEmployee))
 	{
@@ -420,7 +447,7 @@ func SetupV3(r *gin.Engine, h *Handlers) {
 
 	// ── Browser-facing verifications (AnyAuthMiddleware) ────────
 	verifications := v3.Group("/verifications")
-	verifications.Use(middleware.AnyAuthMiddleware(h.Auth.Client()))
+	verifications.Use(middleware.AnyAuthMiddleware(h.TokenVerifier))
 	{
 		verifications.POST("", h.Verification.CreateVerification)
 		verifications.GET("/:id/status", h.Verification.GetVerificationStatus)
@@ -429,7 +456,7 @@ func SetupV3(r *gin.Engine, h *Handlers) {
 
 	// ── Employee/admin routes (AuthMiddleware + RequirePermission) ─
 	protected := v3.Group("/")
-	protected.Use(middleware.AuthMiddleware(h.Auth.Client()))
+	protected.Use(middleware.AuthMiddleware(h.TokenVerifier))
 	{
 		// Employees
 		employees := protected.Group("/employees")
@@ -1041,7 +1068,7 @@ func SetupV3(r *gin.Engine, h *Handlers) {
 	// ── Investment fund browsing + invest/redeem (AnyAuth) ──────
 	// Browsing (List/Get) doesn't read identity; invest/redeem do.
 	fundsAny := v3.Group("/investment-funds")
-	fundsAny.Use(middleware.AnyAuthMiddleware(h.Auth.Client()))
+	fundsAny.Use(middleware.AnyAuthMiddleware(h.TokenVerifier))
 	{
 		fundsAny.GET("", h.Fund.ListFunds)
 		fundsAny.GET("/:id", h.Fund.GetFund)

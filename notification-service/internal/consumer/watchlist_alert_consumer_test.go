@@ -1,6 +1,7 @@
 package consumer
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -54,7 +55,7 @@ func TestWatchlistAlertConsumer_HappyPath(t *testing.T) {
 		Timestamp:      time.Now().UTC(),
 		IdempotencyKey: "watchlist-alert-42-AAPL-" + today,
 	}
-	c.handleMessage(mustMarshal(t, msg))
+	_ = c.handleMessage(context.Background(), mustMarshal(t, msg))
 
 	require.Len(t, repo.created, 1)
 	got := repo.created[0]
@@ -76,7 +77,7 @@ func TestWatchlistAlertConsumer_HappyPath(t *testing.T) {
 func TestWatchlistAlertConsumer_MalformedPayloadIgnored(t *testing.T) {
 	repo := &stubWatchlistNotifCreator{}
 	c := newWatchlistAlertConsumerForTest(repo, &stubGeneralRenderer{subject: "S", body: "B"})
-	require.NotPanics(t, func() { c.handleMessage([]byte("not json")) })
+	require.NotPanics(t, func() { _ = c.handleMessage(context.Background(), []byte("not json")) })
 	assert.Empty(t, repo.created)
 }
 
@@ -92,7 +93,7 @@ func TestWatchlistAlertConsumer_RenderErrorDropsMessage(t *testing.T) {
 		UserID: 5, Ticker: "TSLA", PercentMove: "+7.0000", CurrentPrice: "250.0000",
 		Timestamp: time.Now().UTC(), IdempotencyKey: "watchlist-alert-5-TSLA-" + today,
 	}
-	require.NotPanics(t, func() { c.handleMessage(mustMarshal(t, msg)) })
+	require.NotPanics(t, func() { _ = c.handleMessage(context.Background(), mustMarshal(t, msg)) })
 	assert.Empty(t, repo.created, "render error should drop the message")
 }
 
@@ -110,8 +111,8 @@ func TestWatchlistAlertConsumer_Idempotency(t *testing.T) {
 	}
 	payload := mustMarshal(t, msg)
 
-	c.handleMessage(payload)
-	c.handleMessage(payload) // second delivery of same message
+	_ = c.handleMessage(context.Background(), payload)
+	_ = c.handleMessage(context.Background(), payload) // second delivery of same message
 
 	// Only 1 row created despite 2 deliveries.
 	require.Len(t, repo.created, 1, "consumer must deduplicate via idempotency key")
@@ -127,5 +128,5 @@ func TestWatchlistAlertConsumer_RepoErrorDoesNotPanic(t *testing.T) {
 		UserID: 1, Ticker: "AMZN", PercentMove: "+6.0000", CurrentPrice: "180.0000",
 		Timestamp: time.Now().UTC(), IdempotencyKey: "watchlist-alert-1-AMZN-20260101",
 	}
-	require.NotPanics(t, func() { c.handleMessage(mustMarshal(t, msg)) })
+	require.NotPanics(t, func() { _ = c.handleMessage(context.Background(), mustMarshal(t, msg)) })
 }

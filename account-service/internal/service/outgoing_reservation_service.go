@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/exbanka/account-service/internal/cache"
 	"github.com/exbanka/account-service/internal/model"
 	"github.com/exbanka/account-service/internal/repository"
 	shared "github.com/exbanka/contract/shared"
@@ -37,6 +38,7 @@ type OutgoingReservationService struct {
 	db          *gorm.DB
 	accountRepo *repository.AccountRepository
 	resRepo     *repository.OutgoingReservationRepository
+	cache       *cache.RedisCache // optional; invalidated after every balance mutation
 }
 
 func NewOutgoingReservationService(
@@ -45,6 +47,14 @@ func NewOutgoingReservationService(
 	resRepo *repository.OutgoingReservationRepository,
 ) *OutgoingReservationService {
 	return &OutgoingReservationService{db: db, accountRepo: accountRepo, resRepo: resRepo}
+}
+
+// WithCache wires the shared account Redis cache so reserve/settle/release
+// (all of which move AvailableBalance and/or Balance) evict the cached account,
+// keeping GetAccount/GetAccountByNumber reads fresh. Returns the service for chaining.
+func (s *OutgoingReservationService) WithCache(c *cache.RedisCache) *OutgoingReservationService {
+	s.cache = c
+	return s
 }
 
 // ReserveOutgoing places a hold: reduces AvailableBalance (not Balance) under a
@@ -66,6 +76,7 @@ func (s *OutgoingReservationService) ReserveOutgoing(
 	}
 
 	var out *model.OutgoingReservation
+	var acctID uint64
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		var acct model.Account
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
@@ -75,6 +86,7 @@ func (s *OutgoingReservationService) ReserveOutgoing(
 			}
 			return err
 		}
+		acctID = acct.ID
 		if acct.Status != "active" {
 			return status.Error(codes.FailedPrecondition, "account_inactive")
 		}
@@ -82,6 +94,20 @@ func (s *OutgoingReservationService) ReserveOutgoing(
 			return status.Errorf(codes.FailedPrecondition,
 				"currency_not_supported: account %s is %s, requested %s",
 				accountNumber, acct.CurrencyCode, currency)
+		}
+		// Enforce the daily/monthly spending limit for client accounts, mirroring
+		// the authoritative check in repository.UpdateBalance — so cross-bank
+		// (SI-TX) outflows are gated like domestic debits. Checked at reserve
+		// against committed spending (settle accrues it); FailedPrecondition so
+		// the interbank caller maps it to a NO vote, like insufficient funds.
+		// Message is generic — never leak our client's spending/limits to a peer bank.
+		if !acct.IsBankAccount {
+			if !acct.DailyLimit.IsZero() && acct.DailySpending.Add(amount).GreaterThan(acct.DailyLimit) {
+				return status.Error(codes.FailedPrecondition, "daily_spending_limit_exceeded")
+			}
+			if !acct.MonthlyLimit.IsZero() && acct.MonthlySpending.Add(amount).GreaterThan(acct.MonthlyLimit) {
+				return status.Error(codes.FailedPrecondition, "monthly_spending_limit_exceeded")
+			}
 		}
 		if acct.AvailableBalance.LessThan(amount) {
 			return status.Errorf(codes.FailedPrecondition,
@@ -115,6 +141,8 @@ func (s *OutgoingReservationService) ReserveOutgoing(
 		}
 		return nil, err
 	}
+	// AvailableBalance dropped → drop the stale cached account.
+	evictAccountCache(s.cache, acctID, accountNumber)
 	return out, nil
 }
 
@@ -178,6 +206,10 @@ func (s *OutgoingReservationService) SettleOutgoing(ctx context.Context, key str
 		outAcct = &acct
 		return nil
 	})
+	if err == nil && outAcct != nil {
+		// Balance debited → drop the stale cached account.
+		evictAccountCache(s.cache, outAcct.ID, outAcct.AccountNumber)
+	}
 	return outAcct, err
 }
 
@@ -195,12 +227,14 @@ func (s *OutgoingReservationService) ReleaseOutgoing(ctx context.Context, key st
 	if res.Status != model.OutgoingReservationStatusPending {
 		return nil // already settled/released — idempotent
 	}
-	return s.db.Transaction(func(tx *gorm.DB) error {
+	var acctID uint64
+	err = s.db.Transaction(func(tx *gorm.DB) error {
 		var acct model.Account
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("account_number = ?", res.AccountNumber).First(&acct).Error; err != nil {
 			return err
 		}
+		acctID = acct.ID
 		acct.AvailableBalance = acct.AvailableBalance.Add(res.Amount)
 		saveRes := tx.Save(&acct)
 		if saveRes.Error != nil {
@@ -211,6 +245,11 @@ func (s *OutgoingReservationService) ReleaseOutgoing(ctx context.Context, key st
 		}
 		return s.resRepo.WithTx(tx).MarkReleased(tx, res.ReservationKey)
 	})
+	if err == nil {
+		// AvailableBalance restored → drop the stale cached account.
+		evictAccountCache(s.cache, acctID, res.AccountNumber)
+	}
+	return err
 }
 
 // ListStalePending exposes the repo sweep for the timeout cron.

@@ -9415,6 +9415,7 @@ type OTCNegotiationRevisionResponse struct {
 	ActionByPrincipalType string                 `protobuf:"bytes,9,opt,name=action_by_principal_type,json=actionByPrincipalType,proto3" json:"action_by_principal_type,omitempty"`
 	ActionByPrincipalId   uint64                 `protobuf:"varint,10,opt,name=action_by_principal_id,json=actionByPrincipalId,proto3" json:"action_by_principal_id,omitempty"`
 	CreatedAt             string                 `protobuf:"bytes,11,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	ActionByWireId        string                 `protobuf:"bytes,12,opt,name=action_by_wire_id,json=actionByWireId,proto3" json:"action_by_wire_id,omitempty"` // remote chains: opaque mover id (client-N/employee-N/bank); empty for local
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
@@ -9522,6 +9523,13 @@ func (x *OTCNegotiationRevisionResponse) GetActionByPrincipalId() uint64 {
 func (x *OTCNegotiationRevisionResponse) GetCreatedAt() string {
 	if x != nil {
 		return x.CreatedAt
+	}
+	return ""
+}
+
+func (x *OTCNegotiationRevisionResponse) GetActionByWireId() string {
+	if x != nil {
+		return x.ActionByWireId
 	}
 	return ""
 }
@@ -10781,9 +10789,10 @@ type OTCTimelineEntry struct {
 	StrikePrice           string                 `protobuf:"bytes,7,opt,name=strike_price,json=strikePrice,proto3" json:"strike_price,omitempty"`
 	Premium               string                 `protobuf:"bytes,8,opt,name=premium,proto3" json:"premium,omitempty"`
 	SettlementDate        string                 `protobuf:"bytes,9,opt,name=settlement_date,json=settlementDate,proto3" json:"settlement_date,omitempty"`                           // ISO-8601
-	ActionByPrincipalType string                 `protobuf:"bytes,10,opt,name=action_by_principal_type,json=actionByPrincipalType,proto3" json:"action_by_principal_type,omitempty"` // "client" | "employee"
+	ActionByPrincipalType string                 `protobuf:"bytes,10,opt,name=action_by_principal_type,json=actionByPrincipalType,proto3" json:"action_by_principal_type,omitempty"` // local: "client"|"employee"; remote: "buyer"|"seller"
 	ActionByPrincipalId   uint64                 `protobuf:"varint,11,opt,name=action_by_principal_id,json=actionByPrincipalId,proto3" json:"action_by_principal_id,omitempty"`
-	CreatedAt             string                 `protobuf:"bytes,12,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"` // ISO-8601
+	CreatedAt             string                 `protobuf:"bytes,12,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`                    // ISO-8601
+	ActionByWireId        string                 `protobuf:"bytes,13,opt,name=action_by_wire_id,json=actionByWireId,proto3" json:"action_by_wire_id,omitempty"` // remote chains: opaque mover id (client-N/employee-N/bank); empty for local
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
@@ -10898,6 +10907,13 @@ func (x *OTCTimelineEntry) GetActionByPrincipalId() uint64 {
 func (x *OTCTimelineEntry) GetCreatedAt() string {
 	if x != nil {
 		return x.CreatedAt
+	}
+	return ""
+}
+
+func (x *OTCTimelineEntry) GetActionByWireId() string {
+	if x != nil {
+		return x.ActionByWireId
 	}
 	return ""
 }
@@ -19946,7 +19962,7 @@ const file_stock_stock_proto_rawDesc = "" +
 	"\x04kind\x18\x12 \x01(\tR\x04kind\x12%\n" +
 	"\x0erouting_number\x18\x13 \x01(\x03R\rroutingNumber\x12\x1b\n" +
 	"\tbank_code\x18\x14 \x01(\tR\bbankCode\x12\x19\n" +
-	"\bme_owner\x18\x15 \x01(\bR\ameOwner\"\xa7\x03\n" +
+	"\bme_owner\x18\x15 \x01(\bR\ameOwner\"\xd2\x03\n" +
 	"\x1eOTCNegotiationRevisionResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12%\n" +
 	"\x0enegotiation_id\x18\x02 \x01(\x04R\rnegotiationId\x12'\n" +
@@ -19960,7 +19976,8 @@ const file_stock_stock_proto_rawDesc = "" +
 	"\x16action_by_principal_id\x18\n" +
 	" \x01(\x04R\x13actionByPrincipalId\x12\x1d\n" +
 	"\n" +
-	"created_at\x18\v \x01(\tR\tcreatedAt\"\x9c\x01\n" +
+	"created_at\x18\v \x01(\tR\tcreatedAt\x12)\n" +
+	"\x11action_by_wire_id\x18\f \x01(\tR\x0eactionByWireId\"\x9c\x01\n" +
 	"\x1fListNegotiationRevisionsRequest\x12%\n" +
 	"\x0enegotiation_id\x18\x01 \x01(\x04R\rnegotiationId\x12*\n" +
 	"\x11caller_owner_type\x18\x02 \x01(\tR\x0fcallerOwnerType\x12&\n" +
@@ -20066,7 +20083,7 @@ const file_stock_stock_proto_rawDesc = "" +
 	"\x17GetOfferTimelineRequest\x12&\n" +
 	"\x0fparent_offer_id\x18\x01 \x01(\x04R\rparentOfferId\x12*\n" +
 	"\x11caller_owner_type\x18\x02 \x01(\tR\x0fcallerOwnerType\x12&\n" +
-	"\x0fcaller_owner_id\x18\x03 \x01(\x04R\rcallerOwnerId\"\xdd\x03\n" +
+	"\x0fcaller_owner_id\x18\x03 \x01(\x04R\rcallerOwnerId\"\x88\x04\n" +
 	"\x10OTCTimelineEntry\x12%\n" +
 	"\x0enegotiation_id\x18\x01 \x01(\x04R\rnegotiationId\x12*\n" +
 	"\x11bidder_owner_type\x18\x02 \x01(\tR\x0fbidderOwnerType\x12&\n" +
@@ -20081,7 +20098,8 @@ const file_stock_stock_proto_rawDesc = "" +
 	" \x01(\tR\x15actionByPrincipalType\x123\n" +
 	"\x16action_by_principal_id\x18\v \x01(\x04R\x13actionByPrincipalId\x12\x1d\n" +
 	"\n" +
-	"created_at\x18\f \x01(\tR\tcreatedAt\"~\n" +
+	"created_at\x18\f \x01(\tR\tcreatedAt\x12)\n" +
+	"\x11action_by_wire_id\x18\r \x01(\tR\x0eactionByWireId\"~\n" +
 	"\x18GetOfferTimelineResponse\x12-\n" +
 	"\x05offer\x18\x01 \x01(\v2\x17.stock.OTCOfferResponseR\x05offer\x123\n" +
 	"\btimeline\x18\x02 \x03(\v2\x17.stock.OTCTimelineEntryR\btimeline\"s\n" +

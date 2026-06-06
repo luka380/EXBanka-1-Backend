@@ -176,7 +176,7 @@ func newAuthFlowFixture(t *testing.T) *authFlowFixture {
 	loginRepo := repository.NewLoginAttemptRepository(db)
 	totpRepo := repository.NewTOTPRepository(db)
 	totpSvc := NewTOTPService()
-	jwtSvc := NewJWTService("test-secret-256bit-min-len-please", 15*time.Minute)
+	jwtSvc := NewJWTService(mustTestKeyManager(), 15*time.Minute)
 	accountRepo := repository.NewAccountRepository(db)
 	userClient := &stubUserClient{
 		resp: &userpb.EmployeeResponse{
@@ -400,7 +400,7 @@ func TestAuthRefreshToken_NotFound(t *testing.T) {
 	f := newAuthFlowFixture(t)
 	_, _, err := f.svc.RefreshToken(context.Background(), "missing-token", "ip", "ua")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "refresh token has been revoked")
+	assert.ErrorIs(t, err, ErrInvalidToken)
 }
 
 func TestAuthRefreshToken_Expired(t *testing.T) {
@@ -564,7 +564,7 @@ func TestRevokeAllSessions_RevokesTokensAndSessions(t *testing.T) {
 		require.NoError(t, f.db.Create(rt).Error)
 	}
 
-	require.NoError(t, f.svc.RevokeAllSessions(context.Background(), acct.ID, acct.PrincipalID, "test_reason"))
+	require.NoError(t, f.svc.RevokeAllSessions(context.Background(), acct.PrincipalType, acct.ID, acct.PrincipalID, "test_reason"))
 
 	var revokedTokens int64
 	require.NoError(t, f.db.Model(&model.RefreshToken{}).Where("account_id = ? AND revoked = true", acct.ID).Count(&revokedTokens).Error)
@@ -1004,14 +1004,12 @@ func TestGetLoginHistory_DefaultLimit(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
-// RevokeAccessToken & hashToken tests
+// Session revocation tests
 // ----------------------------------------------------------------------------
 
-func TestRevokeAccessToken_NoCache_IsNoOp(t *testing.T) {
-	f := newAuthFlowFixture(t)
-	// Cache is nil; should silently succeed.
-	err := f.svc.RevokeAccessToken(context.Background(), "jti-123", time.Minute)
-	assert.NoError(t, err)
+func TestBlacklistSession_NoCache_IsNoOp(t *testing.T) {
+	// Nil cache; must not panic (blacklistSession is now a package function).
+	assert.NotPanics(t, func() { blacklistSession(context.Background(), nil, time.Minute, 123) })
 }
 
 // ----------------------------------------------------------------------------

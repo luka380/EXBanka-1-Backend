@@ -32,6 +32,7 @@ jobs:
           - exchange-service
           - verification-service
           - stock-service
+          - interbank-service
           - seeder
 
     steps:
@@ -79,6 +80,7 @@ jobs:
           - exchange-service
           - verification-service
           - stock-service
+          - interbank-service
           - seeder
 
     steps:

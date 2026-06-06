@@ -14,12 +14,54 @@ package shared
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"time"
 
 	kafkago "github.com/segmentio/kafka-go"
 )
+
+// HeaderIdempotencyKey is the Kafka message header carrying a per-message
+// idempotency key. The shared producer stamps a fresh random key on every
+// message (unless the caller already set one); the SAME key survives Kafka
+// at-least-once redelivery, so consumers can dedup reprocessed messages.
+// Consumers that don't care simply ignore it.
+const HeaderIdempotencyKey = "idempotency-key"
+
+// IdempotencyKeyFromHeaders returns the idempotency key a consumer should dedup
+// on, or "" when the message carries none (older producers / replayed data).
+func IdempotencyKeyFromHeaders(headers []kafkago.Header) string {
+	for _, h := range headers {
+		if h.Key == HeaderIdempotencyKey {
+			return string(h.Value)
+		}
+	}
+	return ""
+}
+
+func newIdempotencyKey() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(b)
+}
+
+// withIdempotencyKey returns msg with an idempotency-key header, generating one
+// if the caller did not already provide it. Preserves any existing headers.
+func withIdempotencyKey(msg kafkago.Message) kafkago.Message {
+	for _, h := range msg.Headers {
+		if h.Key == HeaderIdempotencyKey {
+			return msg
+		}
+	}
+	if k := newIdempotencyKey(); k != "" {
+		msg.Headers = append(msg.Headers, kafkago.Header{Key: HeaderIdempotencyKey, Value: []byte(k)})
+	}
+	return msg
+}
 
 // Producer is the shared Kafka writer. Construct with NewProducer; call
 // Publish to send a JSON-encoded message; call Close on shutdown.
@@ -101,7 +143,7 @@ func (p *Producer) Publish(ctx context.Context, topic string, payload any) error
 	if err != nil {
 		return err
 	}
-	return p.writer.WriteMessages(ctx, kafkago.Message{Topic: topic, Value: data})
+	return p.writer.WriteMessages(ctx, withIdempotencyKey(kafkago.Message{Topic: topic, Value: data}))
 }
 
 // PublishWithKey is Publish with an explicit message key. Use when the
@@ -115,7 +157,7 @@ func (p *Producer) PublishWithKey(ctx context.Context, topic string, key []byte,
 	if err != nil {
 		return err
 	}
-	return p.writer.WriteMessages(ctx, kafkago.Message{Topic: topic, Key: key, Value: data})
+	return p.writer.WriteMessages(ctx, withIdempotencyKey(kafkago.Message{Topic: topic, Key: key, Value: data}))
 }
 
 // PublishRaw sends a pre-serialized payload. Use when callers want full
@@ -124,7 +166,7 @@ func (p *Producer) PublishRaw(ctx context.Context, topic string, payload []byte)
 	if p == nil || p.writer == nil {
 		return errors.New("kafka: nil producer")
 	}
-	return p.writer.WriteMessages(ctx, kafkago.Message{Topic: topic, Value: payload})
+	return p.writer.WriteMessages(ctx, withIdempotencyKey(kafkago.Message{Topic: topic, Value: payload}))
 }
 
 // Close flushes pending messages and releases the underlying connection.

@@ -117,13 +117,21 @@ type RemoteNegotiationOps interface {
 	CompareAndSetRemoteNegStatus(routing int64, native, from, to string) (bool, error)
 	ListRemoteNegBySellerAndParent(sellerRouting int64, sellerID string, parentRouting int64, parentNative string) ([]model.OTCNegotiation, error)
 	ListRemoteNegByParent(parentRouting int64, parentNative string) ([]model.OTCNegotiation, error)
+	// History-logging variants: mutate AND append a revision atomically (full
+	// per-move history parity with local chains, 2026-06-06).
+	UpdateRemoteNegOfferWithRevision(routing int64, native, offerJSON string, rev *model.OTCNegotiationRevision) error
+	CompareAndSetRemoteNegStatusWithRevision(routing int64, native, from, to string, rev *model.OTCNegotiationRevision) (bool, error)
+	SetRemoteNegStatusWithRevision(routing int64, native, to string, rev *model.OTCNegotiationRevision) (bool, error)
 }
 
 // RemoteNegotiationWriter persists a REMOTE OTCNegotiation mirror row (the
 // cross-bank chain this bank's bidder just opened on a peer). Satisfied by
-// *repository.OTCNegotiationRepository.UpsertRemoteNeg (SP-2b).
+// *repository.OTCNegotiationRepository (SP-2b).
 type RemoteNegotiationWriter interface {
 	UpsertRemoteNeg(n *model.OTCNegotiation) error
+	// UpsertRemoteNegWithRevision additionally appends the BID revision when the
+	// chain is newly created (full-history parity, 2026-06-06).
+	UpsertRemoteNegWithRevision(n *model.OTCNegotiation, rev *model.OTCNegotiationRevision) error
 }
 
 // OTCAccountClient is the narrow account-service surface the cross-bank OTC

@@ -129,40 +129,103 @@ func TestGetTxStatus_SenderFailed(t *testing.T) {
 	}
 }
 
-// TestGetTxStatus_ReceiverFound verifies we return "receiver" role when an
-// idem record exists for the (callerCode, transactionID) pair.
-func TestGetTxStatus_ReceiverFound(t *testing.T) {
-	h, idemRepo, _ := newPeerTxHandlerWithOutRepo(t)
-
-	// txID is the INITIATOR's transactionId — what a peer doing CHECK_STATUS
-	// knows and queries by. We persist it in TxForeignID at NEW_TX time; the
-	// receiver-side TransactionID column holds our OWN fresh vote UUID, which the
-	// peer never sees. LookupByTransactionID correlates on tx_foreign_id.
-	txID := "peer-tx-uuid-receiver-001"
-	if err := idemRepo.Insert(&model.PeerIdempotenceRecord{
+// receiverRec builds a receiver-side idem record for the given initiator txID,
+// vote type, and optional commit/rollback stamps.
+func receiverRec(txID, voteType string, committedAt, rolledBackAt *time.Time) *model.PeerIdempotenceRecord {
+	return &model.PeerIdempotenceRecord{
 		PeerBankCode:        "222",
-		LocallyGeneratedKey: "some-idem-key",
-		TransactionID:       "our-own-vote-uuid",
+		LocallyGeneratedKey: "idem-" + txID,
+		TransactionID:       "our-own-vote-" + txID,
 		TxForeignID:         txID,
-		ResponsePayloadJSON: `{"type":"YES","transaction_id":"our-own-vote-uuid"}`,
+		ResponsePayloadJSON: `{"type":"` + voteType + `","transaction_id":"our-own-vote-uuid"}`,
 		DebitsJSON:          "[]",
 		OptionsJSON:         "[]",
-	}); err != nil {
+		CommittedAt:         committedAt,
+		RolledBackAt:        rolledBackAt,
+	}
+}
+
+// TestGetTxStatus_ReceiverCommitted: a receiver record with CommittedAt set
+// reports "committed" with role "receiver".
+func TestGetTxStatus_ReceiverCommitted(t *testing.T) {
+	h, idemRepo, _ := newPeerTxHandlerWithOutRepo(t)
+	now := time.Now().UTC()
+	txID := "peer-tx-uuid-receiver-committed"
+	if err := idemRepo.Insert(receiverRec(txID, "YES", &now, nil)); err != nil {
 		t.Fatalf("insert idem: %v", err)
 	}
-
 	resp, err := h.GetTxStatus(context.Background(), &transactionpb.GetTxStatusRequest{
-		TransactionId:      txID,
-		CallerPeerBankCode: "222",
+		TransactionId: txID, CallerPeerBankCode: "222",
 	})
 	if err != nil {
 		t.Fatalf("GetTxStatus: %v", err)
 	}
 	if resp.GetOurRole() != "receiver" {
-		t.Errorf("expected our_role=receiver, got %q", resp.GetOurRole())
+		t.Errorf("our_role = %q want receiver", resp.GetOurRole())
 	}
 	if resp.GetState() != "committed" {
-		t.Errorf("expected state=committed, got %q", resp.GetState())
+		t.Errorf("state = %q want committed (CommittedAt set)", resp.GetState())
+	}
+}
+
+// TestGetTxStatus_ReceiverPrepared: a receiver record that voted YES but has
+// NOT yet committed or rolled back reports "prepared" — NOT "committed". This
+// is the always-committed bug: reporting "committed" before COMMIT_TX lands
+// would let a peer settle on a transaction we may still roll back.
+func TestGetTxStatus_ReceiverPrepared(t *testing.T) {
+	h, idemRepo, _ := newPeerTxHandlerWithOutRepo(t)
+	txID := "peer-tx-uuid-receiver-prepared"
+	if err := idemRepo.Insert(receiverRec(txID, "YES", nil, nil)); err != nil {
+		t.Fatalf("insert idem: %v", err)
+	}
+	resp, err := h.GetTxStatus(context.Background(), &transactionpb.GetTxStatusRequest{
+		TransactionId: txID, CallerPeerBankCode: "222",
+	})
+	if err != nil {
+		t.Fatalf("GetTxStatus: %v", err)
+	}
+	if resp.GetState() != "prepared" {
+		t.Errorf("state = %q want prepared (YES vote, not yet committed)", resp.GetState())
+	}
+}
+
+// TestGetTxStatus_ReceiverRolledBack: a receiver record with RolledBackAt set
+// reports "rolled_back".
+func TestGetTxStatus_ReceiverRolledBack(t *testing.T) {
+	h, idemRepo, _ := newPeerTxHandlerWithOutRepo(t)
+	now := time.Now().UTC()
+	txID := "peer-tx-uuid-receiver-rolledback"
+	if err := idemRepo.Insert(receiverRec(txID, "YES", nil, &now)); err != nil {
+		t.Fatalf("insert idem: %v", err)
+	}
+	resp, err := h.GetTxStatus(context.Background(), &transactionpb.GetTxStatusRequest{
+		TransactionId: txID, CallerPeerBankCode: "222",
+	})
+	if err != nil {
+		t.Fatalf("GetTxStatus: %v", err)
+	}
+	if resp.GetState() != "rolled_back" {
+		t.Errorf("state = %q want rolled_back (RolledBackAt set)", resp.GetState())
+	}
+}
+
+// TestGetTxStatus_ReceiverNoVote: a receiver record whose cached vote was NO
+// (and was never committed) reports "rolled_back" — the transaction will not
+// commit on our side.
+func TestGetTxStatus_ReceiverNoVote(t *testing.T) {
+	h, idemRepo, _ := newPeerTxHandlerWithOutRepo(t)
+	txID := "peer-tx-uuid-receiver-novote"
+	if err := idemRepo.Insert(receiverRec(txID, "NO", nil, nil)); err != nil {
+		t.Fatalf("insert idem: %v", err)
+	}
+	resp, err := h.GetTxStatus(context.Background(), &transactionpb.GetTxStatusRequest{
+		TransactionId: txID, CallerPeerBankCode: "222",
+	})
+	if err != nil {
+		t.Fatalf("GetTxStatus: %v", err)
+	}
+	if resp.GetState() != "rolled_back" {
+		t.Errorf("state = %q want rolled_back (NO vote)", resp.GetState())
 	}
 }
 

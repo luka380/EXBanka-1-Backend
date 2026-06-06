@@ -683,7 +683,19 @@ func (h *PeerOTCGRPCHandler) CreateNegotiation(ctx context.Context, req *stockpb
 		req.GetSellerId().GetRoutingNumber(), req.GetSellerId().GetId(),
 		parentRouting, parentNativeID, "ongoing",
 	)
-	if err := h.negRepo.UpsertRemoteNeg(neg); err != nil {
+	// Record the inbound BID as the chain's first revision (full-history parity).
+	// The bidder is the peer's BUYER; wire id is the buyer's opaque participant id.
+	buyerWire := req.GetBuyerId().GetId()
+	bidRev := &model.OTCNegotiationRevision{
+		Quantity:                decimal.NewFromInt(offer.Amount),
+		StrikePrice:             offer.PricePerStock,
+		Premium:                 offer.Premium,
+		SettlementDate:          parseSITXDate(offer.SettlementDate),
+		Action:                  model.OTCNegotiationActionBid,
+		ModifiedByPrincipalType: "buyer",
+		RemoteActorWireID:       &buyerWire,
+	}
+	if err := h.negRepo.UpsertRemoteNegWithRevision(neg, bidRev); err != nil {
 		return nil, status.Errorf(codes.Internal, "create: %v", err)
 	}
 	// Inbound bid from a peer → notify our local seller (if the seller
@@ -755,7 +767,19 @@ func (h *PeerOTCGRPCHandler) UpdateNegotiation(ctx context.Context, req *stockpb
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "marshal offer: %v", err)
 	}
-	if err := h.negRepo.UpdateRemoteNegOffer(peerRouting, req.GetNegotiationId().GetId(), string(offerJSON)); err != nil {
+	// Record the inbound counter as a revision (full-history parity). The mover is
+	// the authenticated peer; its role + wire id are read from the persisted row.
+	counterRole, counterWire := remoteSideAtRouting(existing, peerRouting)
+	counterRev := &model.OTCNegotiationRevision{
+		Quantity:                decimal.NewFromInt(offer.Amount),
+		StrikePrice:             offer.PricePerStock,
+		Premium:                 offer.Premium,
+		SettlementDate:          parseSITXDate(offer.SettlementDate),
+		Action:                  model.OTCNegotiationActionCounter,
+		ModifiedByPrincipalType: counterRole,
+		RemoteActorWireID:       &counterWire,
+	}
+	if err := h.negRepo.UpdateRemoteNegOfferWithRevision(peerRouting, req.GetNegotiationId().GetId(), string(offerJSON), counterRev); err != nil {
 		return nil, status.Errorf(codes.Internal, "update: %v", err)
 	}
 	// Inbound counter — the authenticated peer is the actor. The OTHER party in
@@ -830,7 +854,27 @@ func (h *PeerOTCGRPCHandler) DeleteNegotiation(ctx context.Context, req *stockpb
 	peerRouting := peerRoutingForCode(req.GetPeerBankCode())
 	row, gerr := h.negRepo.GetRemoteNegByRoutingAndNative(peerRouting, req.GetNegotiationId().GetId())
 
-	if err := h.negRepo.UpdateRemoteNegStatus(peerRouting, req.GetNegotiationId().GetId(), "cancelled"); err != nil {
+	// Record the inbound terminal as a REJECT revision (full-history parity) when
+	// the row is known; the mover is the authenticated peer. SetRemoteNegStatusWith
+	// Revision only records on a real ongoing→cancelled transition (idempotent).
+	// Falls back to the plain status flip when the row could not be loaded.
+	if gerr == nil && row != nil {
+		var rejOffer contractsitx.OtcOffer
+		_ = json.Unmarshal([]byte(remoteOfferJSONOf(row)), &rejOffer)
+		rejRole, rejWire := remoteSideAtRouting(row, peerRouting)
+		rejectRev := &model.OTCNegotiationRevision{
+			Quantity:                decimal.NewFromInt(rejOffer.Amount),
+			StrikePrice:             rejOffer.PricePerStock,
+			Premium:                 rejOffer.Premium,
+			SettlementDate:          parseSITXDate(rejOffer.SettlementDate),
+			Action:                  model.OTCNegotiationActionReject,
+			ModifiedByPrincipalType: rejRole,
+			RemoteActorWireID:       &rejWire,
+		}
+		if _, err := h.negRepo.SetRemoteNegStatusWithRevision(peerRouting, req.GetNegotiationId().GetId(), "cancelled", rejectRev); err != nil {
+			return nil, status.Errorf(codes.Internal, "cancel: %v", err)
+		}
+	} else if err := h.negRepo.UpdateRemoteNegStatus(peerRouting, req.GetNegotiationId().GetId(), "cancelled"); err != nil {
 		return nil, status.Errorf(codes.Internal, "cancel: %v", err)
 	}
 	if gerr == nil && row != nil && h.notifier != nil {
@@ -1036,6 +1080,25 @@ func (h *PeerOTCGRPCHandler) AcceptNegotiation(ctx context.Context, req *stockpb
 	}
 	// Negotiation was already claimed as "accepted" before dispatch (the
 	// concurrency guard); no post-dispatch status update needed.
+	//
+	// Record the ACCEPT revision NOW (on the success path, not at the claim CAS)
+	// so a rolled-back claim never leaves a stray ACCEPT in the history. The
+	// acceptor is the peer (its side hosts the accepting party). Best-effort: the
+	// contract already formed, so a revision-log failure must not fail the accept.
+	acceptRole, acceptWire := remoteSideAtRouting(row, peerRouting)
+	acceptRev := &model.OTCNegotiationRevision{
+		Quantity:                decimal.NewFromInt(offer.Amount),
+		StrikePrice:             offer.PricePerStock,
+		Premium:                 offer.Premium,
+		SettlementDate:          parseSITXDate(offer.SettlementDate),
+		Action:                  model.OTCNegotiationActionAccept,
+		ModifiedByPrincipalType: acceptRole,
+		RemoteActorWireID:       &acceptWire,
+	}
+	if aerr := h.negRepo.AppendRemoteRevision(peerRouting, foreignID, acceptRev); aerr != nil {
+		log.Printf("WARN: peer-otc accept: failed to record accept revision for %s/%s: %v",
+			req.GetPeerBankCode(), req.GetNegotiationId().GetId(), aerr)
+	}
 
 	// Seller-side notification: this bank is the SELLER's bank (the
 	// inbound /accept lands here because the buyer's bank POSTed). The
@@ -1372,6 +1435,21 @@ func remoteSeller(n *model.OTCNegotiation) (int64, string) {
 		id = *n.RemoteSellerID
 	}
 	return r, id
+}
+
+// remoteSideAtRouting returns (role, wireID) for whichever side (buyer/seller) of
+// the remote chain is hosted at the given routing — used to stamp each revision's
+// mover. role is "buyer" or "seller"; ("", "") when neither side matches.
+func remoteSideAtRouting(n *model.OTCNegotiation, routing int64) (string, string) {
+	bR, bID := remoteBuyer(n)
+	sR, sID := remoteSeller(n)
+	if routing == bR {
+		return "buyer", bID
+	}
+	if routing == sR {
+		return "seller", sID
+	}
+	return "", ""
 }
 
 func remoteOfferJSONOf(n *model.OTCNegotiation) string {

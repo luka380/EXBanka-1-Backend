@@ -16,7 +16,8 @@ type RoleService struct {
 	roleRepo  RoleRepo
 	permRepo  PermissionRepo
 	publisher RolePermPublisher
-	db        *gorm.DB // optional; required only for SeedRolesAndPermissions
+	cache     EmployeeCacheEvictor // optional; evicts employee caches on role-perm change
+	db        *gorm.DB             // optional; required only for SeedRolesAndPermissions
 }
 
 func NewRoleService(roleRepo RoleRepo, permRepo PermissionRepo) *RoleService {
@@ -28,6 +29,14 @@ func NewRoleService(roleRepo RoleRepo, permRepo PermissionRepo) *RoleService {
 // builder-style wiring in cmd/main.go. Pass nil to disable publishing.
 func (s *RoleService) WithPublisher(p RolePermPublisher) *RoleService {
 	s.publisher = p
+	return s
+}
+
+// WithCache wires the Redis cache used to evict the records of employees holding
+// a role whose permissions changed (so GetEmployee reflects the change without
+// waiting for the 5-min TTL). Pass nil to disable eviction.
+func (s *RoleService) WithCache(c EmployeeCacheEvictor) *RoleService {
+	s.cache = c
 	return s
 }
 
@@ -267,10 +276,14 @@ func (s *RoleService) UpdateRolePermissions(roleID int64, permissionCodes []stri
 	return nil
 }
 
-// publishRolePermissionsChanged fans out the event. Nil publisher → no-op.
-// Errors are logged at warn but never propagated; the DB state is canonical.
+// publishRolePermissionsChanged fans out a role-permission change to the
+// employees holding that role: it evicts their cached records (so a subsequent
+// GetEmployee reflects the new permissions immediately) AND publishes the
+// RolePermissionsChanged event (so auth-service force-refreshes them). Both are
+// best-effort and independent; errors are logged but never propagated — the DB
+// state is canonical.
 func (s *RoleService) publishRolePermissionsChanged(roleID int64, roleName, source string) {
-	if s.publisher == nil {
+	if s.publisher == nil && s.cache == nil {
 		return
 	}
 	ids, err := s.roleRepo.ListEmployeeIDsByRole(roleID)
@@ -279,20 +292,29 @@ func (s *RoleService) publishRolePermissionsChanged(roleID int64, roleName, sour
 		return
 	}
 	if len(ids) == 0 {
-		// Nobody to revoke — skip the publish to keep the topic quiet.
-		// Newly-created roles always hit this path because employees are
-		// attached afterwards via SetEmployeeRoles.
+		// Nobody holds this role — nothing to evict or revoke. Newly-created
+		// roles always hit this path (employees are attached afterwards via
+		// SetEmployeeRoles).
 		return
 	}
-	msg := kafkamsg.RolePermissionsChangedMessage{
-		RoleID:              roleID,
-		RoleName:            roleName,
-		AffectedEmployeeIDs: ids,
-		ChangedAt:           time.Now().Unix(),
-		Source:              source,
+	// Evict every affected employee's cached record so GetEmployee no longer
+	// returns the stale resolved-permission set.
+	if s.cache != nil {
+		for _, id := range ids {
+			_ = s.cache.Delete(context.Background(), employeeIDCacheKey(id))
+		}
 	}
-	if err := s.publisher.PublishRolePermissionsChanged(context.Background(), msg); err != nil {
-		log.Printf("WARN: role-perm-changed: publish for role %d: %v", roleID, err)
+	if s.publisher != nil {
+		msg := kafkamsg.RolePermissionsChangedMessage{
+			RoleID:              roleID,
+			RoleName:            roleName,
+			AffectedEmployeeIDs: ids,
+			ChangedAt:           time.Now().Unix(),
+			Source:              source,
+		}
+		if err := s.publisher.PublishRolePermissionsChanged(context.Background(), msg); err != nil {
+			log.Printf("WARN: role-perm-changed: publish for role %d: %v", roleID, err)
+		}
 	}
 }
 

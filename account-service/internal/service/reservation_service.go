@@ -64,19 +64,10 @@ func (s *ReservationService) WithCache(c *cache.RedisCache) *ReservationService 
 }
 
 // invalidateAccount drops the cached account by id and number after a balance
-// mutation. Keys MUST match AccountService's ("account:id:%d", "account:num:%s")
-// so a stock-order reserve/settle is reflected by the next GetAccount read.
+// mutation, via the shared evictAccountCache helper (single source of the key
+// format), so a stock-order reserve/settle is reflected by the next GetAccount read.
 func (s *ReservationService) invalidateAccount(id uint64, number string) {
-	if s.cache == nil {
-		return
-	}
-	ctx := context.Background()
-	if id != 0 {
-		_ = s.cache.Delete(ctx, fmt.Sprintf("account:id:%d", id))
-	}
-	if number != "" {
-		_ = s.cache.Delete(ctx, fmt.Sprintf("account:num:%s", number))
-	}
+	evictAccountCache(s.cache, id, number)
 }
 
 // ReserveFundsResult is returned by ReserveFunds.

@@ -30,6 +30,11 @@ func main() {
 
 	db, err := gorm.Open(postgres.Open(cfg.DSN()), &gorm.Config{
 		NowFunc: func() time.Time { return time.Now().UTC() },
+		// Translate driver-specific errors (e.g. Postgres unique-violation) into
+		// portable gorm sentinels (gorm.ErrDuplicatedKey) so the service layer can
+		// map a duplicate email/JMBG to AlreadyExists (409) instead of leaking the
+		// raw constraint string — which contains the colliding email/JMBG (PII).
+		TranslateError: true,
 	})
 	if err != nil {
 		log.Fatalf("failed to connect to database: %v", err)

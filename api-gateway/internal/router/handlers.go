@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 
 	grpcclients "github.com/exbanka/api-gateway/internal/grpc"
 	"github.com/exbanka/api-gateway/internal/handler"
@@ -26,6 +27,16 @@ import (
 	userpb "github.com/exbanka/contract/userpb"
 	verificationpb "github.com/exbanka/contract/verificationpb"
 )
+
+// RateLimitConfig holds the gateway rate-limit wiring (Phase A). A nil Redis
+// or a zero limit disables that bucket, so an empty config (as built by tests)
+// applies no rate limiting at all.
+type RateLimitConfig struct {
+	Redis        *redis.Client
+	GlobalPerMin int // generous per-IP ceiling across all routes
+	LoginPer5Min int // strict per-IP bucket on POST /auth/login
+	ResetPer5Min int // strict per-IP bucket on POST /auth/password/reset-request
+}
 
 // Deps groups every gRPC client the gateway depends on. It tidies the
 // signature of NewHandlers and keeps cmd/main.go a flat assignment block.
@@ -99,6 +110,14 @@ type Deps struct {
 	// AuditProducer is the Kafka producer used to publish admin cron audit
 	// events to the admin.cron-action topic (C10 — 2026-05-28).
 	AuditProducer *gatewaykafka.AuditProducer
+
+	// RateLimit configures the gateway's rate-limit buckets (Phase A).
+	// Zero-value (nil Redis) disables limiting.
+	RateLimit RateLimitConfig
+
+	// TokenVerifier verifies access tokens for AuthMiddleware/AnyAuthMiddleware
+	// (local ES256 with gRPC fallback). Built in cmd/main.go.
+	TokenVerifier *middleware.TokenVerifier
 }
 
 // Handlers bundles every HTTP handler the gateway exposes. The constructor
@@ -169,6 +188,13 @@ type Handlers struct {
 	// Dividend serves the /api/v3/admin/dividends/* and /api/v3/me/dividends
 	// routes (E4 — 2026-05-28).
 	Dividend *handler.DividendHandler
+
+	// RateLimit carries the rate-limit wiring from Deps so SetupV3 can apply
+	// the global + strict-auth buckets (Phase A).
+	RateLimit RateLimitConfig
+
+	// TokenVerifier backs AuthMiddleware/AnyAuthMiddleware (local ES256 verify).
+	TokenVerifier *middleware.TokenVerifier
 }
 
 // NewHandlers wires every handler from the supplied gRPC client deps.
@@ -234,5 +260,7 @@ func NewHandlers(d Deps) *Handlers {
 	h.StockOrder.Audit = d.AuditProducer
 	h.Role.Audit = d.AuditProducer
 	h.Tax.Audit = d.AuditProducer
+	h.RateLimit = d.RateLimit
+	h.TokenVerifier = d.TokenVerifier
 	return h
 }

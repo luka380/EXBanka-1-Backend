@@ -5,8 +5,58 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 )
+
+func TestSetupV3_GlobalRateLimitReturns429(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis: %v", err)
+	}
+	t.Cleanup(mr.Close)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+	r := NewRouter()
+	h := NewHandlers(Deps{
+		OwnBankCode: "111",
+		RateLimit:   RateLimitConfig{Redis: rdb, GlobalPerMin: 2},
+	})
+	SetupV3(r, h)
+
+	do := func() int {
+		w := httptest.NewRecorder()
+		// /version is a public route with no auth — clean target for the
+		// global per-IP ceiling.
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v3/version", nil))
+		return w.Code
+	}
+	if c := do(); c != http.StatusOK {
+		t.Fatalf("1st call: want 200, got %d", c)
+	}
+	if c := do(); c != http.StatusOK {
+		t.Fatalf("2nd call: want 200, got %d", c)
+	}
+	if c := do(); c != http.StatusTooManyRequests {
+		t.Fatalf("3rd call: want 429, got %d", c)
+	}
+}
+
+func TestSetupV3_NoLimiterWhenRedisNil(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := NewRouter()
+	h := NewHandlers(Deps{OwnBankCode: "111"}) // no RateLimit → no limiter
+	SetupV3(r, h)
+	for i := 0; i < 20; i++ {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v3/version", nil))
+		if w.Code == http.StatusTooManyRequests {
+			t.Fatalf("unexpected 429 with limiting disabled on call %d", i)
+		}
+	}
+}
 
 func TestNewRouter_Mounts(t *testing.T) {
 	gin.SetMode(gin.TestMode)

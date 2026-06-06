@@ -53,6 +53,10 @@ var (
 	// number that already exists.
 	ErrCompanyDuplicate = svcerr.New(codes.AlreadyExists, "company already exists")
 
+	// ErrAccountNameDuplicate — the client already has an account with the
+	// requested name (app-level uniqueness; account name has no DB unique index).
+	ErrAccountNameDuplicate = svcerr.New(codes.AlreadyExists, "account name already exists")
+
 	// ErrInvalidStatus — caller supplied an unknown account status.
 	ErrInvalidStatus = svcerr.New(codes.InvalidArgument, "invalid account status")
 

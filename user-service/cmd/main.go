@@ -33,6 +33,10 @@ func main() {
 
 	db, err := gorm.Open(postgres.Open(cfg.DSN()), &gorm.Config{
 		NowFunc: func() time.Time { return time.Now().UTC() },
+		// Translate driver-specific errors (e.g. a unique-constraint violation)
+		// into gorm.ErrDuplicatedKey so the service layer can map duplicate
+		// email/JMBG to ErrEmployeeAlreadyExists (HTTP 409) portably.
+		TranslateError: true,
 	})
 	if err != nil {
 		log.Fatalf("failed to connect to database: %v", err)
@@ -95,6 +99,11 @@ func main() {
 	roleSvc := service.NewRoleService(roleRepo, permRepo).
 		WithPublisher(producer).
 		WithDB(db)
+	if redisCache != nil {
+		// Guard against a typed-nil *RedisCache landing in the interface field
+		// (which would defeat the nil check and panic on eviction).
+		roleSvc = roleSvc.WithCache(redisCache)
+	}
 
 	// Seed roles and permissions on startup. The slim seed only inserts
 	// the default role↔permission mappings on a truly fresh DB; subsequent

@@ -960,6 +960,18 @@ func (s *OTCNegotiationService) authorizeListingAudience(
 		}
 		return nil, err
 	}
+	// A folded-in REMOTE mirror offer (local=false) is NOT a local listing this
+	// audience check governs — it lives in the same otc_offers table but is
+	// peer-hosted. getByID (unlike LockByIDTx/GetRemoteByID) does not filter
+	// `local`, so without this guard a remote listing id resolves here and the
+	// audience check returns Forbidden (client caller) or succeeds with an empty
+	// local-chains set (bank caller), short-circuiting the handler's remote
+	// fallback (remoteListingOwnChains / remoteOfferTimeline). Treat it as
+	// not-found so that fallback fires and surfaces the caller's own cross-bank
+	// chain(s) on the peer-hosted listing (per-listing + timeline parity).
+	if !parent.Local {
+		return nil, ErrOTCOfferNotFound
+	}
 	if callerOwnerType == model.OwnerBank {
 		return parent, nil
 	}
@@ -1049,6 +1061,15 @@ func (s *OTCNegotiationService) ListRevisions(
 			return nil, ErrOTCRevisionsUnauthorized
 		}
 	}
+	return s.negRepo.ListRevisions(negotiationID)
+}
+
+// ListRevisionsUnchecked returns a chain's revision history with NO authorization
+// check. The caller MUST have already authorized access (e.g. the remote read
+// paths match the caller against the chain's Remote* hosted party / parent lot
+// key before calling). Used to expand a REMOTE chain into its full per-move
+// timeline.
+func (s *OTCNegotiationService) ListRevisionsUnchecked(negotiationID uint64) ([]model.OTCNegotiationRevision, error) {
 	return s.negRepo.ListRevisions(negotiationID)
 }
 

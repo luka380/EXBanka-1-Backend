@@ -505,3 +505,201 @@ func (r *OTCNegotiationRepository) ListRemoteNegOngoing() ([]model.OTCNegotiatio
 		Order("updated_at ASC").Find(&out).Error
 	return out, err
 }
+
+// ---------------------------------------------------------------------------
+// Remote chain revision logging (full-history parity with local chains).
+//
+// Each REMOTE mutation is paired with a revision append in the SAME transaction
+// so a remote chain accumulates the same per-move history (BID/COUNTER/ACCEPT/
+// REJECT) that a local chain does. The rev template the caller passes carries the
+// terms, Action, ModifiedByPrincipalType (role: "buyer"/"seller"), and
+// RemoteActorWireID; this layer fills NegotiationID + RevisionNumber.
+// ---------------------------------------------------------------------------
+
+// txGetRemoteNeg loads a remote chain by its (peer routing, native id) natural key
+// inside tx.
+func txGetRemoteNeg(tx *gorm.DB, routing int64, native string) (*model.OTCNegotiation, error) {
+	var row model.OTCNegotiation
+	err := tx.Where("routing_number = ? AND native_id = ? AND local = ?", routing, native, false).First(&row).Error
+	if err != nil {
+		return nil, err
+	}
+	return &row, nil
+}
+
+// appendRemoteRevisionTx appends rev to chain negID inside tx, numbering it with
+// NextRevisionNumber so the (negotiation_id, revision_number) unique index
+// serializes concurrent appends.
+func (r *OTCNegotiationRepository) appendRemoteRevisionTx(tx *gorm.DB, negID uint64, rev *model.OTCNegotiationRevision) error {
+	n, err := r.NextRevisionNumber(tx, negID)
+	if err != nil {
+		return err
+	}
+	rev.NegotiationID = negID
+	rev.RevisionNumber = n
+	return tx.Create(rev).Error
+}
+
+// lastRevisionTx returns the most recent revision for negID, or (nil, nil) if none.
+func (r *OTCNegotiationRepository) lastRevisionTx(tx *gorm.DB, negID uint64) (*model.OTCNegotiationRevision, error) {
+	var rev model.OTCNegotiationRevision
+	err := tx.Where("negotiation_id = ?", negID).Order("revision_number DESC").First(&rev).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &rev, nil
+}
+
+// sameRevisionMove reports whether a (the last recorded revision) and b (the move
+// about to be recorded) are the SAME move — equal action, terms, and remote actor
+// wire id. Used to drop retried webhooks while still recording a legitimate
+// same-terms counter by the OTHER party (different wire id).
+func sameRevisionMove(a, b *model.OTCNegotiationRevision) bool {
+	if a == nil {
+		return false
+	}
+	aw, bw := "", ""
+	if a.RemoteActorWireID != nil {
+		aw = *a.RemoteActorWireID
+	}
+	if b.RemoteActorWireID != nil {
+		bw = *b.RemoteActorWireID
+	}
+	return a.Action == b.Action && aw == bw &&
+		a.Quantity.Equal(b.Quantity) && a.StrikePrice.Equal(b.StrikePrice) &&
+		a.Premium.Equal(b.Premium) && a.SettlementDate.Equal(b.SettlementDate)
+}
+
+// UpsertRemoteNegWithRevision upserts a remote chain (same as UpsertRemoteNeg) and,
+// when the chain has NO revisions yet, appends the supplied BID revision — all in
+// one TX. A retried create (chain already carries a BID) is a no-op for the
+// revision, keeping inbound/outbound bid delivery idempotent.
+func (r *OTCNegotiationRepository) UpsertRemoteNegWithRevision(n *model.OTCNegotiation, rev *model.OTCNegotiationRevision) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		txr := &OTCNegotiationRepository{db: tx}
+		if err := txr.UpsertRemoteNeg(n); err != nil {
+			return err
+		}
+		row, err := txGetRemoteNeg(tx, n.RoutingNumber, derefNativeID(n.NativeID))
+		if err != nil {
+			return err
+		}
+		last, err := r.lastRevisionTx(tx, row.ID)
+		if err != nil {
+			return err
+		}
+		if last != nil {
+			return nil // already has history → retried create, no-op
+		}
+		return r.appendRemoteRevisionTx(tx, row.ID, rev)
+	})
+}
+
+// UpdateRemoteNegOfferWithRevision updates the remote offer JSON and appends a
+// COUNTER revision, unless the chain's latest revision is the SAME move (a retry).
+func (r *OTCNegotiationRepository) UpdateRemoteNegOfferWithRevision(routing int64, native, offerJSON string, rev *model.OTCNegotiationRevision) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		row, err := txGetRemoteNeg(tx, routing, native)
+		if err != nil {
+			return err
+		}
+		if err := tx.Session(&gorm.Session{SkipHooks: true}).
+			Model(&model.OTCNegotiation{}).
+			Where("routing_number = ? AND native_id = ? AND local = ?", routing, native, false).
+			Updates(map[string]any{"remote_offer_json": offerJSON, "updated_at": time.Now().UTC()}).Error; err != nil {
+			return err
+		}
+		last, err := r.lastRevisionTx(tx, row.ID)
+		if err != nil {
+			return err
+		}
+		if sameRevisionMove(last, rev) {
+			return nil // retried counter → no-op
+		}
+		return r.appendRemoteRevisionTx(tx, row.ID, rev)
+	})
+}
+
+// CompareAndSetRemoteNegStatusWithRevision CASes status from→to and, only when the
+// CAS matched exactly one row (a real transition), appends rev. Returns whether it
+// transitioned. Idempotent: a second call matches 0 rows → no revision.
+func (r *OTCNegotiationRepository) CompareAndSetRemoteNegStatusWithRevision(routing int64, native, from, to string, rev *model.OTCNegotiationRevision) (bool, error) {
+	var transitioned bool
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		row, err := txGetRemoteNeg(tx, routing, native)
+		if err != nil {
+			return err
+		}
+		res := tx.Session(&gorm.Session{SkipHooks: true}).
+			Model(&model.OTCNegotiation{}).
+			Where("routing_number = ? AND native_id = ? AND status = ? AND local = ?", routing, native, from, false).
+			Updates(map[string]any{"status": to, "updated_at": time.Now().UTC()})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected != 1 {
+			return nil
+		}
+		transitioned = true
+		return r.appendRemoteRevisionTx(tx, row.ID, rev)
+	})
+	return transitioned, err
+}
+
+// SetRemoteNegStatusWithRevision flips status to `to` and appends rev only when the
+// chain is currently NON-terminal (status "ongoing") — a real party-driven terminal
+// move. Idempotent: a second call on an already-terminal chain is a no-op.
+func (r *OTCNegotiationRepository) SetRemoteNegStatusWithRevision(routing int64, native, to string, rev *model.OTCNegotiationRevision) (bool, error) {
+	var transitioned bool
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		row, err := txGetRemoteNeg(tx, routing, native)
+		if err != nil {
+			return err
+		}
+		if row.Status != "ongoing" {
+			return nil
+		}
+		if err := tx.Session(&gorm.Session{SkipHooks: true}).
+			Model(&model.OTCNegotiation{}).
+			Where("routing_number = ? AND native_id = ? AND local = ?", routing, native, false).
+			Updates(map[string]any{"status": to, "updated_at": time.Now().UTC()}).Error; err != nil {
+			return err
+		}
+		transitioned = true
+		return r.appendRemoteRevisionTx(tx, row.ID, rev)
+	})
+	return transitioned, err
+}
+
+// AppendRemoteRevision appends rev to the remote chain (routing, native),
+// idempotently skipping a retry whose latest revision is the SAME move. Used on
+// the INBOUND-accept SUCCESS path: the status was already CAS-claimed to
+// "accepted" at the concurrency-claim point, so the ACCEPT revision is recorded
+// only once the accept truly committed — never on a rolled-back claim.
+func (r *OTCNegotiationRepository) AppendRemoteRevision(routing int64, native string, rev *model.OTCNegotiationRevision) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		row, err := txGetRemoteNeg(tx, routing, native)
+		if err != nil {
+			return err
+		}
+		last, err := r.lastRevisionTx(tx, row.ID)
+		if err != nil {
+			return err
+		}
+		if sameRevisionMove(last, rev) {
+			return nil
+		}
+		return r.appendRemoteRevisionTx(tx, row.ID, rev)
+	})
+}
+
+// derefNativeID returns the string value of a NativeID pointer, or "" if nil.
+func derefNativeID(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}

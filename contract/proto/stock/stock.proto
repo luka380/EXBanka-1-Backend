@@ -1337,6 +1337,7 @@ message OTCNegotiationRevisionResponse {
   string action_by_principal_type = 9;
   uint64 action_by_principal_id   = 10;
   string created_at               = 11;
+  string action_by_wire_id        = 12; // remote chains: opaque mover id (client-N/employee-N/bank); empty for local
 }
 
 message ListNegotiationRevisionsRequest {
@@ -1522,9 +1523,10 @@ message OTCTimelineEntry {
   string strike_price             = 7;
   string premium                  = 8;
   string settlement_date          = 9;  // ISO-8601
-  string action_by_principal_type = 10; // "client" | "employee"
+  string action_by_principal_type = 10; // local: "client"|"employee"; remote: "buyer"|"seller"
   uint64 action_by_principal_id   = 11;
   string created_at               = 12; // ISO-8601
+  string action_by_wire_id        = 13; // remote chains: opaque mover id (client-N/employee-N/bank); empty for local
 }
 
 message GetOfferTimelineResponse {

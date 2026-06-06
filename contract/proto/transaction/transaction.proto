@@ -265,6 +265,78 @@ service PeerTxService {
   rpc GetTxStatus(GetTxStatusRequest) returns (GetTxStatusResponse);
 }
 
+// PeerEgressService is the centralized outbound HTTP egress to permitted peer
+// banks. Domain services (e.g. stock-service for OTC /negotiations, /public-stock,
+// /public-option-offers, /accept) call ProxyToPeer instead of dialing peers
+// directly, so peer_banks resolution + X-Api-Key/HMAC signing live in ONE place
+// (the interbank-service). Implemented by interbank-service only.
+service PeerEgressService {
+  rpc ProxyToPeer(ProxyToPeerRequest) returns (ProxyToPeerResponse);
+  // CheckPeerReachability probes ONE registered peer with a signed
+  // GET /public-stock (the universal SI-TX liveness endpoint) and reports
+  // reachability + HTTP status + latency. Used by the admin "verify on add"
+  // flow. Does NOT mutate the registry.
+  rpc CheckPeerReachability(CheckPeerReachabilityRequest) returns (PeerReachability);
+  // GetPeersState probes ALL registered peers concurrently — the fleet
+  // health/state view across peers.
+  rpc GetPeersState(GetPeersStateRequest) returns (GetPeersStateResponse);
+}
+
+message ProxyToPeerRequest {
+  string peer_bank_code = 1; // registered peer (peer_banks.bank_code)
+  string method         = 2; // GET | POST | PUT | DELETE
+  string path           = 3; // leaf appended to the peer's base_url, e.g. "/public-stock" or "/negotiations/222/abc/accept"
+  bytes  body           = 4; // request body (JSON); empty for GET/DELETE
+}
+
+message ProxyToPeerResponse {
+  int32 status_code = 1; // peer HTTP status
+  bytes body        = 2; // peer response body (verbatim)
+}
+
+message CheckPeerReachabilityRequest {
+  string peer_bank_code = 1;
+}
+
+message GetPeersStateRequest {}
+
+// PeerReachability is the health snapshot of a single registered peer.
+message PeerReachability {
+  string bank_code      = 1;
+  int64  routing_number = 2;
+  string base_url       = 3;
+  bool   active         = 4;  // peer_banks.active flag
+  bool   reachable      = 5;  // an HTTP response was received (no transport error)
+  int32  status_code    = 6;  // peer HTTP status on the probe; 0 when unreachable
+  int64  latency_ms     = 7;  // round-trip latency of the probe
+  string error          = 8;  // transport error message, or "" on success
+  string checked_at     = 9;  // RFC3339 timestamp of the probe
+}
+
+message GetPeersStateResponse {
+  repeated PeerReachability peers = 1;
+}
+
+// PeerUserService resolves one of THIS bank's users (client-<N> / employee-<N>)
+// to display names for a peer's friendly-name lookup (the SI-TX GET /user/{rid}/{id}
+// surface, §9). interbank-service implements it by forwarding to client-service /
+// user-service, so the api-gateway can route the ENTIRE /cross-bank-protocol
+// surface — including /user — to the single interbank backend.
+service PeerUserService {
+  rpc ResolvePeerUser(ResolvePeerUserRequest) returns (ResolvePeerUserResponse);
+}
+
+message ResolvePeerUserRequest {
+  int64  routing_number = 1; // must equal this bank's own routing, else not found
+  string id             = 2; // "client-<N>" | "employee-<N>"
+}
+
+message ResolvePeerUserResponse {
+  bool   found             = 1; // false ⇒ unknown user / foreign routing (gateway maps to 404)
+  string bank_display_name = 2;
+  string display_name      = 3;
+}
+
 message SiTxIdempotenceKey {
   int64 routing_number = 1;
   string locally_generated_key = 2;
