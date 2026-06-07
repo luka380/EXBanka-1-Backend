@@ -252,27 +252,36 @@ func main() {
 	// poll URL. See docs/superpowers/specs/2026-04-29-celina5-sitx-
 	// refactor-design.md.
 
-	// SI-TX peer-bank gRPC clients + nonce store + resolver (Phase 2 Task 14).
-	peerTxClient, peerTxConn, err := grpcclients.NewPeerTxServiceClient(cfg.TransactionGRPCAddr)
+	// Cross-bank SI-TX clients (2026-06-07 cutover): interbank-service is now
+	// THE backend for the whole /cross-bank-protocol surface. PeerTx (2PC),
+	// PeerBankAdmin (registry + inbound-auth resolution), and PeerOTC (which
+	// interbank forwards to stock-service) all dial interbank-service instead
+	// of transaction-service/stock-service.
+	peerTxClient, peerTxConn, err := grpcclients.NewPeerTxServiceClient(cfg.InterbankGRPCAddr)
 	if err != nil {
 		log.Fatalf("failed to connect to PeerTxService: %v", err)
 	}
 	defer peerTxConn.Close()
 
-	// PeerOTCService lives on stock-service and backs the
-	// /api/v3/public-stock + /api/v3/negotiations/* peer endpoints
-	// (Phase 4 Task 8 of the SI-TX refactor).
-	peerOTCClient, peerOTCConn, err := grpcclients.NewPeerOTCServiceClient(cfg.StockGRPCAddr)
+	peerOTCClient, peerOTCConn, err := grpcclients.NewPeerOTCServiceClient(cfg.InterbankGRPCAddr)
 	if err != nil {
 		log.Fatalf("failed to connect to PeerOTCService: %v", err)
 	}
 	defer peerOTCConn.Close()
 
-	peerBankAdminClient, peerBankAdminConn, err := grpcclients.NewPeerBankAdminServiceClient(cfg.TransactionGRPCAddr)
+	peerBankAdminClient, peerBankAdminConn, err := grpcclients.NewPeerBankAdminServiceClient(cfg.InterbankGRPCAddr)
 	if err != nil {
 		log.Fatalf("failed to connect to PeerBankAdminService: %v", err)
 	}
 	defer peerBankAdminConn.Close()
+
+	// PeerUserService (friendly-name /user) is served by interbank-service,
+	// which forwards to client/user-service. (2026-06-07 cutover.)
+	peerUserClient, peerUserConn, err := grpcclients.NewPeerUserServiceClient(cfg.InterbankGRPCAddr)
+	if err != nil {
+		log.Fatalf("failed to connect to PeerUserService: %v", err)
+	}
+	defer peerUserConn.Close()
 
 	redisClient := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
 	defer redisClient.Close()
@@ -361,6 +370,7 @@ func main() {
 		RecurringFundClient:  recurringFundClient,
 		PeerTxClient:         peerTxClient,
 		PeerBankAdminClient:  peerBankAdminClient,
+		PeerUserClient:       peerUserClient,
 		PeerNonces:           peerNonceStore,
 		PeerBanks:            peerBankResolver,
 		OwnBankCode:          cfg.OwnBankCode,

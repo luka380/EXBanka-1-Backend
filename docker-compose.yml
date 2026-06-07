@@ -484,12 +484,12 @@ services:
       KAFKA_BROKERS: kafka:9092
       EXCHANGE_GRPC_ADDR: "exchange-service:50059"
       VERIFICATION_GRPC_ADDR: "verification-service:50061"
-      STOCK_GRPC_ADDR: "stock-service:50060"
       METRICS_PORT: "9107"
-      OWN_BANK_CODE: "${OWN_BANK_CODE:-111}"
-      SITX_RECEIVE_SYNC_DEADLINE: "${SITX_RECEIVE_SYNC_DEADLINE:-5s}"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      # Cross-bank SI-TX env (STOCK_GRPC_ADDR, OWN_BANK_CODE,
+      # SITX_RECEIVE_SYNC_DEADLINE) + the peer-egress extra_hosts removed in the
+      # 2026-06-07 cutover: the SI-TX engine moved to interbank-service.
+      # transaction-service is pure local payments/transfers/fees and makes no
+      # outbound HTTP to peers.
     ports:
       - "50057:50057"
       - "9107:9107"
@@ -504,12 +504,6 @@ services:
         condition: service_started
       verification-service:
         condition: service_started
-      # stock-service intentionally NOT in depends_on: stock-service
-      # already depends on transaction-service (cross-bank dispatch path),
-      # so making it a hard dep here would cycle. The stock gRPC client
-      # is best-effort at startup — option-leg materialisation degrades
-      # gracefully (logs warning, transfer flows still work) when
-      # stock-service is unreachable.
 
   credit-service:
     build:
@@ -614,7 +608,10 @@ services:
       OTC_EXPIRY_WARNING_DAYS: "3"
       FUND_SNAPSHOT_CRON_UTC: "23:50"
       FUND_METRICS_MIN_MONTHLY_RETURNS: "2"
-      TRANSACTION_GRPC_ADDR: "transaction-service:50057"
+      # Cross-bank wiring (2026-06-07 cutover): the SI-TX engine, peer_banks
+      # registry, and outbound HTTP egress all live in interbank-service.
+      # stock-service no longer dials transaction-service.
+      INTERBANK_GRPC_ADDR: "interbank-service:50062"
       OWN_BANK_CODE: "${OWN_BANK_CODE:-111}"
     ports:
       - "50060:50060"
@@ -634,7 +631,7 @@ services:
         condition: service_started
       exchange-service:
         condition: service_started
-      transaction-service:
+      interbank-service:
         condition: service_started
       client-service:
         condition: service_started
@@ -688,6 +685,8 @@ services:
       STOCK_GRPC_ADDR: "stock-service:50060"
       VERIFICATION_GRPC_ADDR: "verification-service:50061"
       NOTIFICATION_GRPC_ADDR: "notification-service:50053"
+      # 2026-06-07 cutover: the whole /cross-bank-protocol surface routes here.
+      INTERBANK_GRPC_ADDR: "interbank-service:50062"
       KAFKA_BROKERS: kafka:9092
       METRICS_PORT: "9100"
       REDIS_ADDR: "redis:6379"
@@ -721,6 +720,8 @@ services:
       stock-service:
         condition: service_started
       verification-service:
+        condition: service_started
+      interbank-service:
         condition: service_started
       redis:
         condition: service_healthy
@@ -775,10 +776,12 @@ services:
       timeout: 5s
       retries: 5
 
-  # Cross-bank SI-TX settlement engine. DORMANT: it runs (ready to serve the
-  # whole /cross-bank-protocol surface) but nothing routes to it yet — the
-  # api-gateway still points its peer clients at transaction-service / stock-service
-  # until the integration cutover (see docs/superpowers/plans/2026-06-06-interbank-*).
+  # Cross-bank SI-TX settlement engine + peer_banks registry + outbound HTTP
+  # egress. LIVE as of the 2026-06-07 cutover: the api-gateway routes the whole
+  # /cross-bank-protocol surface here (step 1), and stock-service's OTC egress
+  # (negotiations + public-stock/option discovery) flows through ProxyToPeer
+  # here (step 2). transaction-service still hosts the engine until step 3
+  # removes it (see docs/superpowers/plans/2026-06-06-interbank-cutover.md).
   interbank-service:
     build:
       context: .

@@ -95,6 +95,20 @@ func RequireClientToken() gin.HandlerFunc {
 	}
 }
 
+// DenyClientToken rejects requests carrying a client JWT (admits employees /
+// non-client principals only). Must be chained after AnyAuthMiddleware (which
+// sets "principal_type"). Used for market data that Celina 3 restricts to
+// actuaries — clients may trade only stocks and futures, never forex or options.
+func DenyClientToken() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if principalType, _ := c.Get("principal_type"); principalType == "client" {
+			abortWithError(c, http.StatusForbidden, "forbidden", "not available to client accounts")
+			return
+		}
+		c.Next()
+	}
+}
+
 // RequirePermission admits the request only if the caller holds the given
 // typed permission. Accepting a typed value (rather than a magic string) means
 // router authors can no longer typo a permission code: anything not in the

@@ -47,12 +47,15 @@ type Config struct {
 	// OTCExpiryWarningDays > 0 enables the expiring-soon warning N days before
 	// settlement (SP5 E). Default 3; 0 disables.
 	OTCExpiryWarningDays int
-	// Spec 3 / Spec 4 cross-bank wiring. TransactionGRPCAddr is dialed by
-	// stock-service's cross-bank accept/exercise sagas to drive Phase 3
-	// transfer_funds + the compensation reverse-transfer. OwnBankCode is
-	// the local 3-digit bank code used for cross-bank routing decisions.
-	TransactionGRPCAddr string // default "localhost:50057"
-	OwnBankCode         string // default "111"
+	// Cross-bank wiring. As of the 2026-06-07 cutover, stock-service no longer
+	// dials transaction-service for cross-bank work — interbank-service hosts
+	// the SI-TX engine (PeerTxService.InitiateOutboundTxWithPostings for OTC
+	// settlement), the peer_banks registry (PeerBankAdminService), and the
+	// single outbound HTTP egress (PeerEgressService.ProxyToPeer). All three
+	// are reached over InterbankGRPCAddr. OwnBankCode is the local 3-digit
+	// bank code used for cross-bank routing decisions.
+	InterbankGRPCAddr string // default "localhost:50062"
+	OwnBankCode       string // default "111"
 	// WatchlistNotificationCronHours is how often (in hours) the daily watchlist
 	// notification cron runs. Default 24 h.
 	WatchlistNotificationCronHours int
@@ -101,7 +104,7 @@ func Load() *Config {
 		OTCExpiryCronUTC:               getEnv("OTC_EXPIRY_CRON_UTC", "02:00"),
 		OTCExpiryBatchSize:             getEnvInt("OTC_EXPIRY_BATCH_SIZE", 500),
 		OTCExpiryWarningDays:           getEnvInt("OTC_EXPIRY_WARNING_DAYS", 3),
-		TransactionGRPCAddr:            getEnv("TRANSACTION_GRPC_ADDR", "localhost:50057"),
+		InterbankGRPCAddr:              getEnv("INTERBANK_GRPC_ADDR", "localhost:50062"),
 		OwnBankCode:                    getEnv("OWN_BANK_CODE", "111"),
 		WatchlistNotificationCronHours: getEnvInt("WATCHLIST_NOTIFICATION_CRON_HOURS", 24),
 		FundSnapshotCronUTC:            getEnv("FUND_SNAPSHOT_CRON_UTC", "23:50"),

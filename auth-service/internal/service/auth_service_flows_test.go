@@ -703,6 +703,32 @@ func TestResetPassword_Success(t *testing.T) {
 	assert.NoError(t, bcrypt.CompareHashAndPassword([]byte(updated.PasswordHash), []byte(PepperPassword(f.pepper, "NewPass12"))))
 }
 
+// Celina 1: "Reset lozinke otključava nalog i resetuje broj neuspešnih pokušaja."
+// A password reset must clear an active brute-force lock.
+func TestResetPassword_UnlocksLockedAccount(t *testing.T) {
+	f := newAuthFlowFixture(t)
+	acct := f.seedActiveAccountWithPassword(t, "locked@test.com", "OldPass12", model.PrincipalTypeEmployee, 11)
+
+	require.NoError(t, f.db.Create(&model.AccountLock{
+		Email:     "locked@test.com",
+		Reason:    "too_many_failed_attempts",
+		LockedAt:  time.Now(),
+		ExpiresAt: time.Now().Add(30 * time.Minute),
+	}).Error)
+	lk, err := f.loginRepo.GetActiveLock("locked@test.com")
+	require.NoError(t, err)
+	require.NotNil(t, lk, "precondition: account is locked")
+
+	prt := &model.PasswordResetToken{AccountID: acct.ID, Token: "unlock-tok", ExpiresAt: time.Now().Add(time.Hour)}
+	require.NoError(t, f.db.Create(prt).Error)
+
+	require.NoError(t, f.svc.ResetPassword(context.Background(), "unlock-tok", "NewPass12", "NewPass12"))
+
+	lk2, err := f.loginRepo.GetActiveLock("locked@test.com")
+	require.NoError(t, err)
+	assert.Nil(t, lk2, "ResetPassword must unlock a locked account")
+}
+
 func TestResetPassword_MismatchedPasswords(t *testing.T) {
 	f := newAuthFlowFixture(t)
 	err := f.svc.ResetPassword(context.Background(), "tok", "NewPass12", "OtherPass12")

@@ -329,10 +329,17 @@ func (s *AccountService) UpdateBalanceWithOpts(accountNumber string, amount deci
 			return err
 		}
 	}
-	// Invalidate cached read-only data after balance change.
+	// Invalidate cached read-only data after balance change. Resolve the id from
+	// the number (cache-independent DB read) so BOTH cache keys — account:id:N
+	// AND account:num:S — are dropped; otherwise a read by id (GET
+	// /me/accounts/:id) keeps serving the pre-change balance. This is the path
+	// the OTC premium credit / fee debit (CreditAccount/DebitAccount →
+	// UpdateBalance gRPC) flow through.
 	// NOTE: The authoritative balance check always uses SELECT FOR UPDATE in the
 	// repo — this invalidation only affects display queries via GetAccount/GetAccountByNumber.
-	s.invalidateAccountCache(0, accountNumber)
+	var id uint64
+	_ = s.db.Model(&model.Account{}).Select("id").Where("account_number = ?", accountNumber).Scan(&id).Error
+	s.invalidateAccountCache(id, accountNumber)
 	return nil
 }
 

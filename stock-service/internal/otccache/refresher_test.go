@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -33,13 +31,13 @@ func (f *fakeOTCLister) ListOffers(_ service.OTCFilter) ([]model.Holding, int64,
 }
 
 // fakePeerBankAdminClient implements transactionpb.PeerBankAdminServiceClient
-// for the cache refresh path. ListPeerBanks returns canned peers; resolve
-// returns canned full-detail PeerBank rows.
+// for the cache refresh path. As of the 2026-06-07 interbank cutover the
+// refresher only calls ListPeerBanks (to enumerate which peers to poll); the
+// per-peer HTTP fetch goes through PeerEgressService, so resolution methods are
+// no longer exercised here and are stubbed not-used.
 type fakePeerBankAdminClient struct {
-	listResp     *transactionpb.ListPeerBanksResponse
-	listErr      error
-	resolveByMap map[string]*transactionpb.PeerBankFull
-	resolveErr   error
+	listResp *transactionpb.ListPeerBanksResponse
+	listErr  error
 }
 
 func (f *fakePeerBankAdminClient) ListPeerBanks(ctx context.Context, in *transactionpb.ListPeerBanksRequest, opts ...grpc.CallOption) (*transactionpb.ListPeerBanksResponse, error) {
@@ -64,17 +62,48 @@ func (f *fakePeerBankAdminClient) ResolvePeerByAPIToken(ctx context.Context, in 
 	return nil, errors.New("not used")
 }
 func (f *fakePeerBankAdminClient) ResolvePeerByBankCode(ctx context.Context, in *transactionpb.ResolvePeerByBankCodeRequest, opts ...grpc.CallOption) (*transactionpb.ResolvePeerByBankCodeResponse, error) {
-	if f.resolveErr != nil {
-		return nil, f.resolveErr
+	return nil, errors.New("not used")
+}
+
+// fakePeerEgressClient implements transactionpb.PeerEgressServiceClient. The
+// refresher's fetchPeer drives ProxyToPeer (GET /public-stock or
+// /public-option-offers); CheckPeerReachability/GetPeersState are unused here.
+type fakePeerEgressClient struct {
+	resp    *transactionpb.ProxyToPeerResponse
+	err     error
+	gotReqs []*transactionpb.ProxyToPeerRequest
+}
+
+func (f *fakePeerEgressClient) ProxyToPeer(ctx context.Context, in *transactionpb.ProxyToPeerRequest, opts ...grpc.CallOption) (*transactionpb.ProxyToPeerResponse, error) {
+	f.gotReqs = append(f.gotReqs, in)
+	if f.err != nil {
+		return nil, f.err
 	}
-	pb := f.resolveByMap[in.GetBankCode()]
-	return &transactionpb.ResolvePeerByBankCodeResponse{PeerBank: pb}, nil
+	return f.resp, nil
+}
+func (f *fakePeerEgressClient) CheckPeerReachability(ctx context.Context, in *transactionpb.CheckPeerReachabilityRequest, opts ...grpc.CallOption) (*transactionpb.PeerReachability, error) {
+	return nil, errors.New("not used")
+}
+func (f *fakePeerEgressClient) GetPeersState(ctx context.Context, in *transactionpb.GetPeersStateRequest, opts ...grpc.CallOption) (*transactionpb.GetPeersStateResponse, error) {
+	return nil, errors.New("not used")
+}
+
+// publicStocksBody marshals a PublicStocksResponse into the verbatim body an
+// interbank ProxyToPeer call would return from a peer's GET /public-stock.
+func publicStocksBody(t *testing.T, resp contractsitx.PublicStocksResponse) []byte {
+	t.Helper()
+	b, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal public-stocks: %v", err)
+	}
+	return b
 }
 
 // TestNewRefresher builds a Refresher and verifies field defaults.
 func TestNewRefresher(t *testing.T) {
 	c := New()
-	r := NewRefresher(c, &fakeOTCLister{}, &fakePeerBankAdminClient{}, "111", 5*time.Minute)
+	egress := &fakePeerEgressClient{}
+	r := NewRefresher(c, &fakeOTCLister{}, &fakePeerBankAdminClient{}, egress, "111", 5*time.Minute)
 	if r.cache != c {
 		t.Errorf("cache wired wrong")
 	}
@@ -84,8 +113,8 @@ func TestNewRefresher(t *testing.T) {
 	if r.interval != 5*time.Minute {
 		t.Errorf("interval = %v", r.interval)
 	}
-	if r.httpClient == nil {
-		t.Error("httpClient should be initialized")
+	if r.egress == nil {
+		t.Error("egress client should be wired")
 	}
 }
 
@@ -103,7 +132,7 @@ func TestRefresher_FetchLocal_Maps(t *testing.T) {
 		AveragePrice:   decimal.NewFromFloat(123.45),
 		CreatedAt:      time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC),
 	}
-	r := NewRefresher(New(), &fakeOTCLister{rows: []model.Holding{holding}}, nil, "111", time.Minute)
+	r := NewRefresher(New(), &fakeOTCLister{rows: []model.Holding{holding}}, nil, nil, "111", time.Minute)
 	out, err := r.fetchLocal()
 	if err != nil {
 		t.Fatalf("fetchLocal: %v", err)
@@ -129,7 +158,7 @@ func TestRefresher_FetchLocal_Maps(t *testing.T) {
 // TestRefresher_FetchLocal_ErrorPropagates ensures an error from the OTCLister
 // surface propagates so the caller can log + skip the local source.
 func TestRefresher_FetchLocal_ErrorPropagates(t *testing.T) {
-	r := NewRefresher(New(), &fakeOTCLister{err: errors.New("boom")}, nil, "111", time.Minute)
+	r := NewRefresher(New(), &fakeOTCLister{err: errors.New("boom")}, nil, nil, "111", time.Minute)
 	if _, err := r.fetchLocal(); err == nil {
 		t.Fatal("expected error")
 	}
@@ -148,7 +177,7 @@ func TestRefresher_Refresh_LocalOnly_NoPeers(t *testing.T) {
 	peerAdmin := &fakePeerBankAdminClient{
 		listResp: &transactionpb.ListPeerBanksResponse{PeerBanks: nil},
 	}
-	r := NewRefresher(cache, &fakeOTCLister{rows: []model.Holding{holding}}, peerAdmin, "111", time.Minute)
+	r := NewRefresher(cache, &fakeOTCLister{rows: []model.Holding{holding}}, peerAdmin, &fakePeerEgressClient{}, "111", time.Minute)
 	r.refresh(context.Background())
 
 	snap := cache.Get()
@@ -171,7 +200,7 @@ func TestRefresher_Refresh_LocalOnly_NoPeers(t *testing.T) {
 func TestRefresher_Refresh_LocalFetchFails(t *testing.T) {
 	cache := New()
 	peerAdmin := &fakePeerBankAdminClient{listResp: &transactionpb.ListPeerBanksResponse{PeerBanks: nil}}
-	r := NewRefresher(cache, &fakeOTCLister{err: errors.New("local boom")}, peerAdmin, "111", time.Minute)
+	r := NewRefresher(cache, &fakeOTCLister{err: errors.New("local boom")}, peerAdmin, &fakePeerEgressClient{}, "111", time.Minute)
 	r.refresh(context.Background())
 	snap := cache.Get()
 	if len(snap.Offers) != 0 {
@@ -184,7 +213,7 @@ func TestRefresher_Refresh_LocalFetchFails(t *testing.T) {
 func TestRefresher_Refresh_PeerListFails(t *testing.T) {
 	cache := New()
 	peerAdmin := &fakePeerBankAdminClient{listErr: errors.New("peer list fail")}
-	r := NewRefresher(cache, &fakeOTCLister{}, peerAdmin, "111", time.Minute)
+	r := NewRefresher(cache, &fakeOTCLister{}, peerAdmin, &fakePeerEgressClient{}, "111", time.Minute)
 	r.refresh(context.Background())
 	snap := cache.Get()
 	if snap.PeersTotal != 0 {
@@ -192,36 +221,32 @@ func TestRefresher_Refresh_PeerListFails(t *testing.T) {
 	}
 }
 
-// TestRefresher_FetchPeer_HappyPath sets up a real httptest server returning
-// PublicStocksResponse JSON, and asserts the offers come back as remote
-// entries with the right bank code + ticker mapping.
+// TestRefresher_FetchPeer_HappyPath drives a fake interbank ProxyToPeer that
+// returns 200 + PublicStocksResponse JSON, and asserts the offers come back as
+// remote entries with the right bank code + ticker mapping. It also verifies
+// the leaf request (GET /public-stock) handed to interbank.
 func TestRefresher_FetchPeer_HappyPath(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/public-stock") {
-			t.Errorf("unexpected path %s", r.URL.Path)
-		}
-		if r.Header.Get("X-Api-Key") != "tok-222" {
-			t.Errorf("missing X-Api-Key header: %v", r.Header)
-		}
-		_ = json.NewEncoder(w).Encode(contractsitx.PublicStocksResponse{
-			{
-				Stock: contractsitx.StockDescription{Ticker: "MSFT"},
-				Sellers: []contractsitx.PublicSeller{
-					{Seller: contractsitx.ForeignBankId{RoutingNumber: 222, ID: "client-3"}, Amount: 50},
+	egress := &fakePeerEgressClient{
+		resp: &transactionpb.ProxyToPeerResponse{
+			StatusCode: http.StatusOK,
+			Body: publicStocksBody(t, contractsitx.PublicStocksResponse{
+				{
+					Stock: contractsitx.StockDescription{Ticker: "MSFT"},
+					Sellers: []contractsitx.PublicSeller{
+						{Seller: contractsitx.ForeignBankId{RoutingNumber: 222, ID: "client-3"}, Amount: 50},
+					},
 				},
-			},
-		})
-	}))
-	t.Cleanup(server.Close)
-
-	peer := &transactionpb.PeerBankFull{BankCode: "222", BaseUrl: server.URL, Active: true, ApiTokenPlaintext: "tok-222"}
-	peerAdmin := &fakePeerBankAdminClient{
-		resolveByMap: map[string]*transactionpb.PeerBankFull{"222": peer},
+			}),
+		},
 	}
-	r := NewRefresher(New(), &fakeOTCLister{}, peerAdmin, "111", time.Minute)
+	r := NewRefresher(New(), &fakeOTCLister{}, &fakePeerBankAdminClient{}, egress, "111", time.Minute)
 	out, err := r.fetchPeer(context.Background(), &transactionpb.PeerBank{BankCode: "222"})
 	if err != nil {
 		t.Fatalf("fetchPeer: %v", err)
+	}
+	if len(egress.gotReqs) != 1 || egress.gotReqs[0].GetPeerBankCode() != "222" ||
+		egress.gotReqs[0].GetMethod() != http.MethodGet || egress.gotReqs[0].GetPath() != "/public-stock" {
+		t.Fatalf("ProxyToPeer req = %+v", egress.gotReqs)
 	}
 	if len(out) != 1 {
 		t.Fatalf("got %d offers", len(out))
@@ -232,106 +257,65 @@ func TestRefresher_FetchPeer_HappyPath(t *testing.T) {
 	if out[0].OwnerID != "client-3" {
 		t.Errorf("owner_id = %q want client-3", out[0].OwnerID)
 	}
-	// §3.1 bare-array shape does not carry currency per seller — omit currency check.
 }
 
-// TestRefresher_FetchPeer_InactivePeer ensures inactive peers are skipped
-// silently (return nil, nil).
-func TestRefresher_FetchPeer_InactivePeer(t *testing.T) {
-	peer := &transactionpb.PeerBankFull{BankCode: "222", BaseUrl: "http://nope", Active: false}
-	peerAdmin := &fakePeerBankAdminClient{
-		resolveByMap: map[string]*transactionpb.PeerBankFull{"222": peer},
-	}
-	r := NewRefresher(New(), &fakeOTCLister{}, peerAdmin, "111", time.Minute)
-	out, err := r.fetchPeer(context.Background(), &transactionpb.PeerBank{BankCode: "222"})
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	if out != nil {
-		t.Errorf("expected nil for inactive peer, got %+v", out)
-	}
-}
-
-// TestRefresher_FetchPeer_ResolveError surfaces a resolve RPC error.
-func TestRefresher_FetchPeer_ResolveError(t *testing.T) {
-	peerAdmin := &fakePeerBankAdminClient{resolveErr: errors.New("rpc fail")}
-	r := NewRefresher(New(), &fakeOTCLister{}, peerAdmin, "111", time.Minute)
+// TestRefresher_FetchPeer_EgressError surfaces a gRPC error from interbank's
+// ProxyToPeer. Post-cutover, an unknown/inactive/unreachable peer is signalled
+// by interbank as an error (NotFound/FailedPrecondition/Unavailable), which the
+// refresher logs and skips per-peer.
+func TestRefresher_FetchPeer_EgressError(t *testing.T) {
+	egress := &fakePeerEgressClient{err: errors.New("peer bank inactive")}
+	r := NewRefresher(New(), &fakeOTCLister{}, &fakePeerBankAdminClient{}, egress, "111", time.Minute)
 	_, err := r.fetchPeer(context.Background(), &transactionpb.PeerBank{BankCode: "222"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
 }
 
-// TestRefresher_FetchPeer_BadStatusCode surfaces a non-200 from the peer.
+// TestRefresher_FetchPeer_BadStatusCode surfaces a non-200 the peer returned
+// (passed through verbatim by interbank as ProxyToPeerResponse.StatusCode).
 func TestRefresher_FetchPeer_BadStatusCode(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte("server error"))
-	}))
-	t.Cleanup(server.Close)
-	peer := &transactionpb.PeerBankFull{BankCode: "222", BaseUrl: server.URL, Active: true, ApiTokenPlaintext: "x"}
-	peerAdmin := &fakePeerBankAdminClient{
-		resolveByMap: map[string]*transactionpb.PeerBankFull{"222": peer},
-	}
-	r := NewRefresher(New(), &fakeOTCLister{}, peerAdmin, "111", time.Minute)
+	egress := &fakePeerEgressClient{resp: &transactionpb.ProxyToPeerResponse{
+		StatusCode: http.StatusInternalServerError, Body: []byte("server error"),
+	}}
+	r := NewRefresher(New(), &fakeOTCLister{}, &fakePeerBankAdminClient{}, egress, "111", time.Minute)
 	_, err := r.fetchPeer(context.Background(), &transactionpb.PeerBank{BankCode: "222"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
 }
 
-// TestRefresher_FetchPeer_BadJSON surfaces a JSON-parse error from the peer.
+// TestRefresher_FetchPeer_BadJSON surfaces a JSON-parse error from the peer body.
 func TestRefresher_FetchPeer_BadJSON(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("not json"))
-	}))
-	t.Cleanup(server.Close)
-	peer := &transactionpb.PeerBankFull{BankCode: "222", BaseUrl: server.URL, Active: true, ApiTokenPlaintext: "x"}
-	peerAdmin := &fakePeerBankAdminClient{
-		resolveByMap: map[string]*transactionpb.PeerBankFull{"222": peer},
-	}
-	r := NewRefresher(New(), &fakeOTCLister{}, peerAdmin, "111", time.Minute)
+	egress := &fakePeerEgressClient{resp: &transactionpb.ProxyToPeerResponse{
+		StatusCode: http.StatusOK, Body: []byte("not json"),
+	}}
+	r := NewRefresher(New(), &fakeOTCLister{}, &fakePeerBankAdminClient{}, egress, "111", time.Minute)
 	_, err := r.fetchPeer(context.Background(), &transactionpb.PeerBank{BankCode: "222"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
 }
 
-// TestRefresher_FetchPeer_NilFullPeer covers the resolve-returns-nil edge.
-func TestRefresher_FetchPeer_NilFullPeer(t *testing.T) {
-	peerAdmin := &fakePeerBankAdminClient{
-		resolveByMap: map[string]*transactionpb.PeerBankFull{"222": nil},
-	}
-	r := NewRefresher(New(), &fakeOTCLister{}, peerAdmin, "111", time.Minute)
-	out, err := r.fetchPeer(context.Background(), &transactionpb.PeerBank{BankCode: "222"})
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	if out != nil {
-		t.Errorf("expected nil for nil full peer")
-	}
-}
-
-// TestRefresher_Refresh_WithReachablePeer wires a single peer through an
-// httptest server and verifies both local and remote offers land in cache.
+// TestRefresher_Refresh_WithReachablePeer wires a single peer (via ListPeerBanks)
+// and a fake interbank egress, and verifies both local and remote offers land
+// in cache with the reachability counters set.
 func TestRefresher_Refresh_WithReachablePeer(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(contractsitx.PublicStocksResponse{
+	egress := &fakePeerEgressClient{resp: &transactionpb.ProxyToPeerResponse{
+		StatusCode: http.StatusOK,
+		Body: publicStocksBody(t, contractsitx.PublicStocksResponse{
 			{
 				Stock: contractsitx.StockDescription{Ticker: "GOOG"},
 				Sellers: []contractsitx.PublicSeller{
 					{Seller: contractsitx.ForeignBankId{RoutingNumber: 222, ID: "0"}, Amount: 12},
 				},
 			},
-		})
-	}))
-	t.Cleanup(server.Close)
-	peer := &transactionpb.PeerBankFull{BankCode: "222", BaseUrl: server.URL, Active: true, ApiTokenPlaintext: "x"}
+		}),
+	}}
 	peerAdmin := &fakePeerBankAdminClient{
 		listResp: &transactionpb.ListPeerBanksResponse{
 			PeerBanks: []*transactionpb.PeerBank{{BankCode: "222"}},
 		},
-		resolveByMap: map[string]*transactionpb.PeerBankFull{"222": peer},
 	}
 	cache := New()
 	uid := uint64(7)
@@ -340,7 +324,7 @@ func TestRefresher_Refresh_WithReachablePeer(t *testing.T) {
 		SecurityType: "stock", Ticker: "AAPL",
 		PublicQuantity: 1, AveragePrice: decimal.NewFromInt(150),
 	}
-	r := NewRefresher(cache, &fakeOTCLister{rows: []model.Holding{holding}}, peerAdmin, "111", time.Minute)
+	r := NewRefresher(cache, &fakeOTCLister{rows: []model.Holding{holding}}, peerAdmin, egress, "111", time.Minute)
 	r.refresh(context.Background())
 	snap := cache.Get()
 	if len(snap.Offers) != 2 {
@@ -374,7 +358,7 @@ func TestSetForTest(t *testing.T) {
 func TestRefresher_Run_StopsOnContextCancel(t *testing.T) {
 	cache := New()
 	peerAdmin := &fakePeerBankAdminClient{listResp: &transactionpb.ListPeerBanksResponse{PeerBanks: nil}}
-	r := NewRefresher(cache, &fakeOTCLister{}, peerAdmin, "111", 50*time.Millisecond)
+	r := NewRefresher(cache, &fakeOTCLister{}, peerAdmin, &fakePeerEgressClient{}, "111", 50*time.Millisecond)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {

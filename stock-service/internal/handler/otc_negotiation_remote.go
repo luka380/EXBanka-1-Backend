@@ -4,12 +4,13 @@
 // dispatched to the seller's bank over SI-TX instead of running the local
 // first-accept-wins saga.
 //
-// This relocates the egress logic that previously lived in the api-gateway
-// (peer_otc_initiate_handler.go CreatePeerNegotiation) into stock-service per
-// decision A: composes the SI-TX OtcOffer, validates the bidder account,
-// POSTs to the peer via peerotc.Client, and records the local mirror row. The
-// gateway stays thin — it forwards every bid through OpenNegotiation and the
-// dispatch happens here based on whether the parent listing is local or remote.
+// This composes the SI-TX OtcOffer, validates the bidder account, POSTs it to
+// the peer through the PeerNegotiationDispatcher, and records the local mirror
+// row. As of the 2026-06-07 cutover the dispatcher (peeregress.Dispatcher)
+// routes the POST through interbank-service's ProxyToPeer egress — peer
+// resolution + signing live there, not in stock-service. The gateway stays
+// thin: it forwards every bid through OpenNegotiation and the dispatch happens
+// here based on whether the parent listing is local or remote.
 package handler
 
 import (

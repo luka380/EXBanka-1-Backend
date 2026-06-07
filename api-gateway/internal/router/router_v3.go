@@ -328,11 +328,13 @@ func SetupV3(r *gin.Engine, h *Handlers) {
 		securities.GET("/futures", h.Securities.ListFutures)
 		securities.GET("/futures/:id", h.Securities.GetFutures)
 		securities.GET("/futures/:id/history", h.Securities.GetFuturesHistory)
-		securities.GET("/forex", h.Securities.ListForexPairs)
-		securities.GET("/forex/:id", h.Securities.GetForexPair)
-		securities.GET("/forex/:id/history", h.Securities.GetForexPairHistory)
-		securities.GET("/options", h.Securities.ListOptions)
-		securities.GET("/options/:id", h.Securities.GetOption)
+		// Forex pairs and options are actuary-only market data: Celina 3
+		// restricts clients to stocks and futures. DenyClientToken 403s clients.
+		securities.GET("/forex", middleware.DenyClientToken(), h.Securities.ListForexPairs)
+		securities.GET("/forex/:id", middleware.DenyClientToken(), h.Securities.GetForexPair)
+		securities.GET("/forex/:id/history", middleware.DenyClientToken(), h.Securities.GetForexPairHistory)
+		securities.GET("/options", middleware.DenyClientToken(), h.Securities.ListOptions)
+		securities.GET("/options/:id", middleware.DenyClientToken(), h.Securities.GetOption)
 		securities.GET("/candles", h.Securities.GetCandles)
 	}
 

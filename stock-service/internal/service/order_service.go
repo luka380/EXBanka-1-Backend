@@ -686,8 +686,7 @@ func (s *OrderService) buildPlacementSaga(sagaID string, p placementParams, out 
 						}
 						out.limitAmountRSD = rsdAmt
 						out.actuaryLimitID = info.ID
-						if info.NeedApproval && info.Limit.Sign() > 0 &&
-							info.UsedLimit.Add(rsdAmt).GreaterThan(info.Limit) {
+						if decideNeedsApproval(info.NeedApproval, info.Limit, info.UsedLimit, rsdAmt) {
 							out.needsApproval = true
 						}
 					case errors.Is(aerr, stockgrpc.ErrActuaryNotFound):
@@ -1011,6 +1010,23 @@ func contractSizeForSecurity(securityType string) int64 {
 	default:
 		return 1
 	}
+}
+
+// decideNeedsApproval implements the Celina 3 agent-approval rule. An agent's
+// BUY order requires supervisor approval if ANY of:
+//  1. the agent's needApproval flag is set (forces approval even under-limit);
+//  2. the agent has used up their daily limit (used >= limit);
+//  3. the order would push used+amount over the daily limit.
+//
+// Conditions 2 and 3 collapse to used+amount > limit (amount is always > 0).
+// This is a DISJUNCTION: the flag alone forces approval, and an over-limit
+// order forces approval even when the flag is unset — closing the money-control
+// hole where a no-flag agent could auto-approve an over-limit order.
+func decideNeedsApproval(needApproval bool, limit, usedLimit, amount decimal.Decimal) bool {
+	if needApproval {
+		return true
+	}
+	return limit.Sign() > 0 && usedLimit.Add(amount).GreaterThan(limit)
 }
 
 // approvalActor returns the value to store in Order.ApprovedBy at the end of

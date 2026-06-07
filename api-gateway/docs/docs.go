@@ -10803,7 +10803,7 @@ const docTemplate = `{
         },
         "/api/v3/cross-bank-protocol/user/{rid}/{id}": {
             "get": {
-                "description": "Inbound from a peer bank. Looks up a local (client-N / employee-N) and returns first+last name for OTC negotiation display. Routing number in path MUST match this bank's routing — calls for foreign users return 404.",
+                "description": "Inbound from a peer bank. Forwards to interbank-service which looks up the local (client-N / employee-N) user and returns first+last name. Routing number in path MUST match this bank's routing — others return 404.",
                 "produces": [
                     "application/json"
                 ],

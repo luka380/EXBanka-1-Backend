@@ -18,8 +18,14 @@ type Config struct {
 	StockGRPCAddr        string
 	VerificationGRPCAddr string
 	NotificationGRPCAddr string
-	KafkaBrokers         string
-	MetricsPort          string
+	// InterbankGRPCAddr is the cross-bank SI-TX settlement service. As of the
+	// 2026-06-07 cutover it is THE backend for the entire /cross-bank-protocol
+	// surface: PeerTx (2PC), PeerBankAdmin (registry), PeerOTC (forwarded to
+	// stock-service), PeerEgress, and PeerUser. The gateway dials all of these
+	// here instead of transaction-service/stock-service.
+	InterbankGRPCAddr string
+	KafkaBrokers      string
+	MetricsPort       string
 
 	// RedisAddr is the address of the Redis instance used by the gateway.
 	// Currently used by the SI-TX PeerNonceStore (HMAC nonce dedup window;
@@ -58,6 +64,7 @@ func Load() *Config {
 		StockGRPCAddr:        getEnv("STOCK_GRPC_ADDR", "localhost:50060"),
 		VerificationGRPCAddr: getEnv("VERIFICATION_GRPC_ADDR", "localhost:50061"),
 		NotificationGRPCAddr: getEnv("NOTIFICATION_GRPC_ADDR", "localhost:50053"),
+		InterbankGRPCAddr:    getEnv("INTERBANK_GRPC_ADDR", "localhost:50062"),
 		KafkaBrokers:         getEnv("KAFKA_BROKERS", "localhost:9092"),
 		MetricsPort:          getEnv("METRICS_PORT", "9100"),
 

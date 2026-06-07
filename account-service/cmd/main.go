@@ -121,7 +121,7 @@ func main() {
 	accountService.SetBankRepo(bankRepo)
 	companyService := service.NewCompanyService(companyRepo)
 	currencyService := service.NewCurrencyService(currencyRepo)
-	ledgerService := service.NewLedgerService(ledgerRepo, db)
+	ledgerService := service.NewLedgerService(ledgerRepo, db).WithCache(redisCache)
 	changelogSvc := service.NewChangelogService(changelogRepo)
 	reservationService := service.NewReservationService(db, accountRepo, reservationRepo, ledgerRepo).WithCache(redisCache)
 	incomingReservationService := service.NewIncomingReservationService(db, accountRepo, incomingReservationRepo).WithCache(redisCache)

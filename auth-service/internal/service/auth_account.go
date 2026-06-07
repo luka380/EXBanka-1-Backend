@@ -26,6 +26,13 @@ type SessionRevoker interface {
 	RevokeAllSessions(ctx context.Context, principalType string, accountID, userID int64, reason string) error
 }
 
+// accountUnlocker clears an active brute-force lock (and the failed-attempt
+// counter) for an email. A password reset must unlock the account per Celina 1.
+// Satisfied by *repository.LoginAttemptRepository.
+type accountUnlocker interface {
+	UnlockAccount(email string) error
+}
+
 // AccountService owns account lifecycle: creation/activation, password reset,
 // and account status. Independently constructable; it depends on a
 // SessionRevoker (to drop sessions on password reset) and the package-level
@@ -38,6 +45,7 @@ type AccountService struct {
 	cache           *cache.RedisCache
 	jwtService      *JWTService
 	sessions        SessionRevoker
+	unlocker        accountUnlocker
 	frontendBaseURL string
 	pepper          string
 }
@@ -51,6 +59,7 @@ func NewAccountService(
 	c *cache.RedisCache,
 	jwtService *JWTService,
 	sessions SessionRevoker,
+	unlocker accountUnlocker,
 	frontendBaseURL, pepper string,
 ) *AccountService {
 	return &AccountService{
@@ -61,6 +70,7 @@ func NewAccountService(
 		cache:           c,
 		jwtService:      jwtService,
 		sessions:        sessions,
+		unlocker:        unlocker,
 		frontendBaseURL: frontendBaseURL,
 		pepper:          pepper,
 	}
@@ -213,6 +223,13 @@ func (s *AccountService) ResetPassword(ctx context.Context, tokenStr, newPasswor
 	// Resolve the user ID from the account
 	var acct model.Account
 	if acctErr := s.accountRepo.GetByID(prt.AccountID, &acct); acctErr == nil {
+		// Celina 1: a password reset unlocks a brute-force-locked account and
+		// resets its failed-attempt counter.
+		if s.unlocker != nil {
+			if err := s.unlocker.UnlockAccount(acct.Email); err != nil {
+				log.Printf("warn: failed to unlock account after password reset: %v", err)
+			}
+		}
 		if err := s.sessions.RevokeAllSessions(ctx, acct.PrincipalType, prt.AccountID, acct.PrincipalID, "password_reset"); err != nil {
 			log.Printf("warn: failed to revoke all sessions after password reset: %v", err)
 		}

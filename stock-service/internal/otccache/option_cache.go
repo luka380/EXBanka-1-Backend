@@ -16,11 +16,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -154,7 +152,7 @@ type OptionRefresher struct {
 	otc         OptionOfferLister
 	currency    OptionCurrencyResolver
 	peerAdmin   transactionpb.PeerBankAdminServiceClient
-	httpClient  *http.Client
+	egress      transactionpb.PeerEgressServiceClient
 	ownBankCode string
 	ownRouting  int64
 	interval    time.Duration
@@ -170,6 +168,7 @@ func NewOptionRefresher(
 	otc OptionOfferLister,
 	currency OptionCurrencyResolver,
 	peerAdmin transactionpb.PeerBankAdminServiceClient,
+	egress transactionpb.PeerEgressServiceClient,
 	ownBankCode string,
 	ownRouting int64,
 	interval time.Duration,
@@ -179,7 +178,7 @@ func NewOptionRefresher(
 		otc:         otc,
 		currency:    currency,
 		peerAdmin:   peerAdmin,
-		httpClient:  &http.Client{Timeout: 5 * time.Second},
+		egress:      egress,
 		ownBankCode: ownBankCode,
 		ownRouting:  ownRouting,
 		interval:    interval,
@@ -332,33 +331,22 @@ func (r *OptionRefresher) fetchLocal() ([]OptionOffer, error) {
 }
 
 func (r *OptionRefresher) fetchPeer(ctx context.Context, peer *transactionpb.PeerBank) ([]OptionOffer, error) {
-	resolveResp, err := r.peerAdmin.ResolvePeerByBankCode(ctx, &transactionpb.ResolvePeerByBankCodeRequest{BankCode: peer.GetBankCode()})
+	// Outbound HTTP to the peer's /public-option-offers is centralized in
+	// interbank-service: ProxyToPeer resolves the peer's base_url, signs, GETs,
+	// and returns the peer's status + body verbatim.
+	proxyResp, err := r.egress.ProxyToPeer(ctx, &transactionpb.ProxyToPeerRequest{
+		PeerBankCode: peer.GetBankCode(),
+		Method:       http.MethodGet,
+		Path:         "/public-option-offers",
+	})
 	if err != nil {
 		return nil, err
 	}
-	full := resolveResp.GetPeerBank()
-	if full == nil || !full.GetActive() {
-		return nil, nil
-	}
-	url := strings.TrimRight(full.GetBaseUrl(), "/") + "/public-option-offers"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("X-Api-Key", full.GetApiTokenPlaintext())
-
-	httpResp, err := r.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer httpResp.Body.Close()
-
-	body, _ := io.ReadAll(httpResp.Body)
-	if httpResp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("status %d: %s", httpResp.StatusCode, string(body))
+	if proxyResp.GetStatusCode() != http.StatusOK {
+		return nil, fmt.Errorf("status %d: %s", proxyResp.GetStatusCode(), string(proxyResp.GetBody()))
 	}
 	var resp sitx.PublicOptionOffersResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
+	if err := json.Unmarshal(proxyResp.GetBody(), &resp); err != nil {
 		return nil, err
 	}
 	return r.buildAndMirrorRemoteOffers(peer.GetBankCode(), peerRoutingOf(peer), resp.Offers), nil

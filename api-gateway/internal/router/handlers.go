@@ -5,7 +5,6 @@
 package router
 
 import (
-	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -82,8 +81,11 @@ type Deps struct {
 	// peer-bank record from a bank code or API token.
 	PeerTxClient        transactionpb.PeerTxServiceClient
 	PeerBankAdminClient transactionpb.PeerBankAdminServiceClient
-	PeerNonces          middleware.PeerNonceClaimer
-	PeerBanks           middleware.PeerBankResolver
+	// PeerUserClient backs /cross-bank-protocol/user/{rid}/{id}, served by
+	// interbank-service (2026-06-07 cutover).
+	PeerUserClient transactionpb.PeerUserServiceClient
+	PeerNonces     middleware.PeerNonceClaimer
+	PeerBanks      middleware.PeerBankResolver
 
 	// PeerOTCClient backs the /api/v3/public-stock and
 	// /api/v3/negotiations/* peer OTC routes (Phase 4 Task 8 of the
@@ -202,9 +204,6 @@ type Handlers struct {
 // future SetupV4) so all versions share the same handler instances.
 func NewHandlers(d Deps) *Handlers {
 	tx := handler.NewTransactionHandler(d.TxClient, d.FeeClient, d.AccountClient, d.ExchangeClient)
-	// OwnBankCode is a 3-digit string ("111"); parse it once for the
-	// PeerUserHandler which needs an int64 routing-number comparator.
-	ownRouting, _ := strconv.ParseInt(d.OwnBankCode, 10, 64)
 	h := &Handlers{
 		Auth:             handler.NewAuthHandler(d.AuthClient),
 		Version:          handler.NewVersionHandler(),
@@ -246,7 +245,7 @@ func NewHandlers(d Deps) *Handlers {
 		PeerBankAdmin:    handler.NewPeerBankAdminHandler(d.PeerBankAdminClient),
 		PeerAuthMW:       middleware.PeerAuth(d.PeerBanks, d.PeerNonces, 5*time.Minute),
 		PeerOTC:          handler.NewPeerOTCHandler(d.PeerOTCClient),
-		PeerUser:         handler.NewPeerUserHandler(d.ClientClient, d.UserClient, ownRouting, d.OwnBankName),
+		PeerUser:         handler.NewPeerUserHandler(d.PeerUserClient),
 		AdminCron:        handler.NewAdminCronHandler(d.AdminCronClients, d.AuditProducer),
 		AdminAudit:       handler.NewAdminAuditHandler(d.AccountClient, d.CardClient, d.ClientClient, d.CreditClient, d.UserClient, d.NotificationClient, d.TxClient),
 		Dividend:         handler.NewDividendHandler(d.FundClient),

@@ -1,52 +1,96 @@
-# Interbank-service Cutover Plan — wire it in *without* a flag-day
+# Interbank-service Cutover Plan
 
-> Goal: route the entire cross-bank protocol through `interbank-service`, replacing the cross-bank functions in stock-service (OTC egress) and transaction-service (TX engine). Strategy: **make everything ready behind a config switch, then flip it** — both the old and new paths coexist so the cutover is a single env change + restart, instantly reversible, with no code redeploy at switch time.
+> Goal: route the entire cross-bank protocol through `interbank-service`, replacing the cross-bank functions in stock-service (OTC egress) and transaction-service (TX engine).
 
-## Principle: a switch, not a rewrite
-Every wiring change is gated by a config flag so the running system is unchanged until you flip it:
-- **Gateway:** `INTERBANK_GRPC_ADDR` set ⇒ dial *all* `/cross-bank-protocol` peer clients at interbank; unset ⇒ today's behavior (PeerTx/PeerBankAdmin→transaction-service, PeerOTC→stock-service, /user→client/user directly).
-- **stock-service:** `INTERBANK_EGRESS_ADDR` set ⇒ outbound peer HTTP goes through `PeerEgressService.ProxyToPeer`; unset ⇒ today's direct `peerotc.Client` + `otccache` HTTP.
+## EXECUTION — clean cut (2026-06-07)
 
-Flip = set the env on the gateway (+ stock-service) and restart those two. Rollback = unset + restart.
+The flag-gated "make-ready-then-flip" strategy below was the original draft. The
+actual execution is a **clean cut**, per the user's decision: no coexisting
+old/new paths, no `*_unset ⇒ old behavior` fallback. Each service is re-pointed
+at interbank-service unconditionally and the dead egress code is deleted in the
+same change. Deploy ordering (not a flag) provides the safety: bring
+interbank-service up with its `peer_banks` migrated **before** the gateway +
+stock-service that now depend on it.
+
+### Step 1 — gateway → interbank — ✅ DONE (commit `075b7a0c`)
+- `api-gateway` config gained `INTERBANK_GRPC_ADDR` (default `interbank-service:50062`).
+- `main.go` re-points **all** `/cross-bank-protocol` peer clients at interbank:
+  `PeerTxServiceClient`, `PeerBankAdminServiceClient`, `PeerOTCServiceClient`,
+  `PeerEgressServiceClient`, and a new `PeerUserServiceClient`.
+- `PeerUserHandler` is now a thin forwarder over `PeerUserService.ResolvePeerUser`
+  (found=false→404, else `{bankDisplayName, displayName}`); resolution semantics
+  moved into interbank-service.
+- Inbound PeerAuth resolves peers via interbank's `PeerBankAdminService.ResolvePeerByAPIToken`.
+
+### Step 2 — stock-service egress → interbank — ✅ DONE (this commit)
+- `stock-service` config: `TransactionGRPCAddr` → `InterbankGRPCAddr`
+  (default `interbank-service:50062`). stock-service no longer dials
+  transaction-service at all (its only conn was the cross-bank one).
+- `main.go`: the single `interbankConn` backs `peerTxClient`
+  (`InitiateOutboundTxWithPostings` for OTC settlement), `peerBankAdminClient`
+  (`ListPeerBanks` for discovery), and a new `peerEgressClient`.
+- New `internal/peeregress.Dispatcher` (implements `handler.PeerNegotiationDispatcher`)
+  backed by `ProxyToPeer`: `CreateNegotiation` → `POST /negotiations`;
+  `Proxy` → `{method} /negotiations/{rid}/{fid}{subpath}`. **`internal/peerotc`
+  deleted.**
+- `otccache` (`cache.go`, `option_cache.go`): `fetchPeer` now fetches
+  `/public-stock` + `/public-option-offers` via `ProxyToPeer`; the per-cache
+  `httpClient` + direct `ResolvePeerByBankCode`/`X-Api-Key` signing are gone.
+  `ListPeerBanks` (via interbank) still enumerates which peers to poll.
+- `docker-compose.yml`: stock-service `TRANSACTION_GRPC_ADDR` →
+  `INTERBANK_GRPC_ADDR: interbank-service:50062`; `depends_on` transaction-service
+  → interbank-service. (No cycle: interbank does **not** hard-depend on stock —
+  its stock client is lazy/best-effort.)
+
+### Step 3 — remove the SI-TX engine from transaction-service — ✅ DONE (this commit)
+- Deleted 14 engine production files + 22 engine test files: the whole
+  `internal/sitx/`, `peer_tx_grpc_handler.go`, `peer_bank_admin_grpc_handler.go`,
+  the 3 peer repos, the 3 peer models, `outbound_replay_cron.go`,
+  `peer_tx_reconciler.go`, and `handler/export_test.go` (peer-only accessor).
+- `cmd/main.go`: removed the entire SI-TX wiring block (peer repos, executor,
+  HTTP client, peerLookup, peerTxHandler, both crons), the stock-service conn +
+  optionRecorder (engine-only), the `PeerBankAdminService`/`PeerTxService`
+  registration, the 3 peer models from AutoMigrate, and the now-unused
+  `sitx`/`stockpb`/`net/http`/`strconv` imports.
+- `config.go`: removed all dead SI-TX config (StockGRPCAddr, the Inter-bank 2PC
+  tuning block, InterbankReceiveSyncDeadline, OwnBankCode, per-peer
+  endpoint/HMAC fields) + the now-unused `getDuration`/`getInt`/`time`/`strconv`;
+  trimmed `config_test.go` accordingly. `go mod tidy` moved `uuid` + `crypto`
+  (engine-only deps) to indirect.
+- `docker-compose.yml`: dropped transaction-service's `STOCK_GRPC_ADDR`,
+  `OWN_BANK_CODE`, `SITX_RECEIVE_SYNC_DEADLINE`, and the peer-egress
+  `extra_hosts`. transaction-service → pure local payments/transfers/fees.
+- Spec updated: §25 gRPC services + DB tables now attributed to interbank-service.
+- **Deploy ordering (hard cutover, no rollback flag):** interbank-service must be
+  up with `peer_banks` migrated/registered (interbank_db) before transaction-service
+  is redeployed without the engine — otherwise inbound peer auth + outbound
+  signing have no registry. Orphaned `peer_banks`/`peer_idempotence_records`/
+  `outbound_peer_txs` rows remain in transaction_db (no longer migrated/read) and
+  may be dropped manually post-migration.
+
+**Cutover COMPLETE.** All three steps landed on Development; interbank-service is
+the sole home of the cross-bank SI-TX engine + registry + egress.
 
 ---
 
-## Phase 0 — DONE (committed)
+## Original flag-gated draft (superseded by the clean cut above)
+
+> Strategy: make everything ready behind a config switch, then flip it — both the
+> old and new paths coexist so the cutover is a single env change + restart,
+> instantly reversible, with no code redeploy at switch time.
+
+### Phase 0 — DONE (committed)
 - `interbank-service` built: serves the whole `/cross-bank-protocol` surface (PeerTx engine + PeerBankAdmin registry + PeerEgress egress/reachability/state; PeerOTC forwarder→stock; PeerUser resolver→client/user). gRPC `:50062`, ops HTTP `:9108`.
-- CI (`ci.yml` build/test/lint/tidy) + CD (`cd.yml` build/publish) + `docker-compose.yml` (interbank-service + interbank-db `:5443`, dormant) include it.
+- CI (`ci.yml` build/test/lint/tidy) + CD (`cd.yml` build/publish) + `docker-compose.yml` (interbank-service + interbank-db `:5443`) include it.
 
-## Phase 1 — MAKE READY (code in place behind flags; nothing routes yet)
+### Phase 1 — MAKE READY (flag-gated; superseded — we re-pointed unconditionally instead)
+- Gateway: `INTERBANK_GRPC_ADDR` set ⇒ dial all `/cross-bank-protocol` peer clients at interbank. (Executed clean, without the unset-fallback branch.)
+- stock-service: `PeerEgressServiceClient` + a `ProxyToPeer`-backed `PeerNegotiationDispatcher`; `otccache` fetches via `ProxyToPeer`. (Executed clean, without the unset-fallback branch.)
 
-**1a. Gateway flag-gated peer clients** (`api-gateway`)
-- Add `INTERBANK_GRPC_ADDR` config. When set, dial one connection to interbank and back **all** peer clients with it: `PeerTxServiceClient`, `PeerBankAdminServiceClient`, `PeerOTCServiceClient`, `PeerEgressServiceClient`, and a new `PeerUserServiceClient`. When unset, keep the current per-service dials. (The `PeerTxHandler`/`PeerOTCHandler` handler code is unchanged — only the client wiring in `router/handlers.go` + `main.go` changes.)
-- `PeerUserHandler`: give it an interbank path — when the flag is on, call `PeerUserService.ResolvePeerUser` and map `found=false`→404, else compose `{bankDisplayName, displayName}`; when off, keep the direct client/user lookups. (Both paths coexist; flag picks.)
-- Inbound peer auth (PeerAuth middleware) resolves peers via `PeerBankAdminService.ResolvePeerByAPIToken` — it follows the same flag (interbank vs transaction-service).
-
-**1b. stock-service flag-gated egress** (`stock-service`)
-- Add `INTERBANK_EGRESS_ADDR` config + a `PeerEgressServiceClient`.
-- New `PeerNegotiationDispatcher` impl backed by `ProxyToPeer`: `CreateNegotiation(code, offer)` → `ProxyToPeer(code,"POST","/negotiations",body)` (parse `{routingNumber,id}`); `Proxy(code,rid,fid,method,subpath,body)` → `ProxyToPeer(code,method,"/negotiations/"+rid+"/"+fid+subpath,body)`. Wire it when the flag is set; else the current `peerotc.Client`.
-- `otccache` (`cache.go`, `option_cache.go`): when the flag is set, fetch `/public-stock` + `/public-option-offers` via `ProxyToPeer(code,"GET",path,nil)` (enumerate peers via `PeerBankAdminService.ListPeerBanks` on interbank); else the current direct HTTP.
-
-**1c. Infra (your deploy gate)**
-- Provision `interbank_db` (Postgres, `:5443`) + Helm/k8s manifest for interbank-service (gRPC 50062, ops 9108, env, `depends_on` account/stock/client/user + db — **not** a hard cycle with stock).
-- Seed `interbank_db.peer_banks` from transaction-service's `peer_banks` (copy rows, or re-register peers via `POST /api/v3/peer-banks` once the gateway flag is on).
-- Deploy interbank-service **dormant** (flags still off) and smoke-test: `/readyz` green, `GetPeersState` reports the registered peers reachable.
-
-## Phase 2 — SWITCH (one env change + restart; reversible)
-1. Set `INTERBANK_GRPC_ADDR` on the **api-gateway** and restart it → all inbound `/cross-bank-protocol` now hits interbank-service.
-2. Set `INTERBANK_EGRESS_ADDR` on **stock-service** and restart it → all outbound OTC/discovery peer HTTP now goes through interbank.
-3. Verify end-to-end against a peer (or the second local stack): discovery, a full negotiation (bid→counter→accept→settle), a cross-bank transfer, `GET /user`, and `GetTxStatus`. Watch interbank `/metrics` + logs.
-4. **Rollback if needed:** unset the two envs, restart the two services — back to the old paths instantly (no redeploy).
-
-## Phase 3 — CLEANUP (after the switch is stable)
-- Remove the SI-TX engine from transaction-service (the 14 ported files), drop its `peer_banks`/`peer_idempotence_records`/`outbound_peer_txs` from AutoMigrate, stop registering `PeerTxService`/`PeerBankAdminService` + the two crons. transaction-service → pure local payments/transfers/fees.
-- Remove stock-service's direct `peerotc.Client` + `otccache` HTTP egress (now dead behind the flag).
-- Drop the flags (make interbank the only path) once you're confident.
-- Bump `VERSION` (the switch is the behavior-affecting change) at Phase 2.
+### Phase 2 / 3 (flag flip + cleanup) — folded into the clean-cut steps above.
 
 ## Notes / risks
-- **No flag-day:** old + new paths coexist through Phase 1; Phase 2 is a per-service env flip with instant rollback.
 - **interbank↔stock cycle is fine** (lazy gRPC dials, no compile cycle): interbank forwards OTC to stock + calls stock for option legs; stock calls interbank for egress.
 - **One inbound hop added** for OTC (gateway→interbank→stock) — negligible at cohort scale.
-- **Idempotency/peer_banks data migration** is the only stateful step — do it before flipping the gateway flag so inbound auth + outbound signing resolve peers.
-- Effort: gateway flag wiring ~2–3h; stock-service dispatcher+otccache ~half a day; infra/Helm/data = your deploy gate; cleanup ~half a day.
+- **`peer_banks` data migration** is the only stateful step — do it before step 3 so inbound auth + outbound signing resolve peers.
+- `VERSION` bumped on each step (2.16.x PATCH — internal re-wiring, no API contract change).

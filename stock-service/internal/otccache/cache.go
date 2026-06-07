@@ -1,16 +1,16 @@
 // Package otccache holds the unified OTC-offer cache used by
 // OTCGRPCService.ListUnifiedOffers. The cache is rebuilt every refresh
 // interval by Refresher: local offers come from OTCService.ListOffers
-// in-process, remote offers come from each active peer bank's
-// GET /api/v3/public-stock (PeerAuth via X-Api-Key, plaintext token
-// resolved through transaction-service's PeerBankAdminService).
+// in-process; remote offers come from each active peer bank's
+// GET /public-stock, fetched through interbank-service's PeerEgressService
+// (ProxyToPeer) — peer resolution + X-Api-Key/HMAC signing + the HTTP call all
+// live there. peerAdmin.ListPeerBanks supplies the peer list to iterate.
 package otccache
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -100,7 +100,7 @@ type Refresher struct {
 	cache       *Cache
 	otc         OTCLister
 	peerAdmin   transactionpb.PeerBankAdminServiceClient
-	httpClient  *http.Client
+	egress      transactionpb.PeerEgressServiceClient
 	ownBankCode string
 	interval    time.Duration
 }
@@ -109,6 +109,7 @@ func NewRefresher(
 	cache *Cache,
 	otc OTCLister,
 	peerAdmin transactionpb.PeerBankAdminServiceClient,
+	egress transactionpb.PeerEgressServiceClient,
 	ownBankCode string,
 	interval time.Duration,
 ) *Refresher {
@@ -116,7 +117,7 @@ func NewRefresher(
 		cache:       cache,
 		otc:         otc,
 		peerAdmin:   peerAdmin,
-		httpClient:  &http.Client{Timeout: 5 * time.Second},
+		egress:      egress,
 		ownBankCode: ownBankCode,
 		interval:    interval,
 	}
@@ -226,36 +227,23 @@ func (r *Refresher) fetchLocal() ([]Offer, error) {
 }
 
 func (r *Refresher) fetchPeer(ctx context.Context, peer *transactionpb.PeerBank) ([]Offer, error) {
-	resolveResp, err := r.peerAdmin.ResolvePeerByBankCode(ctx, &transactionpb.ResolvePeerByBankCodeRequest{BankCode: peer.GetBankCode()})
+	// Outbound HTTP to the peer's /public-stock is centralized in
+	// interbank-service: ProxyToPeer resolves the peer's base_url (which already
+	// carries its SI-TX path prefix), signs (X-Api-Key + HMAC), performs the GET,
+	// and returns the peer's status + body verbatim.
+	proxyResp, err := r.egress.ProxyToPeer(ctx, &transactionpb.ProxyToPeerRequest{
+		PeerBankCode: peer.GetBankCode(),
+		Method:       http.MethodGet,
+		Path:         "/public-stock",
+	})
 	if err != nil {
 		return nil, err
 	}
-	full := resolveResp.GetPeerBank()
-	if full == nil || !full.GetActive() {
-		return nil, nil
-	}
-	// base_url already carries the peer's SI-TX path prefix (set by the
-	// registering admin) so cohort banks with different gateway
-	// layouts can all interop. We only append the leaf path.
-	url := strings.TrimRight(full.GetBaseUrl(), "/") + "/public-stock"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("X-Api-Key", full.GetApiTokenPlaintext())
-
-	httpResp, err := r.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer httpResp.Body.Close()
-
-	body, _ := io.ReadAll(httpResp.Body)
-	if httpResp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("status %d: %s", httpResp.StatusCode, string(body))
+	if proxyResp.GetStatusCode() != http.StatusOK {
+		return nil, fmt.Errorf("status %d: %s", proxyResp.GetStatusCode(), string(proxyResp.GetBody()))
 	}
 	var resp sitx.PublicStocksResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
+	if err := json.Unmarshal(proxyResp.GetBody(), &resp); err != nil {
 		return nil, err
 	}
 	// New §3.1 bare-array shape: each entry groups all sellers for a ticker.

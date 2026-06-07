@@ -349,6 +349,35 @@ func TestRequireClientToken_RejectsMissingType(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// DenyClientToken (employee/non-client only — e.g. forex & options market data,
+// which Celina 3 restricts to actuaries; clients trade only stocks & futures)
+// ---------------------------------------------------------------------------
+
+func TestDenyClientToken_AllowsEmployee(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(func(c *gin.Context) { c.Set("principal_type", "employee"); c.Next() })
+	r.Use(DenyClientToken())
+	r.GET("/test", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+	req, _ := http.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestDenyClientToken_RejectsClient(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(func(c *gin.Context) { c.Set("principal_type", "client"); c.Next() })
+	r.Use(DenyClientToken())
+	r.GET("/test", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+	req, _ := http.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	require.Equal(t, http.StatusForbidden, w.Code)
+}
+
+// ---------------------------------------------------------------------------
 // RequirePermission additional branches
 // ---------------------------------------------------------------------------
 

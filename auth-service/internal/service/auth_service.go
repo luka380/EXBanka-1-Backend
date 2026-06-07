@@ -118,7 +118,7 @@ func assembleAuthService(
 ) *AuthService {
 	tokenSvc := NewTokenService(tokenRepo, sessionRepo, accountRepo, userClient, jwtService, c, refreshExp, mobileRefreshExp)
 	sessionSvc := NewSessionService(sessionRepo, tokenRepo, loginAttemptRepo, producer, c, jwtService)
-	accountSvc := NewAccountService(accountRepo, tokenRepo, userClient, producer, c, jwtService, sessionSvc, frontendBaseURL, pepper)
+	accountSvc := NewAccountService(accountRepo, tokenRepo, userClient, producer, c, jwtService, sessionSvc, loginAttemptRepo, frontendBaseURL, pepper)
 	return &AuthService{
 		TokenService:     tokenSvc,
 		SessionService:   sessionSvc,

@@ -1775,16 +1775,16 @@ func TestCreateOrder_Employee_WouldOverflow_RequiresApproval(t *testing.T) {
 	}
 }
 
-// A freshly created EmployeeAgent has Limit=0 by default. Treat Limit=0 as
-// "not configured yet" — the agent can place orders until a supervisor sets
-// their real limit. Otherwise every new agent would be blocked on their very
-// first order.
+// A NON-flagged agent (need_approval=false) with no configured limit (Limit=0)
+// auto-approves: there is no flag set and no limit to exceed. (A flagged agent
+// would instead require approval per Celina 3 condition 1 — see
+// TestCreateOrder_Employee_NeedApprovalTrue_RequiresApproval_UnderLimit.)
 func TestCreateOrder_Employee_LimitNotConfigured_AutoApproves(t *testing.T) {
 	fx := newOrderServiceFixture()
 	fx.listingRepo.addListing(rsdListing(1))
 	fx.accountClient.stub.accountCcy[77] = "RSD"
 	actuary := newFakeActuaryClient()
-	actuary.setInfo(21, 99, decimal.Zero /* Limit */, decimal.Zero /* UsedLimit */, true /* NeedApproval */)
+	actuary.setInfo(21, 99, decimal.Zero /* Limit */, decimal.Zero /* UsedLimit */, false /* NeedApproval */)
 	fx.svc.WithActuaryClient(actuary)
 
 	order, err := fx.svc.CreateOrder(context.Background(), CreateOrderRequest{
@@ -1807,7 +1807,8 @@ func TestCreateOrder_Employee_UnderLimit_AutoApproves(t *testing.T) {
 	fx.listingRepo.addListing(rsdListing(1))
 	fx.accountClient.stub.accountCcy[77] = "RSD"
 	actuary := newFakeActuaryClient()
-	actuary.setInfo(21, 99, decimal.NewFromInt(1_000_000), decimal.Zero, true)
+	// Non-flagged agent, comfortably under limit → auto-approve.
+	actuary.setInfo(21, 99, decimal.NewFromInt(1_000_000), decimal.Zero, false)
 	fx.svc.WithActuaryClient(actuary)
 
 	// Small 5-share order: 5 * 100 * (1+0.0025) = 501.25 RSD — well under 1_000_000.
@@ -1835,14 +1836,19 @@ func TestCreateOrder_Employee_UnderLimit_AutoApproves(t *testing.T) {
 	}
 }
 
-func TestCreateOrder_Employee_NeedApprovalFalse_AutoApproves(t *testing.T) {
-	// Even if the order would exceed the budget, need_approval=false bypasses
-	// the gate (e.g., for supervisors).
+// Celina 3 condition 3 (money-control): an order that exceeds a configured
+// daily limit requires supervisor approval REGARDLESS of the need_approval
+// flag. Previously the gate was a conjunction (flag AND over-limit), so a
+// non-flagged agent could push an order past their limit and auto-approve it —
+// a money-control hole. This asserts the corrected disjunction.
+func TestCreateOrder_Employee_OverLimit_RequiresApproval_EvenWhenNeedApprovalFalse(t *testing.T) {
 	fx := newOrderServiceFixture()
 	fx.listingRepo.addListing(rsdListing(1))
 	fx.accountClient.stub.accountCcy[77] = "RSD"
 	actuary := newFakeActuaryClient()
-	actuary.setInfo(21, 99, decimal.NewFromInt(1000), decimal.Zero, false /* NO approval required */)
+	// need_approval=false, but limit=1000 and the order reserves 100*100*1.0025
+	// = 10025 RSD — well over the limit.
+	actuary.setInfo(21, 99, decimal.NewFromInt(1000), decimal.Zero, false)
 	fx.svc.WithActuaryClient(actuary)
 
 	order, err := fx.svc.CreateOrder(context.Background(), CreateOrderRequest{
@@ -1852,12 +1858,37 @@ func TestCreateOrder_Employee_NeedApprovalFalse_AutoApproves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if order.Status != "approved" {
-		t.Errorf("expected auto-approved with need_approval=false, got %s", order.Status)
+	if order.Status != "pending" {
+		t.Errorf("over-limit order must require approval even with need_approval=false, got %s", order.Status)
 	}
-	// used_limit still bumped (for visibility / daily rollup).
-	if len(actuary.incrementCalls) != 1 {
-		t.Errorf("expected 1 increment call, got %d", len(actuary.incrementCalls))
+	if len(actuary.incrementCalls) != 0 {
+		t.Errorf("pending order must not increment used_limit, got %d", len(actuary.incrementCalls))
+	}
+}
+
+// Celina 3 condition 1: an agent flagged need_approval=true requires supervisor
+// approval even for an under-limit order (the flag alone forces approval).
+func TestCreateOrder_Employee_NeedApprovalTrue_RequiresApproval_UnderLimit(t *testing.T) {
+	fx := newOrderServiceFixture()
+	fx.listingRepo.addListing(rsdListing(1))
+	fx.accountClient.stub.accountCcy[77] = "RSD"
+	actuary := newFakeActuaryClient()
+	// Flagged agent, huge limit, tiny order (well under limit) → still pending.
+	actuary.setInfo(21, 99, decimal.NewFromInt(1_000_000), decimal.Zero, true)
+	fx.svc.WithActuaryClient(actuary)
+
+	order, err := fx.svc.CreateOrder(context.Background(), CreateOrderRequest{
+		UserID: 21, SystemType: "employee", ListingID: 1, Direction: "buy",
+		OrderType: "limit", Quantity: 5, LimitValue: ptrDec(100), AccountID: 77,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if order.Status != "pending" {
+		t.Errorf("flagged agent (need_approval=true) must require approval even under-limit, got %s", order.Status)
+	}
+	if len(actuary.incrementCalls) != 0 {
+		t.Errorf("pending order must not increment used_limit, got %d", len(actuary.incrementCalls))
 	}
 }
 
@@ -1968,7 +1999,8 @@ func TestCancelOrder_Approved_DecrementsUnfilledPortion(t *testing.T) {
 	fx.listingRepo.addListing(rsdListing(1))
 	fx.accountClient.stub.accountCcy[77] = "RSD"
 	actuary := newFakeActuaryClient()
-	actuary.setInfo(21, 99, decimal.NewFromInt(1_000_000), decimal.Zero, true)
+	// Non-flagged agent, under limit → order auto-approves (precondition).
+	actuary.setInfo(21, 99, decimal.NewFromInt(1_000_000), decimal.Zero, false)
 	fx.svc.WithActuaryClient(actuary)
 
 	// Place an under-limit order → auto-approved, used_limit bumped.

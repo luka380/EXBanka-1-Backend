@@ -37,7 +37,7 @@ import (
 	kafkaprod "github.com/exbanka/stock-service/internal/kafka"
 	"github.com/exbanka/stock-service/internal/model"
 	"github.com/exbanka/stock-service/internal/otccache"
-	"github.com/exbanka/stock-service/internal/peerotc"
+	"github.com/exbanka/stock-service/internal/peeregress"
 	"github.com/exbanka/stock-service/internal/provider"
 	"github.com/exbanka/stock-service/internal/repository"
 	"github.com/exbanka/stock-service/internal/service"
@@ -370,19 +370,25 @@ func main() {
 	defer clientConn.Close()
 	clientClient := clientpb.NewClientServiceClient(clientConn)
 
-	// Transaction service client (Phase 4 SI-TX: PeerOTC accept dispatches
-	// the 4-posting OTC settlement TX through transaction-service's
-	// PeerTxService.InitiateOutboundTxWithPostings).
-	transactionConn, err := grpc.NewClient(cfg.TransactionGRPCAddr,
+	// Interbank service client. As of the 2026-06-07 cutover, the cross-bank
+	// SI-TX engine, the peer_banks registry, and the single outbound HTTP
+	// egress all live in interbank-service. stock-service dials it for:
+	//   - PeerTxService.InitiateOutboundTxWithPostings — the 4-posting OTC
+	//     settlement TX dispatched on PeerOTC accept;
+	//   - PeerBankAdminService.ListPeerBanks — the otccache discovery poll;
+	//   - PeerEgressService.ProxyToPeer — outbound /negotiations + /public-stock
+	//     + /public-option-offers HTTP (peer resolution + signing happen there).
+	interbankConn, err := grpc.NewClient(cfg.InterbankGRPCAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithChainUnaryInterceptor(grpcmw.UnaryClientSagaContextInterceptor()),
 	)
 	if err != nil {
-		log.Fatalf("failed to connect to transaction-service: %v", err)
+		log.Fatalf("failed to connect to interbank-service: %v", err)
 	}
-	defer transactionConn.Close()
-	peerTxClient := transactionpb.NewPeerTxServiceClient(transactionConn)
-	peerBankAdminClient := transactionpb.NewPeerBankAdminServiceClient(transactionConn)
+	defer interbankConn.Close()
+	peerTxClient := transactionpb.NewPeerTxServiceClient(interbankConn)
+	peerBankAdminClient := transactionpb.NewPeerBankAdminServiceClient(interbankConn)
+	peerEgressClient := transactionpb.NewPeerEgressServiceClient(interbankConn)
 
 	// --- Redis ---
 	var redisCache *cache.RedisCache
@@ -601,10 +607,12 @@ func main() {
 
 	// Unified OTC offer cache (local + cross-bank). Refresher rebuilds
 	// every 5 s by pulling local offers in-process from otcSvc and fanning
-	// out HTTP GETs to active peer banks' /public-stock (PeerAuth). The
+	// out — via interbank-service's ProxyToPeer egress — GETs to active peer
+	// banks' /public-stock. peerBankAdminClient supplies the peer list; the
+	// resolution + signing + HTTP all happen inside interbank-service. The
 	// gRPC method OTCGRPCService.ListUnifiedOffers serves the cached view.
 	otcOfferCache := otccache.New()
-	otcRefresher := otccache.NewRefresher(otcOfferCache, otcSvc, peerBankAdminClient, cfg.OwnBankCode, 5*time.Second)
+	otcRefresher := otccache.NewRefresher(otcOfferCache, otcSvc, peerBankAdminClient, peerEgressClient, cfg.OwnBankCode, 5*time.Second)
 	otcCacheEntry := cronRegistry.Register("otc-offer-cache-refresher", "Refreshes unified OTC offer cache from local + peer banks", 5*time.Second)
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
@@ -966,7 +974,7 @@ func main() {
 	// GET /api/v3/public-option-offers every 5 s.
 	optionRefresher := otccache.NewOptionRefresher(
 		optionOfferCache, otcOfferRepo, optionCurrencyResolver,
-		peerBankAdminClient, cfg.OwnBankCode, ownRouting, 5*time.Second,
+		peerBankAdminClient, peerEgressClient, cfg.OwnBankCode, ownRouting, 5*time.Second,
 	)
 	// Part A 2026-05-16 — best-bid / best-ask wiring is deferred to
 	// AFTER the otc-negotiation repo is constructed (a few lines
@@ -1083,10 +1091,11 @@ func main() {
 
 	// SP-2b — cross-bank bid dispatch. The bid route (OpenNegotiation)
 	// dispatches local OR cross-bank based on whether the parent listing is a
-	// local or a folded-in remote OTCOffer. The remote branch POSTs the SI-TX
-	// OtcOffer to the seller's bank via this peerotc.Client (reusing the
-	// existing peerBankAdminClient for peer resolution) and records the mirror.
-	peerNegDispatcher := peerotc.New(peerotc.NewAdminResolver(peerBankAdminClient), nil, cfg.OwnBankCode)
+	// local or a folded-in remote OTCOffer. As of the 2026-06-07 cutover the
+	// remote branch routes the SI-TX OtcOffer POST (and every follow-up
+	// counter/accept/cancel) through interbank-service's ProxyToPeer egress —
+	// peer resolution + signing live there, not in stock-service.
+	peerNegDispatcher := peeregress.NewDispatcher(peerEgressClient)
 
 	otcOptionsHandler := handler.NewOTCOptionsHandler(otcOfferSvc, optionContractRepo).
 		WithListings(listingRepo).

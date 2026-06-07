@@ -98,8 +98,9 @@ type CrossBankExerciser interface {
 // /negotiations API and returns the peer-assigned (routingNumber, foreignID).
 // Proxy forwards a single-negotiation action (counter PUT, accept GET /accept,
 // reject/cancel DELETE) to {peer}/negotiations/{rid}/{foreignID}{subpath} and
-// returns the raw body + HTTP status. Both are satisfied by *peerotc.Client
-// (SP-2b — Task 4 adds the counter/accept/reject/cancel cross-bank dispatch).
+// returns the raw body + HTTP status. As of the 2026-06-07 cutover both are
+// satisfied by *peeregress.Dispatcher, which routes the outbound HTTP through
+// interbank-service's PeerEgressService.ProxyToPeer.
 type PeerNegotiationDispatcher interface {
 	CreateNegotiation(ctx context.Context, peerBankCode string, offer map[string]any) (int64, string, error)
 	Proxy(ctx context.Context, peerBankCode, rid, foreignID, method, subpath string, body []byte) ([]byte, int, error)
