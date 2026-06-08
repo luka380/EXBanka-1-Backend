@@ -151,7 +151,7 @@ Client (HTTP/JSON) → API Gateway (Gin, :8080)
 | api-gateway | auth, user, client, account, card, transaction, credit, exchange, verification, notification, stock (StockExchange / Security / Order / Portfolio / OTC / Tax / SourceAdmin / **InvestmentFund** (Celina 4) / **OTCOptions** (Spec 2)), **interbank-service** (2026-06-07 cutover: the whole `/cross-bank-protocol` surface — `PeerTxService`, `PeerBankAdminService` registry, `PeerOTCService` forwarder, `PeerEgressService`, `PeerUserService`) |
 | stock-service | account-service (debit/credit/reservations/bank-account), exchange-service (FX), user-service (employee names + actuary limits), client-service (client name resolution), **interbank-service** (2026-06-07 cutover: `PeerTxService.InitiateOutboundTxWithPostings` for OTC settlement, `PeerBankAdminService.ListPeerBanks` for the discovery poll, and `PeerEgressService.ProxyToPeer` for all outbound OTC HTTP — peer resolution + signing live in interbank-service, not here) |
 | auth-service | user-service (employee lookup). NOTE: auth owns **all** credentials in its own `accounts` table (one row per principal, `principal_type` ∈ {employee, client}); it does **not** gRPC-call client-service for login. Client Accounts are provisioned by auth consuming the `client.client-created` Kafka event. |
-| user-service | auth-service (activation tokens) |
+| user-service | auth-service (activation tokens). NOTE: user-service does **not** dial client-service — `CLIENT_GRPC_ADDR` was removed from user-service (SP-4 2026-06-08). Client-type limit blueprint application is orchestrated by the api-gateway directly (gateway → client-service). |
 | client-service | auth-service (activation tokens) |
 | card-service | account-service (account validation), client-service (client validation) |
 | transaction-service | account-service (balance ops), exchange-service (currency conversion), verification-service (challenge status) |
@@ -180,7 +180,7 @@ The API Gateway creates gRPC clients in `api-gateway/internal/grpc/` and passes 
 | `userClient` | UserService | `USER_GRPC_ADDR` |
 | `empLimitClient` | EmployeeLimitService | `USER_GRPC_ADDR` (shared) |
 | `clientClient` | ClientService | `CLIENT_GRPC_ADDR` |
-| `clientLimitClient` | ClientLimitService | `CLIENT_GRPC_ADDR` (shared) |
+| `clientLimitClient` | ClientLimitService | `CLIENT_GRPC_ADDR` (shared) — also injected into `BlueprintHandler` to apply client-type blueprints directly (SP-4: gateway→client-service, bypassing user-service) |
 | `accountClient` | AccountService | `ACCOUNT_GRPC_ADDR` |
 | `bankAccountClient` | BankAccountService | `ACCOUNT_GRPC_ADDR` (shared) |
 | `cardClient` | CardService | `CARD_GRPC_ADDR` |
@@ -1670,7 +1670,7 @@ Response shape: `{entries: [...], total, page, page_size}`. Changelog entries ca
 
 Closed-end invariants enforced in `model.InvestmentFund.BeforeSave`. `FundService.Invest` rejects closed funds outside `fundraising` status; `FundService.Redeem` rejects closed funds outside `open` status. `FundLifecycleCron` walks closed funds every 15 min and transitions `fundraising → active → matured → liquidated` per the calendar, firing `FUND_FUNDRAISING_STARTED/CLOSED/MATURED/LIQUIDATED` in-app notifications to the fund manager. Auto-liquidation money movement (sell remaining holdings + pro-rata distribution) is deferred to a follow-up.
 
-**Watchlist** (SP6 — `watchlists` table in stock-service `stock_db`) — a named collection of tracked listings owned by a client or the bank. `{id, owner_type, owner_id, name, created_at, updated_at}`, unique `(owner_type, owner_id, name)`. A user may keep several (e.g. "tech stocks"). The legacy single-list endpoints operate on a lazily-created default **"My Watchlist"**. New routes (`/api/v3/me/watchlists*`) provide named-list CRUD + per-list item add/remove; a list is owner-scoped and the same listing may appear in multiple lists. On startup, `MigrateWatchlistsToNamedLists` (idempotent) drops the legacy `(owner, listing)` unique index and assigns any pre-existing items to their owner's default list.
+**Watchlist** (SP6 — `watchlists` table in stock-service `stock_db`) — a named collection of tracked listings owned by a client or the bank. `{id, owner_type, owner_id, name, created_at, updated_at}`, unique `(owner_type, owner_id, name)`. A user may keep several (e.g. "tech stocks"). The legacy single-list endpoints operate on a lazily-created default **"My Watchlist"**. New routes (`/api/v3/me/watchlists*`) provide named-list CRUD + per-list item add/remove; a list is owner-scoped and the same listing may appear in multiple lists. On startup, `MigrateWatchlistsToNamedLists` (idempotent) drops the legacy `(owner, listing)` unique index and assigns any pre-existing items to their owner's default list. **Uniqueness fix (2026-06-08):** the composite unique index could not enforce `(owner, name)` for **bank/employee-owned lists** because their `owner_id` is `NULL` and SQL treats NULLs as distinct — so bank-owned lists (incl. the lazily-created default) duplicated on every create/`GetOrCreateDefault`. Fixed by (a) `CreateWatchlist` checking existence by `(owner, name)` before insert (idempotent for NULL owners), (b) a partial unique index `idx_watchlist_bank_name (owner_type, name) WHERE owner_id IS NULL` enforcing it at the DB level, and (c) an idempotent startup dedup `DedupeWatchlistsAndEnforceUniqueness` that collapses existing duplicates (keep oldest, merge items, delete rest) before creating the index. Net: one owner cannot hold two same-named lists; different owners may reuse a name.
 
 **WatchlistItem** (Celina 3 / SP6 — `watchlist_items` table in stock-service `stock_db`) — one tracked listing inside a `Watchlist`. Gains `watchlist_id` (FK; unique `(watchlist_id, listing_id)`); retains denormalised `owner_type`/`owner_id` so the daily price-move notification cron scans per-owner unchanged.
 
@@ -1844,6 +1844,14 @@ UniqueIndex: (reference, direction)
 
 ### Card Service (card_db)
 
+**ClientReplica** (SP-1 service-decoupling, 2026-06-08) — NON-AUTHORITATIVE local read-model of a client's profile (id, email, first/last name, jmbg, version), fed by `client.created`/`client.updated` events with a version-guarded upsert and a synchronous `GetClient` fallback+backfill on miss. Now maintained in **card-service** (card-status notification email), **credit-service** (installment-failure email; group `credit-service-client-replica`), **account-service** (account-created email; group `account-service-client-replica`), and **stock-service** (local OTC-seller existence validation; group `stock-service-client-replica`) — each replacing a synchronous `GetClient` read. (interbank-service's `GetClient` is intentionally left as-is: it serves the frozen cross-bank-protocol `/user` endpoint.)
+```
+ID(uint64, PK, no autoincrement — == client-service Client.ID),
+Email, FirstName, LastName, JMBG(size:13),
+Version(int64) — source Client.Version; ordering guard (stale events are ignored),
+UpdatedAt
+```
+
 **Card**
 ```
 ID(uint64), CardNumber(unique,masked), CardNumberFull, CVV,
@@ -1974,6 +1982,16 @@ FixedRate(decimal10,4), VariableBase(decimal10,4), Active(bool), CreatedAt, Upda
 **BankMargin**
 ```
 ID(uint64), LoanType(unique), Margin(decimal10,4), Active(bool), CreatedAt, UpdatedAt
+```
+
+**EmployeeLimitReplica** (SP-2 service-decoupling, 2026-06-08) — NON-AUTHORITATIVE local read-model of an employee's approval limits, maintained by credit-service to avoid synchronous `GetEmployeeLimits` RPCs on the loan-approval gate. Fed by `user.employee-limits-updated` events (consumer group `credit-service-employee-limit-replica`). Upsert is version-guarded: a message whose `Version` is ≤ the stored row's `Version` is silently dropped to prevent stale overwrites. On a cache miss the approval gate falls back to a synchronous `GetEmployeeLimits` gRPC call and backfills the replica at `Version=0` (a later versioned event will overwrite it). Only `MaxLoanApprovalAmount` is actively enforced; the other four limit fields are stored for future gate expansion.
+```
+EmployeeID(uint64, PK — no autoincrement; == user-service EmployeeLimit.EmployeeID),
+MaxLoanApprovalAmount(numeric18,4), MaxSingleTransaction(numeric18,4),
+MaxDailyTransaction(numeric18,4), MaxClientDailyLimit(numeric18,4),
+MaxClientMonthlyLimit(numeric18,4),
+Version(int64) — source EmployeeLimit.Version; ordering guard (stale events are dropped),
+UpdatedAt
 ```
 
 ### Exchange Service (exchange_db)
@@ -2178,6 +2196,17 @@ TableName: business_audit_logs
 ```
 Written by the notification-service `admin_audit_consumer` consuming `admin.cron-action` Kafka events published by the api-gateway after each Trigger/Pause/Resume action.
 
+**ClientLimitPolicy** (SP-5 — 2026-06-08) — Per-client spending-cap read-model stored in `account_db`. Fed by `client.limits-updated` events; drives `UpdateAccountLimits` propagation to all non-bank accounts the client owns. Non-authoritative replica (source of truth is `client_db.client_limits`); kept monotonically up-to-date via Version comparison on every upsert.
+```
+ClientID(uint64,PK),              -- the client whose limits were set
+DailyLimit(decimal(18,4)),        -- mirrors client_limits.DailyLimit
+MonthlyLimit(decimal(18,4)),      -- mirrors client_limits.MonthlyLimit
+Version(int64,not null),          -- monotonic; upsert is a no-op when incoming Version <= stored Version
+UpdatedAt(time.Time,not null)
+TableName: client_limit_policies
+```
+Written by `account-service/internal/consumer.ClientLimitConsumer` (consumer group `account-service-client-limit`). After a successful upsert the consumer calls `AccountService.ApplyClientLimitPolicy`, which sets the `daily_limit` and `monthly_limit` columns on every `Account` row where `owner_id = ClientID AND is_bank_account = false`.
+
 ---
 
 ## 19. Complete Kafka Topic Reference
@@ -2202,10 +2231,10 @@ Written by the notification-service `admin_audit_consumer` consuming `admin.cron
 | `user.limit-template-created` | user-service | (consumers) | LimitTemplateMessage |
 | `user.limit-template-updated` | user-service | (consumers) | LimitTemplateMessage |
 | `user.limit-template-deleted` | user-service | (consumers) | LimitTemplateMessage |
-| `user.client-limits-updated` | user-service | (consumers) | ClientLimitsUpdatedMessage |
+| `client.limits-updated` | client-service | account-service (group `account-service-client-limit`) | ClientLimitsUpdatedMessage — enriched (SP-5): carries DailyLimit, MonthlyLimit, TransferLimit as decimal strings + monotonic Version; Version increments on every upsert so account-service can apply idempotently. Consumer upserts ClientLimitPolicy then calls ApplyClientLimitPolicy on all client-owned accounts. |
 | `user.role-permissions-changed` | user-service | auth-service | RolePermissionsChangedMessage |
-| `client.created` | client-service | notification-service | ClientCreatedMessage |
-| `client.updated` | client-service | (consumers) | (generic) |
+| `client.created` | client-service | notification-service, card-service | ClientCreatedMessage |
+| `client.updated` | client-service | card-service | ClientCreatedMessage (full snapshot) |
 | `account.created` | account-service | notification-service | AccountCreatedMessage |
 | `account.status-changed` | account-service | (consumers) | (generic) |
 | `account.name-updated` | account-service | (consumers) | AccountNameUpdatedMessage |
@@ -2290,6 +2319,14 @@ Published to `notification.general` by various services. notification-service co
 - **E — OTC contract expiring soon:** the OTC expiry cron gained an expiring-soon pass (`OptionContractRepository.ListExpiringOn`) that warns both client parties `OTC_CONTRACT_EXPIRING_SOON` when a contract settles exactly `OTC_EXPIRY_WARNING_DAYS` (default 3) out. New `OTC_CONTRACT_EXPIRING_SOON` push template. Intra-bank contracts only.
 - **D2 (card block) and D3 (loan created/approved)** were already covered by existing card-service / credit-service notifications — no change.
 - **H — order auto-cancel-on-settlement-expiry: DEFERRED.** Stock orders have no `settlement_date` and there is no order-expiry mechanism to notify on; building one is a feature beyond notification scope. OTC offer/contract expiry already notify (`OTC_OFFER_EXPIRED`/`OTC_CONTRACT_EXPIRED`).
+
+**SP-2b service-decoupling: client↔user cycle fully removed (2026-06-08):** client-service's `SetClientLimits` no longer calls `GetEmployeeLimits` synchronously to authorize a client limit against the employee's `MaxClientDailyLimit`/`MaxClientMonthlyLimit`. It now reads a local `EmployeeLimitReplica` (consumer group `client-service-employee-limit-replica`, fed by the enriched `user.employee-limits-updated`) with a gRPC fallback+backfill on miss — same version-guarded, eventual+fallback pattern as the credit-service slice. Combined with SP-4 (user-service no longer writes client limits), the bidirectional `client ↔ user` coupling is now fully event-driven/replica-backed.
+
+**SP-1 service-decoupling: enriched `ClientCreatedMessage` + card-service `ClientReplica` (2026-06-08):**
+`ClientCreatedMessage` (published on both `client.created` and `client.updated`) was enriched with two new fields: `jmbg` (string) and `version` (int64, source `Client.Version`), so it now carries the full client snapshot. card-service consumes both topics via consumer group `card-service-client-replica` and maintains the `ClientReplica` read-model (§18 Card Service). Upsert is version-guarded: a message with a lower version than the stored row is silently dropped to prevent stale overwrites. The card-status notification path resolves the owner email from the replica first; on a miss it falls back to a synchronous `GetClient` gRPC call and backfills the replica. This is the first slice of the service-decoupling program (SP-1, client-profile replica, card-service slice).
+
+**SP-2 service-decoupling: `EmployeeLimitsUpdatedMessage` enrichment + credit-service `EmployeeLimitReplica` (2026-06-08):**
+`EmployeeLimitsUpdatedMessage` (published on `user.employee-limits-updated` by user-service whenever `SetEmployeeLimits` or `ApplyLimitTemplate` is called) was enriched to carry the FULL limit snapshot (`MaxLoanApprovalAmount`, `MaxSingleTransaction`, `MaxDailyTransaction`, `MaxClientDailyLimit`, `MaxClientMonthlyLimit` as `StringFixed(4)` decimal strings) plus a monotonic `Version` field (source `EmployeeLimit.Version`, incremented on every upsert). `EmployeeLimit.Version` now increments on every `SetEmployeeLimits` / `ApplyLimitTemplate` call in user-service. credit-service consumes the topic via consumer group `credit-service-employee-limit-replica` and maintains the `EmployeeLimitReplica` read-model (§18 Credit Service). The loan-approval gate in `LoanRequestService.ApproveLoanRequest` reads `MaxLoanApprovalAmount` from the replica first; on a miss it falls back to a synchronous `GetEmployeeLimits` gRPC call and backfills the replica at `Version=0` (a later versioned event will overwrite it). An approval whose amount exceeds the employee's limit returns `ErrAmountExceedsApprovalLimit` (gRPC `FailedPrecondition` → HTTP 409 `business_rule_violation`). This is the second slice of the service-decoupling program (SP-2, employee-limit replica, credit-service slice).
 
 ### Email Types (SendEmailMessage.EmailType)
 
@@ -2477,6 +2514,18 @@ Keep these synchronized across API Gateway validation, protobuf definitions, and
 - **Dividend pass-through (E4 — 2026-05-28):** Dividends from securities held directly by clients go to the client's RSD account (15% tax withheld, net = 85% of gross). Dividends from securities held by the bank go to the bank's RSD account (no tax). Dividends from securities held by an investment fund flow into the fund's RSD account (no tax at payout time); a `FundDividendPayment` snapshot records the per-investor share at the moment of payout so that each investor's `dividends_received_rsd` in the portfolio response can be computed correctly. Tax on fund-dividend pass-through is realized at the investor's redemption time, not at payout time.
 - **Portfolio dividend visibility (E3 — 2026-05-28):** `GET /api/v3/me/portfolio` (and all portfolio routes) return two new fields on each `PortfolioPosition`: `dividends_received_rsd` (the caller's pro-rata share of dividends paid, based on the per-investor snapshot for fund positions or direct `dividend_payouts.net_amount_rsd` for security positions) and `fund_status` (the fund's lifecycle status for `investment_fund` type positions).
 
+**Client Limits Ownership (SP-4, 2026-06-08):**
+- Client limits are written ONLY by client-service (`ClientLimitService.SetClientLimits`).
+- Client-type limit blueprints are orchestrated by the api-gateway: `BlueprintHandler.ApplyBlueprint` reads the blueprint values from user-service, then calls `ClientLimitService.SetClientLimits` on client-service directly. This path never goes through user-service's `BlueprintService.ApplyBlueprint`.
+- user-service's `BlueprintService` rejects client-type apply calls with `ErrClientBlueprintNotApplicable` (gRPC `FailedPrecondition`) to guard against incorrect direct calls. user-service holds no gRPC connection to client-service.
+
+**Client Limit → Account Cap Propagation (SP-5, DONE 2026-06-08):**
+- Client limits (DailyLimit, MonthlyLimit) are now ENFORCED at the account level, not merely stored.
+- When `PUT /api/v3/clients/{id}/limits` is called, client-service persists the limit and publishes `client.limits-updated` to Kafka with the full post-write snapshot (DailyLimit, MonthlyLimit, TransferLimit as decimal strings) and a monotonically incrementing `Version` (`ClientLimit.Version` increments on every upsert).
+- account-service's `ClientLimitConsumer` (group `account-service-client-limit`) receives the event, upserts a `ClientLimitPolicy` replica row (skips stale events via Version comparison), and calls `AccountService.ApplyClientLimitPolicy` which writes the new DailyLimit/MonthlyLimit to every non-bank account owned by the client.
+- account-service is the authoritative enforcement point for spending limits (via `DebitWithLock`). The per-account `daily_limit`/`monthly_limit` columns set by this propagation are what the ledger repository enforces on every debit.
+- TransferLimit is carried in the Kafka message but is NOT stored in `ClientLimitPolicy` (transfer limits are enforced by client-service at request time, not by account-service). Only DailyLimit and MonthlyLimit propagate to account caps.
+
 **Accounts:**
 - `current` accounts → RSD only
 - `foreign` accounts → EUR, CHF, USD, GBP, JPY, CAD, AUD
@@ -2587,6 +2636,8 @@ Handlers do NOT map errors — they return wrapped service errors directly. The 
 The api-gateway maps gRPC status codes to HTTP via `api-gateway/internal/handler/validation.go:grpcToHTTPError`. Distinct sentinels surface as distinct HTTP error codes, so a client can distinguish "wrong password" (401 unauthorized) from "account locked" (403 forbidden) from "account pending" (409 business_rule_violation), etc.
 
 Email-not-found and bcrypt-mismatch deliberately collapse to the same `ErrInvalidCredentials` sentinel for security (prevents email enumeration). All other failure modes are distinct.
+
+**Standardization audit (2026-06-08):** a sweep confirmed all services return `svcerr`-coded errors across the gRPC boundary. stock-service was brought into full conformance — bare `errors.New` returns that were mapping to HTTP 500 now use the correct codes: listing-not-found → `NotFound` (404); OTC business-rule rejections (terminal-state, self-counter/accept, settlement-not-future, accounts-not-bound) → `FailedPrecondition` (409); and `otc_service` debit/credit failures now wrap the account-service error with `%w` so its code (e.g. insufficient-balance `FailedPrecondition`) is preserved instead of being flattened to 500. Gateway websocket and rate-limit responses were standardized onto `apiError`/`abortWithError`. (cross-bank-protocol error responses are intentionally exempt and unchanged.)
 
 ### 21.2 Cross-Service Saga Coordination
 

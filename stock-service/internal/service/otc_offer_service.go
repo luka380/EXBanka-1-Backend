@@ -3,17 +3,18 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
+	"google.golang.org/grpc/codes"
 	"gorm.io/gorm"
 
 	accountpb "github.com/exbanka/contract/accountpb"
 	kafkamsg "github.com/exbanka/contract/kafka"
 	"github.com/exbanka/contract/shared/outbox"
+	"github.com/exbanka/contract/shared/svcerr"
 	kafkaprod "github.com/exbanka/stock-service/internal/kafka"
 	"github.com/exbanka/stock-service/internal/model"
 	"github.com/exbanka/stock-service/internal/repository"
@@ -217,7 +218,7 @@ func (s *OTCOfferService) WithStockMeta(r OTCStockMetaResolver) *OTCOfferService
 	return &cp
 }
 
-var errOTCSagaDepsNotWired = errors.New("OTC saga dependencies not wired")
+var errOTCSagaDepsNotWired = svcerr.New(codes.Internal, "OTC saga dependencies not wired")
 
 func NewOTCOfferService(
 	offers *repository.OTCOfferRepository,
@@ -407,10 +408,10 @@ func (s *OTCOfferService) Counter(ctx context.Context, in CounterInput) (*model.
 		return nil, err
 	}
 	if o.IsTerminal() {
-		return nil, errors.New("offer is in a terminal state")
+		return nil, ErrOTCOfferTerminalState
 	}
 	if o.LastModifiedByPrincipalType == in.ActorSystemType && o.LastModifiedByPrincipalID == uint64(in.ActorUserID) {
-		return nil, errors.New("you cannot counter your own most recent terms")
+		return nil, ErrOTCCounterOwnTerms
 	}
 	if !in.Quantity.Equal(o.Quantity) {
 		// Identify the seller's owner pair from the offer to validate share
@@ -423,7 +424,7 @@ func (s *OTCOfferService) Counter(ctx context.Context, in CounterInput) (*model.
 		} else if o.CounterpartyOwnerType != nil {
 			sellerOwnerType, sellerOwnerID = *o.CounterpartyOwnerType, o.CounterpartyOwnerID
 		} else {
-			return nil, errors.New("cannot determine seller for invariant check")
+			return nil, svcerr.New(codes.Internal, "cannot determine seller for invariant check")
 		}
 		if err := s.assertSellerHasShares(sellerOwnerType, sellerOwnerID, o.StockID, in.Quantity); err != nil {
 			return nil, err
@@ -495,7 +496,7 @@ func (s *OTCOfferService) Reject(ctx context.Context, in RejectInput) (*model.OT
 		return nil, err
 	}
 	if o.IsTerminal() {
-		return nil, errors.New("offer is in a terminal state")
+		return nil, ErrOTCOfferTerminalState
 	}
 	revNum, err := s.revisions.NextRevisionNumber(o.ID)
 	if err != nil {
@@ -604,7 +605,7 @@ func (s *OTCOfferService) isParticipant(o *model.OTCOffer, userID int64, systemT
 
 func (s *OTCOfferService) assertSellerHasShares(ownerType model.OwnerType, ownerID *uint64, stockID uint64, requested decimal.Decimal) error {
 	if s.holdings == nil {
-		return errors.New("holding lookup not configured")
+		return svcerr.New(codes.Internal, "holding lookup not configured")
 	}
 	holding, err := s.holdings.GetByOwnerAndSecurity(ownerType, ownerID, "stock", stockID)
 	if err != nil {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/exbanka/account-service/internal/cache"
 	"github.com/exbanka/account-service/internal/config"
+	"github.com/exbanka/account-service/internal/consumer"
 	"github.com/exbanka/account-service/internal/handler"
 	kafkaprod "github.com/exbanka/account-service/internal/kafka"
 	"github.com/exbanka/account-service/internal/model"
@@ -44,7 +45,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to connect to database: %v", err)
 	}
-	if err := db.AutoMigrate(&model.Currency{}, &model.Company{}, &model.Account{}, &model.LedgerEntry{}, &model.Changelog{}, &model.BankOperation{}, &model.AccountReservation{}, &model.AccountReservationSettlement{}, &model.IncomingReservation{}, &model.OutgoingReservation{}, &model.IdempotencyRecord{}, &cronreg.CronPauseState{}); err != nil {
+	if err := db.AutoMigrate(&model.Currency{}, &model.Company{}, &model.Account{}, &model.LedgerEntry{}, &model.Changelog{}, &model.BankOperation{}, &model.AccountReservation{}, &model.AccountReservationSettlement{}, &model.IncomingReservation{}, &model.OutgoingReservation{}, &model.IdempotencyRecord{}, &cronreg.CronPauseState{}, &model.ClientLimitPolicy{}, &model.ClientReplica{}); err != nil {
 		log.Fatalf("failed to migrate: %v", err)
 	}
 	cronRegistry := cronreg.NewRegistry("account-service", cronreg.NewGormPauseStore(db))
@@ -80,6 +81,9 @@ func main() {
 		"notification.send-email",
 		"notification.general",
 		"admin.cron-action",
+		"client.limits-updated",
+		"client.created",
+		"client.updated",
 	)
 
 	var redisCache *cache.RedisCache
@@ -115,9 +119,11 @@ func main() {
 	incomingReservationRepo := repository.NewIncomingReservationRepository(db)
 	outgoingReservationRepo := repository.NewOutgoingReservationRepository(db)
 	idempRepo := repository.NewIdempotencyRepository(db)
+	clientLimitPolicyRepo := repository.NewClientLimitPolicyRepository(db)
+	clientReplicaRepo := repository.NewClientReplicaRepository(db)
 
 	accountService := service.NewAccountService(accountRepo, db, redisCache, changelogRepo).
-		WithEvents(producer).WithClientLookup(clientClient)
+		WithEvents(producer).WithClientLookup(clientClient).WithClientReplica(clientReplicaRepo)
 	accountService.SetBankRepo(bankRepo)
 	companyService := service.NewCompanyService(companyRepo)
 	currencyService := service.NewCurrencyService(currencyRepo)
@@ -129,6 +135,16 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// SP-5: consume client.limits-updated and propagate to per-account caps.
+	clientLimitConsumer := consumer.NewClientLimitConsumer(cfg.KafkaBrokers, clientLimitPolicyRepo, accountService)
+	clientLimitConsumer.Start(ctx)
+	defer clientLimitConsumer.Close()
+
+	// SP-1: consume client.created/client.updated to maintain local client replica.
+	clientReplicaConsumer := consumer.NewClientReplicaConsumer(cfg.KafkaBrokers, clientReplicaRepo)
+	clientReplicaConsumer.Start(ctx)
+	defer clientReplicaConsumer.Close()
 
 	spendingCron := service.NewSpendingCronService(accountRepo, cronRegistry)
 	spendingCron.Start(ctx)

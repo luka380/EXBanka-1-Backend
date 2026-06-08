@@ -165,7 +165,7 @@ func buildDisbursementSvc(t *testing.T, accountClient accountpb.AccountServiceCl
 	marginRepo := repository.NewBankMarginRepository(db)
 	rateConfigSvc := NewRateConfigService(tierRepo, marginRepo, db)
 	require.NoError(t, rateConfigSvc.SeedDefaults())
-	svc := NewLoanRequestService(loanReqRepo, loanRepo, installRepo, nil, accountClient, rateConfigSvc, db)
+	svc := NewLoanRequestService(loanReqRepo, loanRepo, installRepo, nil, accountClient, rateConfigSvc, db, nil)
 	return svc, db
 }
 

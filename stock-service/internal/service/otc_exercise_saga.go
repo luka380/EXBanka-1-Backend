@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -18,6 +17,7 @@ import (
 	kafkamsg "github.com/exbanka/contract/kafka"
 	"github.com/exbanka/contract/shared/orderkind"
 	"github.com/exbanka/contract/shared/saga"
+	"github.com/exbanka/contract/shared/svcerr"
 	"github.com/exbanka/stock-service/internal/model"
 	stocksaga "github.com/exbanka/stock-service/internal/saga"
 )
@@ -171,7 +171,7 @@ func (s *OTCOfferService) buildExerciseSaga(ctx context.Context, sagaID string, 
 	buyerCcy := buyerAcct.CurrencyCode
 	if buyerCcy != strikeCcy {
 		if s.exchange == nil {
-			return nil, nil, errors.New("cross-currency OTC exercise requires exchange client")
+			return nil, nil, svcerr.New(codes.Internal, "cross-currency OTC exercise requires exchange client")
 		}
 		conv, err := s.exchange.Convert(ctx, &exchangepb.ConvertRequest{
 			FromCurrency: strikeCcy,

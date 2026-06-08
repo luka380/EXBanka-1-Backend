@@ -13,6 +13,7 @@ import (
 
 	"github.com/exbanka/card-service/internal/cache"
 	"github.com/exbanka/card-service/internal/config"
+	"github.com/exbanka/card-service/internal/consumer"
 	"github.com/exbanka/card-service/internal/handler"
 	kafkaprod "github.com/exbanka/card-service/internal/kafka"
 	"github.com/exbanka/card-service/internal/model"
@@ -36,7 +37,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to connect to database: %v", err)
 	}
-	if err := db.AutoMigrate(&model.Card{}, &model.AuthorizedPerson{}, &model.CardBlock{}, &model.CardRequest{}, &model.Changelog{}, &model.IdempotencyRecord{}, &cronreg.CronPauseState{}); err != nil {
+	if err := db.AutoMigrate(&model.Card{}, &model.AuthorizedPerson{}, &model.CardBlock{}, &model.CardRequest{}, &model.Changelog{}, &model.IdempotencyRecord{}, &cronreg.CronPauseState{}, &model.ClientReplica{}); err != nil {
 		log.Fatalf("failed to migrate: %v", err)
 	}
 	cronRegistry := cronreg.NewRegistry("card-service", cronreg.NewGormPauseStore(db))
@@ -58,6 +59,8 @@ func main() {
 		"notification.send-email",
 		"notification.general",
 		"admin.cron-action",
+		"client.created",
+		"client.updated",
 	)
 
 	var redisCache *cache.RedisCache
@@ -85,16 +88,21 @@ func main() {
 	authRepo := repository.NewAuthorizedPersonRepository(db)
 	cardRequestRepo := repository.NewCardRequestRepository(db)
 	changelogRepo := repository.NewChangelogRepository(db)
+	clientReplicaRepo := repository.NewClientReplicaRepository(db)
 	cardService := service.NewCardService(cardRepo, blockRepo, authRepo, producer, redisCache, db, changelogRepo)
 	changelogSvc := service.NewChangelogService(changelogRepo)
 	cardRequestSvc := service.NewCardRequestService(cardRequestRepo, cardService, producer)
-	grpcHandler := handler.NewCardGRPCHandler(cardService, producer, clientClient, changelogSvc)
+	grpcHandler := handler.NewCardGRPCHandler(cardService, producer, clientClient, changelogSvc, clientReplicaRepo)
 	virtualCardHandler := handler.NewVirtualCardGRPCHandler(cardService, producer)
 	cardRequestHandler := handler.NewCardRequestGRPCHandler(cardRequestSvc)
 
 	cronCtx, cronCancel := context.WithCancel(context.Background())
 	defer cronCancel()
 	service.StartCardCron(cronCtx, cardRepo, blockRepo, db, cronRegistry)
+
+	clientReplicaConsumer := consumer.NewClientReplicaConsumer(cfg.KafkaBrokers, clientReplicaRepo)
+	clientReplicaConsumer.Start(cronCtx)
+	defer clientReplicaConsumer.Close()
 
 	markReady, addReadinessCheck, metricsShutdown := metrics.StartMetricsServer(cfg.MetricsPort)
 	defer func() { _ = metricsShutdown(context.Background()) }()

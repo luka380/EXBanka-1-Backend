@@ -224,7 +224,7 @@ func NewHandlers(d Deps) *Handlers {
 		Portfolio:        handler.NewPortfolioHandler(d.PortfolioClient, d.OTCClient, d.AccountClient),
 		UnifiedPortfolio: handler.NewUnifiedPortfolioHandler(d.PortfolioClient),
 		Actuary:          handler.NewActuaryHandler(d.ActuaryClient),
-		Blueprint:        handler.NewBlueprintHandler(d.BlueprintClient),
+		Blueprint:        handler.NewBlueprintHandler(d.BlueprintClient, d.ClientLimitClient),
 		Tax:              handler.NewTaxHandler(d.TaxClient),
 		StockSource:      handler.NewStockSourceHandler(d.SourceAdminClient),
 		Notification:     handler.NewNotificationHandler(d.NotificationClient),

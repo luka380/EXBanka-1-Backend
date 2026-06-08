@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -68,6 +69,64 @@ func newEventsService(t *testing.T) (*AccountService, *gorm.DB, *stubEvents) {
 	ev := &stubEvents{}
 	svc := NewAccountService(repo, db, nil).WithEvents(ev).WithClientLookup(stubClients{email: "owner@example.com"})
 	return svc, db, ev
+}
+
+// ---------------------------------------------------------------------------
+// resolveClientEmail — SP-1 replica-with-fallback
+// ---------------------------------------------------------------------------
+
+// stubReplicaRepo is a test double for clientReplicaReader.
+type stubReplicaRepo struct {
+	row      model.ClientReplica
+	missing  bool
+	upserted *model.ClientReplica
+}
+
+func (s *stubReplicaRepo) GetByID(_ context.Context, id uint64) (model.ClientReplica, error) {
+	if s.missing || s.row.ID != id {
+		return model.ClientReplica{}, errors.New("not found")
+	}
+	return s.row, nil
+}
+
+func (s *stubReplicaRepo) Upsert(_ context.Context, in model.ClientReplica) error {
+	cp := in
+	s.upserted = &cp
+	return nil
+}
+
+func TestResolveClientEmail_ReplicaHit_NoGRPC(t *testing.T) {
+	db := newTestDB(t)
+	repo := repository.NewAccountRepository(db)
+	ev := &stubEvents{}
+	replicaRepo := &stubReplicaRepo{row: model.ClientReplica{ID: 1, Email: "cached@b.com"}}
+	// clientLookup is nil — proves the replica path doesn't need gRPC.
+	svc := NewAccountService(repo, db, nil).WithEvents(ev).WithClientReplica(replicaRepo)
+
+	acct := &model.Account{OwnerID: 1, CurrencyCode: "RSD", AccountKind: "current", AccountType: "standard", AccountName: "Checking"}
+	require.NoError(t, svc.CreateAccount(acct))
+
+	require.Len(t, ev.emails, 1, "email must be sent via replica hit")
+	assert.Equal(t, "cached@b.com", ev.emails[0].To)
+}
+
+func TestResolveClientEmail_ReplicaMiss_FallbackAndBackfill(t *testing.T) {
+	db := newTestDB(t)
+	repo := repository.NewAccountRepository(db)
+	ev := &stubEvents{}
+	// Replica reports missing; gRPC fallback returns a live address.
+	replicaRepo := &stubReplicaRepo{missing: true}
+	gc := stubClients{email: "live@b.com"}
+	svc := NewAccountService(repo, db, nil).WithEvents(ev).
+		WithClientLookup(gc).WithClientReplica(replicaRepo)
+
+	acct := &model.Account{OwnerID: 1, CurrencyCode: "RSD", AccountKind: "current", AccountType: "standard", AccountName: "Checking"}
+	require.NoError(t, svc.CreateAccount(acct))
+
+	require.Len(t, ev.emails, 1, "email must be sent via gRPC fallback")
+	assert.Equal(t, "live@b.com", ev.emails[0].To)
+	require.NotNil(t, replicaRepo.upserted, "replica must be backfilled after gRPC fallback")
+	assert.Equal(t, "live@b.com", replicaRepo.upserted.Email)
 }
 
 func TestEmit_CreateAccount_HumanOwner(t *testing.T) {

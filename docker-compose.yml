@@ -292,7 +292,6 @@ services:
       REDIS_ADDR: redis:6379
       USER_DB_SSLMODE: disable
       METRICS_PORT: "9102"
-      CLIENT_GRPC_ADDR: "client-service:50054"
     ports:
       - "50052:50052"
       - "9102:9102"
@@ -303,8 +302,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-#      client-service:
-#        condition: service_started
 
   auth-service:
     build:

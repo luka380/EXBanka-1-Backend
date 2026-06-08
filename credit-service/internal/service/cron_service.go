@@ -29,12 +29,20 @@ type cronNotifier interface {
 	PublishGeneralNotification(ctx context.Context, msg kafkamsg.GeneralNotificationMessage) error
 }
 
+// clientReplicaReader is the narrow read-model interface CronService uses
+// for the local client replica (SP-1 hybrid fallback).
+type clientReplicaReader interface {
+	GetByID(ctx context.Context, id uint64) (model.ClientReplica, error)
+	Upsert(ctx context.Context, in model.ClientReplica) error
+}
+
 type CronService struct {
 	installService    *InstallmentService
 	loanService       *LoanService
 	accountClient     accountpb.AccountServiceClient
 	bankAccountClient accountpb.BankAccountServiceClient
 	clientClient      clientpb.ClientServiceClient
+	clientReplicaRepo clientReplicaReader
 	producer          *kafka.Producer
 	notifier          cronNotifier
 	bankRSDAccount    string
@@ -48,6 +56,7 @@ func NewCronService(
 	accountClient accountpb.AccountServiceClient,
 	bankAccountClient accountpb.BankAccountServiceClient,
 	clientClient clientpb.ClientServiceClient,
+	clientReplicaRepo clientReplicaReader,
 	producer *kafka.Producer,
 	bankRSDAccount string,
 	db *gorm.DB,
@@ -59,6 +68,7 @@ func NewCronService(
 		accountClient:     accountClient,
 		bankAccountClient: bankAccountClient,
 		clientClient:      clientClient,
+		clientReplicaRepo: clientReplicaRepo,
 		producer:          producer,
 		bankRSDAccount:    bankRSDAccount,
 		db:                db,
@@ -90,6 +100,33 @@ func (c *CronService) notifyInstallment(ctx context.Context, loan *model.Loan, i
 		RefType: "installment",
 		RefID:   installmentID,
 	})
+}
+
+// resolveClientEmail returns the client's email from the local replica, falling
+// back to a single synchronous GetClient on a miss and backfilling the replica
+// (SP-1 hybrid lazy fallback). Returns "" only if both sources fail.
+func (c *CronService) resolveClientEmail(ctx context.Context, clientID uint64) string {
+	if c.clientReplicaRepo != nil {
+		if rep, err := c.clientReplicaRepo.GetByID(ctx, clientID); err == nil {
+			return rep.Email
+		}
+	}
+	if c.clientClient == nil {
+		return ""
+	}
+	resp, err := c.clientClient.GetClient(ctx, &clientpb.GetClientRequest{Id: clientID})
+	if err != nil {
+		log.Printf("CronService: client resolve fallback failed for %d: %v", clientID, err)
+		return ""
+	}
+	if c.clientReplicaRepo != nil {
+		// ClientResponse has no Version; backfill at 0 so a later versioned
+		// event overwrites it via the repo's version guard.
+		_ = c.clientReplicaRepo.Upsert(ctx, model.ClientReplica{
+			ID: clientID, Email: resp.Email, FirstName: resp.FirstName, LastName: resp.LastName, JMBG: resp.Jmbg,
+		})
+	}
+	return resp.Email
 }
 
 // Start runs the daily installment collection job. Returns immediately;
@@ -184,12 +221,12 @@ func (c *CronService) processInstallment(ctx context.Context, installmentID, loa
 		CreditInstallmentCollectionTotal.WithLabelValues("failure").Inc()
 		log.Printf("CronService: installment %d debit failed: %v", installmentID, debitErr)
 
-		// Send failure email notification to the client
-		if c.clientClient != nil && c.producer != nil {
-			clientResp, clientErr := c.clientClient.GetClient(ctx, &clientpb.GetClientRequest{Id: loan.ClientID})
-			if clientErr == nil {
+		// Send failure email notification to the client (replica-first, gRPC fallback).
+		if c.producer != nil {
+			email := c.resolveClientEmail(ctx, loan.ClientID)
+			if email != "" {
 				emailErr := c.producer.SendEmail(ctx, kafkamsg.SendEmailMessage{
-					To:        clientResp.Email,
+					To:        email,
 					EmailType: kafkamsg.EmailTypeInstallmentFailed,
 					Data: map[string]string{
 						"loan_number":    loan.LoanNumber,
@@ -202,8 +239,6 @@ func (c *CronService) processInstallment(ctx context.Context, installmentID, loa
 				if emailErr != nil {
 					log.Printf("CronService: failed to send installment failure email for loan %d: %v", loanID, emailErr)
 				}
-			} else {
-				log.Printf("CronService: failed to fetch client for loan %d: %v", loanID, clientErr)
 			}
 		}
 

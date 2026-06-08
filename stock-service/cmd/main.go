@@ -146,6 +146,8 @@ func main() {
 		// Kafka publish can no longer silently drop events.
 		&outbox.Event{},
 		&cronreg.CronPauseState{},
+		// SP-1: local client profile replica, fed by client.created / client.updated.
+		&model.ClientReplica{},
 		// E4 dividend tables
 		&model.DividendPayment{},
 		&model.DividendPayout{},
@@ -281,6 +283,8 @@ func main() {
 	// publish no longer drops events.
 	ob := outbox.New(db)
 	shared.EnsureTopics(cfg.KafkaBrokers,
+		"client.created",
+		"client.updated",
 		"stock.exchange-synced",
 		"stock.security-synced",
 		"stock.listing-updated",
@@ -825,6 +829,12 @@ func main() {
 		WithFundDetailDeps(fundHoldingRepo, listingRepo, stockRepo).
 		WithDividendService(dividendSvc)
 
+	// SP-1: client profile replica repository + consumer.
+	clientReplicaRepo := repository.NewClientReplicaRepository(db)
+	clientReplicaConsumer := consumer.NewClientReplicaConsumer(cfg.KafkaBrokers, clientReplicaRepo)
+	clientReplicaConsumer.Start(ctx)
+	defer clientReplicaConsumer.Close()
+
 	// Supervisor-demoted consumer: reassigns the demoted supervisor's funds
 	// to the admin who demoted them.
 	supervisorDemotedConsumer := consumer.NewSupervisorDemotedConsumer(cfg.KafkaBrokers, fundRepo, producer)
@@ -961,7 +971,7 @@ func main() {
 	// Phantom-seller guard: reject inbound cross-bank negotiations whose
 	// client-<n> seller does not resolve to a real local client (closes the
 	// resource-pollution loophole found in the live adversarial sweep).
-	peerOtcHandler = peerOtcHandler.WithSellerValidator(handler.NewClientSellerValidator(clientClient))
+	peerOtcHandler = peerOtcHandler.WithSellerValidator(handler.NewClientSellerValidator(clientClient, clientReplicaRepo))
 	// Seller-nominated-account binding: the seller-credit legs we compose on a
 	// cross-bank accept (and the strike credit at exercise) target the seller's
 	// bound account (the local listing's InitiatorAccountID) as a concrete
@@ -1157,6 +1167,14 @@ func main() {
 			// default named lists (idempotent).
 			if err := service.MigrateWatchlistsToNamedLists(db, watchlistRepo); err != nil {
 				log.Printf("WARN: watchlist named-list migration failed: %v", err)
+			}
+			// Fix NULL-owner duplicate watchlists: dedup existing dups and
+			// enforce uniqueness via a partial index. Idempotent — safe on
+			// every startup. Must run after MigrateWatchlistsToNamedLists so
+			// any items created by that migration are already in a consistent
+			// state before we attempt dedup.
+			if err := service.DedupeWatchlistsAndEnforceUniqueness(db); err != nil {
+				log.Printf("WARN: watchlist dedup/uniqueness migration failed: %v", err)
 			}
 			watchlistSvc := service.NewWatchlistService(watchlistRepo, listingRepo, stockRepo, optionRepo, futuresRepo, forexRepo)
 			pb.RegisterWatchlistServiceServer(s, handler.NewWatchlistHandler(watchlistSvc))

@@ -6,10 +6,12 @@ import (
 	"fmt"
 
 	"github.com/shopspring/decimal"
+	"google.golang.org/grpc/codes"
 	"gorm.io/gorm"
 
 	accountpb "github.com/exbanka/contract/accountpb"
 	exchangepb "github.com/exbanka/contract/exchangepb"
+	"github.com/exbanka/contract/shared/svcerr"
 	"github.com/exbanka/stock-service/internal/model"
 )
 
@@ -48,7 +50,7 @@ func ownerToLegacy(ownerType model.OwnerType, ownerID *uint64) (string, int64) {
 // duplicated.
 func (s *OTCOfferService) RecoverAcceptSaga(ctx context.Context, sagaID string, offerID uint64) error {
 	if sagaID == "" {
-		return errors.New("recover accept saga: empty sagaID")
+		return svcerr.New(codes.Internal, "recover accept saga: empty sagaID")
 	}
 	contract, err := s.contracts.GetBySagaID(sagaID)
 	if errors.Is(err, gorm.ErrRecordNotFound) || contract == nil {

@@ -325,6 +325,27 @@ var (
 	// this; they retain their own-chain view via ListMyNegotiations.
 	ErrOTCListingAudienceForbidden = svcerr.New(codes.PermissionDenied, "only the listing's poster may view all chains on this offer")
 
+	// --- OTC negotiation / accept business-rule rejections ---
+
+	// ErrOTCOfferTerminalState — operation rejected because the offer is in
+	// a terminal state (accepted/rejected/cancelled/expired).
+	ErrOTCOfferTerminalState = svcerr.New(codes.FailedPrecondition, "offer is in a terminal state")
+
+	// ErrOTCCounterOwnTerms — counter rejected because the actor is the
+	// same principal who last modified the offer (self-counter guard).
+	ErrOTCCounterOwnTerms = svcerr.New(codes.FailedPrecondition, "you cannot counter your own most recent terms")
+
+	// ErrOTCAcceptOwnTerms — accept rejected because the actor is the same
+	// principal who last modified the offer (self-accept guard).
+	ErrOTCAcceptOwnTerms = svcerr.New(codes.FailedPrecondition, "you cannot accept your own most recent terms")
+
+	// ErrOTCSettlementNotFuture — settlement_date is not in the future.
+	ErrOTCSettlementNotFuture = svcerr.New(codes.FailedPrecondition, "settlement_date is not in the future")
+
+	// ErrOTCAccountsNotBound — both buyer and seller accounts must be
+	// bound before the accept saga can run.
+	ErrOTCAccountsNotBound = svcerr.New(codes.FailedPrecondition, "both buyer and seller accounts must be bound")
+
 	// --- Generic catch-alls (used by handlers when wrapping bare
 	// dependency errors before they become gRPC responses) ---
 

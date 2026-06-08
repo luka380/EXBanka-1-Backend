@@ -392,6 +392,41 @@ func submitVerificationCode(t *testing.T, c *client.APIClient, challengeID int, 
 	helpers.RequireStatus(t, resp, 200)
 }
 
+// scanKafkaForEmailType reads notification.send-email from the earliest offset and
+// reports whether an email of the given type was sent to the given address within 15s.
+// Mirrors scanKafkaForActivationToken but matches on email_type instead of extracting a token.
+func scanKafkaForEmailType(t *testing.T, email, emailType string) bool {
+	t.Helper()
+	r := kafkalib.NewReader(kafkalib.ReaderConfig{
+		Brokers:     []string{cfg.KafkaBrokers},
+		Topic:       "notification.send-email",
+		Partition:   0,
+		StartOffset: kafkalib.FirstOffset,
+		MaxWait:     500 * time.Millisecond,
+	})
+	defer r.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	for {
+		msg, err := r.ReadMessage(ctx)
+		if err != nil {
+			break
+		}
+		var body struct {
+			To        string            `json:"to"`
+			EmailType string            `json:"email_type"`
+			Data      map[string]string `json:"data"`
+		}
+		if json.Unmarshal(msg.Value, &body) != nil {
+			continue
+		}
+		if body.To == email && body.EmailType == emailType {
+			return true
+		}
+	}
+	return false
+}
+
 // setupActivatedClientWithForeignAccount creates a client with RSD (100k) + foreign currency account (10k).
 func setupActivatedClientWithForeignAccount(t *testing.T, adminC *client.APIClient, currency string) (clientID int, rsdAccountNum string, foreignAccountNum string, clientC *client.APIClient, email string) {
 	t.Helper()

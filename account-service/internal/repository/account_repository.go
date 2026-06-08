@@ -311,6 +311,15 @@ func (r *AccountRepository) UpdateBalance(accountNumber string, amount decimal.D
 	return entry, err
 }
 
+// ListNonBankByOwner returns all NON-bank accounts owned by the given client.
+// Used by SP-5 client-limit propagation to apply the client's policy to every
+// account they own.
+func (r *AccountRepository) ListNonBankByOwner(ownerID uint64) ([]model.Account, error) {
+	var accounts []model.Account
+	err := r.db.Where("owner_id = ? AND is_bank_account = ?", ownerID, false).Find(&accounts).Error
+	return accounts, err
+}
+
 // UpdateSpending increments daily_spending and monthly_spending by the given amount.
 // Only call this for debit operations on client accounts (not bank accounts).
 func (r *AccountRepository) UpdateSpending(accountNumber string, amount decimal.Decimal) error {

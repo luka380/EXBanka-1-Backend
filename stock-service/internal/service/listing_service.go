@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"time"
 
@@ -150,7 +151,7 @@ func (s *ListingService) GetListing(id uint64) (*model.Listing, error) {
 	listing, err := s.listingRepo.GetByID(id)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, errors.New("listing not found")
+			return nil, ErrListingNotFound
 		}
 		return nil, err
 	}
@@ -162,7 +163,7 @@ func (s *ListingService) GetListingForSecurity(securityID uint64, securityType s
 	listing, err := s.listingRepo.GetBySecurityIDAndType(securityID, securityType)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, errors.New("listing not found for security")
+			return nil, fmt.Errorf("listing not found for security: %w", ErrListingNotFound)
 		}
 		return nil, err
 	}
@@ -245,7 +246,7 @@ func (s *ListingService) GetPriceHistoryForSecurity(securityID uint64, securityT
 	listing, err := s.listingRepo.GetBySecurityIDAndType(securityID, securityType)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, 0, errors.New("listing not found for security")
+			return nil, 0, fmt.Errorf("listing not found for security: %w", ErrListingNotFound)
 		}
 		return nil, 0, err
 	}

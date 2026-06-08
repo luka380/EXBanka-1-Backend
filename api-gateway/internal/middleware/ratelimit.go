@@ -51,9 +51,7 @@ func RateLimit(rdb *redis.Client, rule RateLimitRule, keyFn func(*gin.Context) s
 		}
 		if n > int64(rule.Limit) {
 			c.Header("Retry-After", strconv.Itoa(int(rule.Window.Seconds())))
-			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-				"error": gin.H{"code": "rate_limited", "message": "too many requests, slow down"},
-			})
+			abortWithError(c, http.StatusTooManyRequests, "rate_limited", "too many requests, slow down")
 			return
 		}
 		c.Next()

@@ -6550,6 +6550,8 @@ Delete a blueprint by ID. Does not affect limits that have already been applied 
 
 Apply a blueprint's limit values to a target entity. The target type is determined by the blueprint's `type` field (employee, actuary, or client).
 
+**Routing note (SP-4):** The gateway dispatches apply calls based on blueprint type. For **client-type** blueprints the gateway calls `ClientLimitService.SetClientLimits` on client-service directly (synchronously), bypassing user-service entirely. For **employee** and **actuary** type blueprints the gateway calls `BlueprintService.ApplyBlueprint` on user-service as before. The request body (`target_id`), response shape, and status codes are the same regardless of type.
+
 **Authentication:** Employee JWT + `limits.manage` permission
 
 **Path Parameters:**

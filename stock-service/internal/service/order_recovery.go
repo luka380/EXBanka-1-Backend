@@ -6,8 +6,10 @@ import (
 	"fmt"
 
 	"github.com/shopspring/decimal"
+	"google.golang.org/grpc/codes"
 	"gorm.io/gorm"
 
+	"github.com/exbanka/contract/shared/svcerr"
 	"github.com/exbanka/stock-service/internal/model"
 )
 
@@ -32,7 +34,7 @@ import (
 // reconciliation), and notifications are best-effort.
 func (s *OrderService) RecoverPlacementSaga(ctx context.Context, sagaID string, orderID uint64) error {
 	if sagaID == "" {
-		return errors.New("recover placement saga: empty sagaID")
+		return svcerr.New(codes.Internal, "recover placement saga: empty sagaID")
 	}
 	order, err := s.orderRepo.GetBySagaID(sagaID)
 	if errors.Is(err, gorm.ErrRecordNotFound) || order == nil {

@@ -3,18 +3,19 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
+	"google.golang.org/grpc/codes"
 
 	accountpb "github.com/exbanka/contract/accountpb"
 	exchangepb "github.com/exbanka/contract/exchangepb"
 	kafkamsg "github.com/exbanka/contract/kafka"
 	"github.com/exbanka/contract/shared/saga"
+	"github.com/exbanka/contract/shared/svcerr"
 	"github.com/exbanka/stock-service/internal/model"
 	stocksaga "github.com/exbanka/stock-service/internal/saga"
 )
@@ -80,7 +81,7 @@ func (s *FundService) Invest(ctx context.Context, in InvestInput) (*model.FundCo
 	var fxRate *decimal.Decimal
 	if in.Currency != "RSD" {
 		if s.exchange == nil {
-			return nil, errors.New("cross-currency invest requires exchange client")
+			return nil, svcerr.New(codes.Internal, "cross-currency invest requires exchange client")
 		}
 		conv, err := s.exchange.Convert(ctx, &exchangepb.ConvertRequest{
 			FromCurrency: in.Currency,

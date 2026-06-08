@@ -2,17 +2,19 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"time"
+
+	"google.golang.org/grpc/codes"
 
 	accountpb "github.com/exbanka/contract/accountpb"
 	"github.com/exbanka/contract/cronreg"
 	kafkamsg "github.com/exbanka/contract/kafka"
 	"github.com/exbanka/contract/shared/orderkind"
 	"github.com/exbanka/contract/shared/saga"
+	"github.com/exbanka/contract/shared/svcerr"
 	kafkaprod "github.com/exbanka/stock-service/internal/kafka"
 	"github.com/exbanka/stock-service/internal/model"
 )
@@ -700,7 +702,7 @@ func (r *SagaRecovery) reconcileCreditDebit(ctx context.Context, step model.Saga
 		}
 	case "credit_base":
 		if order.BaseAccountID == nil {
-			return errors.New("recovery: forex credit_base step without base_account_id")
+			return svcerr.New(codes.Internal, "recovery: forex credit_base step without base_account_id")
 		}
 		accountNumber, err = r.lookupAccountNumber(ctx, *order.BaseAccountID)
 		if err != nil {

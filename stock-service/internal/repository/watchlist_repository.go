@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"errors"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -23,19 +24,33 @@ func NewWatchlistRepository(db *gorm.DB) *WatchlistRepository {
 
 // CreateWatchlist inserts a named list, idempotent on (owner, name): if the
 // name already exists for the owner the existing row is returned unchanged.
+//
+// NULL-owner (bank) correctness: Postgres and SQLite treat NULLs as DISTINCT
+// in unique indexes, so ON CONFLICT DO NOTHING never fires for bank-owned rows
+// — every call would insert a new duplicate. We guard against this by checking
+// existence FIRST via getWatchlistByOwnerName (which emits owner_id IS NULL
+// for nil owners and therefore finds existing bank rows correctly).
 func (r *WatchlistRepository) CreateWatchlist(w *model.Watchlist) error {
+	// Check existence first — handles the NULL-owner (bank) case where the
+	// unique index cannot deduplicate (NULL IS DISTINCT FROM NULL in indexes).
+	if existing, err := r.getWatchlistByOwnerName(w.OwnerType, w.OwnerID, w.Name); err == nil {
+		*w = *existing
+		return nil
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
 	if err := r.db.Clauses(clause.OnConflict{DoNothing: true}).Create(w).Error; err != nil {
 		return err
 	}
-	if w.ID != 0 {
-		return nil
+	if w.ID == 0 {
+		// Conflict on a non-NULL owner (race between two concurrent callers) →
+		// re-read the winner's row.
+		existing, err := r.getWatchlistByOwnerName(w.OwnerType, w.OwnerID, w.Name)
+		if err != nil {
+			return err
+		}
+		*w = *existing
 	}
-	// Conflict (DoNothing) → re-read the existing row.
-	existing, err := r.getWatchlistByOwnerName(w.OwnerType, w.OwnerID, w.Name)
-	if err != nil {
-		return err
-	}
-	*w = *existing
 	return nil
 }
 

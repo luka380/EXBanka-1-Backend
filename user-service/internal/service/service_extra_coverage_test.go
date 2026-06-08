@@ -704,7 +704,7 @@ func TestLimitService_TemplateCRUD(t *testing.T) {
 
 func TestCreateBlueprint_NameRequired(t *testing.T) {
 	bpRepo := newMockBlueprintRepo()
-	svc := NewBlueprintService(bpRepo, nil, nil, nil, nil, nil)
+	svc := NewBlueprintService(bpRepo, nil, nil, nil, nil)
 
 	_, err := svc.CreateBlueprint(context.Background(), model.LimitBlueprint{
 		Name: "", Type: model.BlueprintTypeEmployee,
@@ -719,7 +719,7 @@ func TestCreateBlueprint_NameRequired(t *testing.T) {
 
 func TestCreateBlueprint_ActuaryValidation(t *testing.T) {
 	bpRepo := newMockBlueprintRepo()
-	svc := NewBlueprintService(bpRepo, nil, nil, nil, nil, nil)
+	svc := NewBlueprintService(bpRepo, nil, nil, nil, nil)
 
 	// missing limit
 	_, err := svc.CreateBlueprint(context.Background(), model.LimitBlueprint{
@@ -748,7 +748,7 @@ func TestCreateBlueprint_ActuaryValidation(t *testing.T) {
 
 func TestCreateBlueprint_ClientValidation(t *testing.T) {
 	bpRepo := newMockBlueprintRepo()
-	svc := NewBlueprintService(bpRepo, nil, nil, nil, nil, nil)
+	svc := NewBlueprintService(bpRepo, nil, nil, nil, nil)
 
 	// missing field
 	_, err := svc.CreateBlueprint(context.Background(), model.LimitBlueprint{
@@ -769,7 +769,7 @@ func TestCreateBlueprint_ClientValidation(t *testing.T) {
 
 func TestListBlueprints_InvalidTypeFilter(t *testing.T) {
 	bpRepo := newMockBlueprintRepo()
-	svc := NewBlueprintService(bpRepo, nil, nil, nil, nil, nil)
+	svc := NewBlueprintService(bpRepo, nil, nil, nil, nil)
 
 	_, err := svc.ListBlueprints("nope")
 	assert.Error(t, err)
@@ -778,7 +778,7 @@ func TestListBlueprints_InvalidTypeFilter(t *testing.T) {
 
 func TestApplyBlueprint_ClientWithoutGRPCClient(t *testing.T) {
 	bpRepo := newMockBlueprintRepo()
-	svc := NewBlueprintService(bpRepo, nil, nil, nil, nil, nil) // nil clientClient
+	svc := NewBlueprintService(bpRepo, nil, nil, nil, nil)
 
 	bp := model.LimitBlueprint{
 		Name: "C", Type: model.BlueprintTypeClient,
@@ -790,13 +790,14 @@ func TestApplyBlueprint_ClientWithoutGRPCClient(t *testing.T) {
 
 	err := svc.ApplyBlueprint(context.Background(), created.ID, 1, 1)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "client-service gRPC client not configured")
+	assert.ErrorIs(t, err, ErrClientBlueprintNotApplicable)
 }
 
-func TestApplyBlueprint_ClientGRPCError(t *testing.T) {
+func TestApplyBlueprint_ClientType_RejectedWithError(t *testing.T) {
+	// Client-type blueprints are now rejected by user-service regardless;
+	// user-service no longer holds a gRPC client to client-service.
 	bpRepo := newMockBlueprintRepo()
-	clientClient := &mockClientLimitClient{err: errors.New("rpc broke")}
-	svc := NewBlueprintService(bpRepo, nil, nil, clientClient, nil, nil)
+	svc := NewBlueprintService(bpRepo, nil, nil, nil, nil)
 
 	bp := model.LimitBlueprint{
 		Name: "ClientErr", Type: model.BlueprintTypeClient,
@@ -808,14 +809,14 @@ func TestApplyBlueprint_ClientGRPCError(t *testing.T) {
 
 	err := svc.ApplyBlueprint(context.Background(), created.ID, 11, 1)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "rpc broke")
+	assert.ErrorIs(t, err, ErrClientBlueprintNotApplicable)
 }
 
 func TestApplyBlueprint_RecordsChangelog(t *testing.T) {
 	bpRepo := newMockBlueprintRepo()
 	limitRepo := newMockEmployeeLimitRepo()
 	cl := newRecordingChangelogRepo()
-	svc := NewBlueprintService(bpRepo, limitRepo, nil, nil, nil, cl)
+	svc := NewBlueprintService(bpRepo, limitRepo, nil, nil, cl)
 
 	bp := model.LimitBlueprint{
 		Name: "WithChangelog", Type: model.BlueprintTypeEmployee,
@@ -837,7 +838,7 @@ func TestApplyBlueprint_RecordsChangelog(t *testing.T) {
 func TestApplyBlueprint_EmployeeMalformedJSON(t *testing.T) {
 	bpRepo := newMockBlueprintRepo()
 	limitRepo := newMockEmployeeLimitRepo()
-	svc := NewBlueprintService(bpRepo, limitRepo, nil, nil, nil, nil)
+	svc := NewBlueprintService(bpRepo, limitRepo, nil, nil, nil)
 
 	// Insert a blueprint directly bypassing validateValues so we can corrupt the payload.
 	bp := &model.LimitBlueprint{
@@ -854,7 +855,7 @@ func TestApplyBlueprint_EmployeeMalformedJSON(t *testing.T) {
 func TestApplyBlueprint_ActuaryMalformedJSON(t *testing.T) {
 	bpRepo := newMockBlueprintRepo()
 	actuaryRepo := newMockActuaryRepoWithUpsert()
-	svc := NewBlueprintService(bpRepo, nil, actuaryRepo, nil, nil, nil)
+	svc := NewBlueprintService(bpRepo, nil, actuaryRepo, nil, nil)
 
 	bp := &model.LimitBlueprint{
 		Name: "ActCorrupt", Type: model.BlueprintTypeActuary,
@@ -867,9 +868,10 @@ func TestApplyBlueprint_ActuaryMalformedJSON(t *testing.T) {
 }
 
 func TestApplyBlueprint_ClientMalformedJSON(t *testing.T) {
+	// Client-type blueprints are rejected immediately — malformed JSON is moot,
+	// but we verify that the error is ErrClientBlueprintNotApplicable.
 	bpRepo := newMockBlueprintRepo()
-	cc := &mockClientLimitClient{}
-	svc := NewBlueprintService(bpRepo, nil, nil, cc, nil, nil)
+	svc := NewBlueprintService(bpRepo, nil, nil, nil, nil)
 
 	bp := &model.LimitBlueprint{
 		Name: "ClientCorrupt", Type: model.BlueprintTypeClient,
@@ -879,12 +881,12 @@ func TestApplyBlueprint_ClientMalformedJSON(t *testing.T) {
 
 	err := svc.ApplyBlueprint(context.Background(), bp.ID, 1, 1)
 	assert.Error(t, err)
-	assert.Len(t, cc.calls, 0, "no gRPC call should be made on parse error")
+	assert.ErrorIs(t, err, ErrClientBlueprintNotApplicable)
 }
 
 func TestApplyBlueprint_UnknownType(t *testing.T) {
 	bpRepo := newMockBlueprintRepo()
-	svc := NewBlueprintService(bpRepo, nil, nil, nil, nil, nil)
+	svc := NewBlueprintService(bpRepo, nil, nil, nil, nil)
 
 	// Insert a blueprint with an unknown type (validation bypassed).
 	bp := &model.LimitBlueprint{
@@ -900,7 +902,7 @@ func TestApplyBlueprint_UnknownType(t *testing.T) {
 
 func TestUpdateBlueprint_NotFound(t *testing.T) {
 	bpRepo := newMockBlueprintRepo()
-	svc := NewBlueprintService(bpRepo, nil, nil, nil, nil, nil)
+	svc := NewBlueprintService(bpRepo, nil, nil, nil, nil)
 
 	_, err := svc.UpdateBlueprint(context.Background(), 99999, "n", "d", json.RawMessage(`{}`))
 	assert.Error(t, err)
@@ -908,7 +910,7 @@ func TestUpdateBlueprint_NotFound(t *testing.T) {
 
 func TestUpdateBlueprint_InvalidValuesRejected(t *testing.T) {
 	bpRepo := newMockBlueprintRepo()
-	svc := NewBlueprintService(bpRepo, nil, nil, nil, nil, nil)
+	svc := NewBlueprintService(bpRepo, nil, nil, nil, nil)
 
 	bp := model.LimitBlueprint{
 		Name: "U", Type: model.BlueprintTypeActuary,
@@ -925,7 +927,7 @@ func TestUpdateBlueprint_InvalidValuesRejected(t *testing.T) {
 
 func TestDeleteBlueprint_NotFound(t *testing.T) {
 	bpRepo := newMockBlueprintRepo()
-	svc := NewBlueprintService(bpRepo, nil, nil, nil, nil, nil)
+	svc := NewBlueprintService(bpRepo, nil, nil, nil, nil)
 
 	err := svc.DeleteBlueprint(context.Background(), 9999)
 	assert.Error(t, err)
@@ -936,7 +938,7 @@ func TestSeedFromTemplates_PropagatesNonNotFoundErr(t *testing.T) {
 		mockBlueprintRepo: *newMockBlueprintRepo(),
 		getByNameErr:      errors.New("DB down"),
 	}
-	svc := NewBlueprintService(bpRepo, nil, nil, nil, nil, nil)
+	svc := NewBlueprintService(bpRepo, nil, nil, nil, nil)
 
 	err := svc.SeedFromTemplates([]model.LimitTemplate{{Name: "X"}})
 	assert.Error(t, err)

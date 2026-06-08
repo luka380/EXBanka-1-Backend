@@ -109,6 +109,8 @@ type ClientCreatedMessage struct {
 	Email     string `json:"email"`
 	FirstName string `json:"first_name"`
 	LastName  string `json:"last_name"`
+	JMBG      string `json:"jmbg,omitempty"`
+	Version   int64  `json:"version,omitempty"`
 }
 
 type AccountCreatedMessage struct {
@@ -246,9 +248,18 @@ type RolePermissionsChangedMessage struct {
 }
 
 // EmployeeLimitsUpdatedMessage is published when an employee's limits are set or updated.
+// Enriched (SP-2) to carry the FULL limit snapshot + monotonic Version so consumers
+// can maintain a local EmployeeLimitReplica without a synchronous GetEmployeeLimits read.
+// Decimal values are formatted strings (StringFixed(4)) to avoid float drift.
 type EmployeeLimitsUpdatedMessage struct {
-	EmployeeID int64  `json:"employee_id"`
-	Action     string `json:"action"` // "set" or "template_applied"
+	EmployeeID            int64  `json:"employee_id"`
+	Action                string `json:"action"` // "set" or "template_applied"
+	MaxLoanApprovalAmount string `json:"max_loan_approval_amount,omitempty"`
+	MaxSingleTransaction  string `json:"max_single_transaction,omitempty"`
+	MaxDailyTransaction   string `json:"max_daily_transaction,omitempty"`
+	MaxClientDailyLimit   string `json:"max_client_daily_limit,omitempty"`
+	MaxClientMonthlyLimit string `json:"max_client_monthly_limit,omitempty"`
+	Version               int64  `json:"version"`
 }
 
 // LimitTemplateMessage is published when a limit template is created, updated, or deleted.
@@ -259,10 +270,17 @@ type LimitTemplateMessage struct {
 }
 
 // ClientLimitsUpdatedMessage is published when a client's limits are updated.
+// DailyLimit, MonthlyLimit, TransferLimit and Version carry the full post-write
+// snapshot so SP-5 account-service replica consumers can apply the event
+// idempotently without a round-trip back to client-service.
 type ClientLimitsUpdatedMessage struct {
 	ClientID      int64  `json:"client_id"`
 	SetByEmployee int64  `json:"set_by_employee"`
 	Action        string `json:"action"` // "set"
+	DailyLimit    string `json:"daily_limit,omitempty"`
+	MonthlyLimit  string `json:"monthly_limit,omitempty"`
+	TransferLimit string `json:"transfer_limit,omitempty"`
+	Version       int64  `json:"version"`
 }
 
 type CardTemporaryBlockedMessage struct {

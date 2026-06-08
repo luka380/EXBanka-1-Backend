@@ -56,17 +56,17 @@ func (h *WebSocketHandler) HandleConnect(c *gin.Context) {
 		}
 	}
 	if token == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing token"})
+		apiError(c, http.StatusUnauthorized, ErrUnauthorized, "missing token")
 		return
 	}
 
 	resp, err := h.authClient.ValidateToken(c.Request.Context(), &authpb.ValidateTokenRequest{Token: token})
 	if err != nil || !resp.Valid {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+		apiError(c, http.StatusUnauthorized, ErrUnauthorized, "invalid token")
 		return
 	}
 	if resp.DeviceType != "mobile" {
-		c.JSON(http.StatusForbidden, gin.H{"error": "mobile token required"})
+		apiError(c, http.StatusForbidden, ErrForbidden, "mobile token required")
 		return
 	}
 
@@ -75,7 +75,7 @@ func (h *WebSocketHandler) HandleConnect(c *gin.Context) {
 		deviceID = c.Query("device_id")
 	}
 	if deviceID != resp.DeviceId {
-		c.JSON(http.StatusForbidden, gin.H{"error": "device ID mismatch"})
+		apiError(c, http.StatusForbidden, ErrForbidden, "device ID mismatch")
 		return
 	}
 

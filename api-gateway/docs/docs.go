@@ -1677,7 +1677,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Copies blueprint limit values to the target entity (employee, actuary, or client based on blueprint type)",
+                "description": "Copies blueprint limit values to the target entity (employee, actuary, or client based on blueprint type). Client-type blueprints are applied directly via client-service; employee/actuary types go through user-service.",
                 "consumes": [
                     "application/json"
                 ],

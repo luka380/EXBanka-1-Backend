@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -115,7 +114,7 @@ func (s *FundService) Redeem(ctx context.Context, in RedeemInput) (*model.FundCo
 	var bankRSDAcctNo string
 	if !feeRSD.IsZero() {
 		if s.bankRSDAccountFn == nil {
-			return nil, errors.New("bank RSD account resolver not wired (required for fee credit)")
+			return nil, svcerr.New(codes.Internal, "bank RSD account resolver not wired (required for fee credit)")
 		}
 		acctNo, _, err := s.bankRSDAccountFn(ctx)
 		if err != nil {

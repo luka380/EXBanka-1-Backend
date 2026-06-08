@@ -36,6 +36,13 @@ type clientLookup interface {
 	GetClient(ctx context.Context, in *clientpb.GetClientRequest, opts ...grpc.CallOption) (*clientpb.ClientResponse, error)
 }
 
+// clientReplicaReader is the local read-model the service consults before
+// falling back to a synchronous GetClient (SP-1 hybrid lazy fallback).
+type clientReplicaReader interface {
+	GetByID(ctx context.Context, id uint64) (model.ClientReplica, error)
+	Upsert(ctx context.Context, in model.ClientReplica) error
+}
+
 // WithEvents wires the Kafka producer so the service publishes its domain events
 // itself (per CLAUDE.md, events are published from the service layer, not the
 // handler). No-op publishing when nil. Returns the service for chaining.
@@ -49,6 +56,45 @@ func (s *AccountService) WithEvents(p eventPublisher) *AccountService {
 func (s *AccountService) WithClientLookup(c clientLookup) *AccountService {
 	s.clients = c
 	return s
+}
+
+// WithClientReplica wires the local client replica read-model (SP-1).
+// When set, resolveClientEmail reads the replica first and falls back to
+// a single synchronous GetClient only on a cache miss. Returns the service for chaining.
+func (s *AccountService) WithClientReplica(r clientReplicaReader) *AccountService {
+	s.clientReplica = r
+	return s
+}
+
+// resolveClientEmail returns the client's email from the local replica, falling
+// back to a single synchronous GetClient on a miss and backfilling the replica
+// (SP-1 hybrid lazy fallback). Returns "" only if both sources fail.
+func (s *AccountService) resolveClientEmail(ctx context.Context, ownerID uint64) string {
+	if s.clientReplica != nil {
+		if rep, err := s.clientReplica.GetByID(ctx, ownerID); err == nil {
+			return rep.Email
+		}
+	}
+	if s.clients == nil {
+		return ""
+	}
+	resp, err := s.clients.GetClient(ctx, &clientpb.GetClientRequest{Id: ownerID})
+	if err != nil {
+		log.Printf("warn: fetch client %d for account-created email: %v", ownerID, err)
+		return ""
+	}
+	if s.clientReplica != nil {
+		// ClientResponse has no Version; backfill at 0 so a later versioned
+		// event overwrites it via the repo's version guard.
+		_ = s.clientReplica.Upsert(ctx, model.ClientReplica{
+			ID:        ownerID,
+			Email:     resp.Email,
+			FirstName: resp.FirstName,
+			LastName:  resp.LastName,
+			JMBG:      resp.Jmbg,
+		})
+	}
+	return resp.Email
 }
 
 // hasHumanOwner reports whether the account belongs to a real client (not a
@@ -82,19 +128,19 @@ func (s *AccountService) emitAccountCreated(account *model.Account) {
 		RefType: "account",
 		RefID:   account.ID,
 	})
-	// Welcome email — best effort; needs the owner's email from client-service.
-	if s.clients == nil {
+	// Welcome email — best effort; needs the owner's email.
+	// Replica-first (SP-1); falls back to synchronous GetClient on miss.
+	if s.clients == nil && s.clientReplica == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(bg, emitTimeout)
 	defer cancel()
-	clientResp, err := s.clients.GetClient(ctx, &clientpb.GetClientRequest{Id: account.OwnerID})
-	if err != nil {
-		log.Printf("warn: fetch client %d for account-created email: %v", account.OwnerID, err)
+	email := s.resolveClientEmail(ctx, account.OwnerID)
+	if email == "" {
 		return
 	}
 	if err := s.events.SendEmail(bg, kafkamsg.SendEmailMessage{
-		To:        clientResp.Email,
+		To:        email,
 		EmailType: kafkamsg.EmailTypeAccountCreated,
 		Data: map[string]string{
 			"account_number": account.AccountNumber,
@@ -102,7 +148,7 @@ func (s *AccountService) emitAccountCreated(account *model.Account) {
 			"currency":       account.CurrencyCode,
 		},
 	}); err != nil {
-		log.Printf("warn: send account-created email to %s: %v", clientResp.Email, err)
+		log.Printf("warn: send account-created email to %s: %v", email, err)
 	}
 }
 

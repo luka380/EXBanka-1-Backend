@@ -16,6 +16,12 @@ import (
 	"gorm.io/gorm"
 )
 
+// employeeLimitReader is the local read-model consulted before the gRPC fallback (SP-2).
+type employeeLimitReader interface {
+	GetByEmployeeID(ctx context.Context, id uint64) (model.EmployeeLimitReplica, error)
+	Upsert(ctx context.Context, in model.EmployeeLimitReplica) error
+}
+
 var validLoanTypes = map[string]bool{
 	"cash": true, "housing": true, "auto": true, "refinancing": true, "student": true,
 }
@@ -51,6 +57,7 @@ type LoanRequestService struct {
 	loanRepo          *repository.LoanRepository
 	installRepo       *repository.InstallmentRepository
 	limitClient       userpb.EmployeeLimitServiceClient
+	limitReplica      employeeLimitReader
 	accountClient     accountpb.AccountServiceClient
 	bankAccountClient accountpb.BankAccountServiceClient
 	rateConfigSvc     *RateConfigService
@@ -67,9 +74,10 @@ func NewLoanRequestService(
 	accountClient accountpb.AccountServiceClient,
 	rateConfigSvc *RateConfigService,
 	db *gorm.DB,
+	limitReplica employeeLimitReader,
 	changelogRepo ...*repository.ChangelogRepository,
 ) *LoanRequestService {
-	svc := &LoanRequestService{repo: repo, loanRepo: loanRepo, installRepo: installRepo, limitClient: limitClient, accountClient: accountClient, rateConfigSvc: rateConfigSvc, db: db}
+	svc := &LoanRequestService{repo: repo, loanRepo: loanRepo, installRepo: installRepo, limitClient: limitClient, limitReplica: limitReplica, accountClient: accountClient, rateConfigSvc: rateConfigSvc, db: db}
 	if len(changelogRepo) > 0 {
 		svc.changelogRepo = changelogRepo[0]
 	}
@@ -91,6 +99,51 @@ func (s *LoanRequestService) SetDisbursementSaga(saga *LoanDisbursementSaga) {
 // the saga).
 func (s *LoanRequestService) SetBankAccountClient(client accountpb.BankAccountServiceClient) {
 	s.bankAccountClient = client
+}
+
+// resolveMaxLoanApproval returns the employee's MaxLoanApprovalAmount from the local
+// replica, falling back to a single GetEmployeeLimits gRPC call on a miss and backfilling
+// the replica (SP-2 hybrid lazy fallback). Returns (decimal.Zero, false) if no limit is
+// available from either source (caller treats false / non-positive as "no approval gate").
+func (s *LoanRequestService) resolveMaxLoanApproval(ctx context.Context, employeeID uint64) (decimal.Decimal, bool) {
+	if s.limitReplica != nil {
+		if rep, err := s.limitReplica.GetByEmployeeID(ctx, employeeID); err == nil {
+			return rep.MaxLoanApprovalAmount, true
+		}
+	}
+	if s.limitClient == nil {
+		return decimal.Zero, false
+	}
+	resp, err := s.limitClient.GetEmployeeLimits(ctx, &userpb.EmployeeLimitRequest{EmployeeId: int64(employeeID)})
+	if err != nil {
+		log.Printf("LoanRequestService: employee-limit resolve fallback failed for %d: %v", employeeID, err)
+		return decimal.Zero, false
+	}
+	maxLoan := parseDecimalOrZeroLR(resp.MaxLoanApprovalAmount)
+	if s.limitReplica != nil {
+		// EmployeeLimitResponse has no Version; backfill at 0 so a later versioned event overwrites it.
+		_ = s.limitReplica.Upsert(ctx, model.EmployeeLimitReplica{
+			EmployeeID:            employeeID,
+			MaxLoanApprovalAmount: maxLoan,
+			MaxSingleTransaction:  parseDecimalOrZeroLR(resp.MaxSingleTransaction),
+			MaxDailyTransaction:   parseDecimalOrZeroLR(resp.MaxDailyTransaction),
+			MaxClientDailyLimit:   parseDecimalOrZeroLR(resp.MaxClientDailyLimit),
+			MaxClientMonthlyLimit: parseDecimalOrZeroLR(resp.MaxClientMonthlyLimit),
+		})
+	}
+	return maxLoan, true
+}
+
+func parseDecimalOrZeroLR(s string) decimal.Decimal {
+	if s == "" {
+		return decimal.Zero
+	}
+	d, err := decimal.NewFromString(s)
+	if err != nil {
+		log.Printf("LoanRequestService: unparseable employee-limit decimal %q, treating as zero: %v", s, err)
+		return decimal.Zero
+	}
+	return d
 }
 
 func (s *LoanRequestService) CreateLoanRequest(req *model.LoanRequest) error {
@@ -164,15 +217,11 @@ func (s *LoanRequestService) ApproveLoanRequest(ctx context.Context, requestID u
 			requestID, req.Status, ErrLoanRequestNotPending)
 	}
 
-	// Check employee MaxLoanApprovalAmount limit (advisory — gRPC call cannot be held inside a DB TX).
-	if employeeID > 0 && s.limitClient != nil {
-		limits, limErr := s.limitClient.GetEmployeeLimits(ctx, &userpb.EmployeeLimitRequest{EmployeeId: int64(employeeID)})
-		if limErr == nil && limits.MaxLoanApprovalAmount != "" && limits.MaxLoanApprovalAmount != "0" {
-			maxAmount, parseErr := decimal.NewFromString(limits.MaxLoanApprovalAmount)
-			if parseErr == nil && maxAmount.IsPositive() && req.Amount.GreaterThan(maxAmount) {
-				return nil, fmt.Errorf("ApproveLoanRequest(id=%d, employee=%d, amount=%s, limit=%s): %w",
-					requestID, employeeID, req.Amount.StringFixed(2), maxAmount.StringFixed(2), ErrAmountExceedsApprovalLimit)
-			}
+	// Check employee MaxLoanApprovalAmount limit (advisory; replica-first, gRPC fallback — SP-2).
+	if employeeID > 0 {
+		if maxAmount, ok := s.resolveMaxLoanApproval(ctx, employeeID); ok && maxAmount.IsPositive() && req.Amount.GreaterThan(maxAmount) {
+			return nil, fmt.Errorf("ApproveLoanRequest(id=%d, employee=%d, amount=%s, limit=%s): %w",
+				requestID, employeeID, req.Amount.StringFixed(2), maxAmount.StringFixed(2), ErrAmountExceedsApprovalLimit)
 		}
 	}
 

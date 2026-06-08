@@ -7,12 +7,10 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 
 	adminpb "github.com/exbanka/contract/adminpb"
-	clientpb "github.com/exbanka/contract/clientpb"
 	"github.com/exbanka/contract/cronreg"
 	"github.com/exbanka/contract/metrics"
 	shared "github.com/exbanka/contract/shared"
@@ -20,7 +18,6 @@ import (
 	pb "github.com/exbanka/contract/userpb"
 	"github.com/exbanka/user-service/internal/cache"
 	"github.com/exbanka/user-service/internal/config"
-	grpc_client "github.com/exbanka/user-service/internal/grpc_client"
 	"github.com/exbanka/user-service/internal/handler"
 	kafkaprod "github.com/exbanka/user-service/internal/kafka"
 	"github.com/exbanka/user-service/internal/model"
@@ -151,25 +148,7 @@ func main() {
 	// Blueprint service
 	blueprintRepo := repository.NewLimitBlueprintRepository(db)
 
-	// Connect to client-service for client blueprint apply
-	clientConn, err := grpc.NewClient(cfg.ClientGRPCAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithChainUnaryInterceptor(grpcmw.UnaryClientSagaContextInterceptor()),
-	)
-	if err != nil {
-		log.Printf("warn: failed to connect to client service: %v (client blueprints will not work)", err)
-	}
-	if clientConn != nil {
-		defer clientConn.Close()
-	}
-	var clientLimitClient service.ClientLimitClient
-	if clientConn != nil {
-		clientLimitClient = grpc_client.NewClientLimitAdapter(
-			clientpb.NewClientLimitServiceClient(clientConn),
-		)
-	}
-
-	blueprintSvc := service.NewBlueprintService(blueprintRepo, employeeLimitRepo, actuaryRepo, clientLimitClient, producer, changelogRepo)
+	blueprintSvc := service.NewBlueprintService(blueprintRepo, employeeLimitRepo, actuaryRepo, producer, changelogRepo)
 	blueprintHandler := handler.NewBlueprintGRPCHandler(blueprintSvc)
 
 	// Seed blueprints from existing templates

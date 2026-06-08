@@ -12,7 +12,6 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/exbanka/client-service/internal/cache"
-	kafkaprod "github.com/exbanka/client-service/internal/kafka"
 	"github.com/exbanka/client-service/internal/model"
 	"github.com/exbanka/contract/changelog"
 	kafkamsg "github.com/exbanka/contract/kafka"
@@ -62,16 +61,24 @@ func ValidateEmail(email string) error {
 	return nil
 }
 
+// clientEventProducer is a narrow interface over the Kafka producer covering
+// the two publish methods used by ClientService.  It allows tests to inject a
+// mock without depending on the concrete kafka.Producer struct.
+type clientEventProducer interface {
+	PublishClientCreated(ctx context.Context, msg kafkamsg.ClientCreatedMessage) error
+	PublishClientUpdated(ctx context.Context, msg kafkamsg.ClientCreatedMessage) error
+}
+
 // ClientService provides business logic for client management.
 type ClientService struct {
 	repo          ClientRepo
-	producer      *kafkaprod.Producer
+	producer      clientEventProducer
 	cache         *cache.RedisCache
 	changelogRepo ChangelogRepo
 }
 
 // NewClientService constructs a ClientService.
-func NewClientService(repo ClientRepo, producer *kafkaprod.Producer, cache *cache.RedisCache, changelogRepo ...ChangelogRepo) *ClientService {
+func NewClientService(repo ClientRepo, producer clientEventProducer, cache *cache.RedisCache, changelogRepo ...ChangelogRepo) *ClientService {
 	svc := &ClientService{repo: repo, producer: producer, cache: cache}
 	if len(changelogRepo) > 0 {
 		svc.changelogRepo = changelogRepo[0]
@@ -104,6 +111,8 @@ func (s *ClientService) CreateClient(ctx context.Context, client *model.Client) 
 			Email:     client.Email,
 			FirstName: client.FirstName,
 			LastName:  client.LastName,
+			JMBG:      client.JMBG,
+			Version:   client.Version,
 		}); err != nil {
 			log.Printf("warn: failed to publish client-created event: %v", err)
 		}
@@ -204,6 +213,8 @@ func (s *ClientService) UpdateClient(id uint64, updates map[string]interface{}, 
 			Email:     client.Email,
 			FirstName: client.FirstName,
 			LastName:  client.LastName,
+			JMBG:      client.JMBG,
+			Version:   client.Version,
 		}); err != nil {
 			log.Printf("warn: failed to publish client-updated event: %v", err)
 		}

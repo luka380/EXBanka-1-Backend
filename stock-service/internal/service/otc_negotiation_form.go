@@ -29,19 +29,20 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
+	"google.golang.org/grpc/codes"
 
 	accountpb "github.com/exbanka/contract/accountpb"
 	exchangepb "github.com/exbanka/contract/exchangepb"
 	kafkamsg "github.com/exbanka/contract/kafka"
 	"github.com/exbanka/contract/shared/orderkind"
 	"github.com/exbanka/contract/shared/saga"
+	"github.com/exbanka/contract/shared/svcerr"
 	"github.com/exbanka/stock-service/internal/model"
 	stocksaga "github.com/exbanka/stock-service/internal/saga"
 )
@@ -74,12 +75,12 @@ func (s *OTCOfferService) MintContractFromAcceptedNegotiation(ctx context.Contex
 	parent := in.Parent
 	neg := in.Negotiation
 	if parent == nil || neg == nil {
-		return nil, errors.New("parent and negotiation are required")
+		return nil, svcerr.New(codes.Internal, "parent and negotiation are required")
 	}
 	// Settlement must still be in the future. If the parent has aged
 	// out between create and accept, refuse to mint.
 	if !neg.SettlementDate.After(time.Now().UTC().Truncate(24 * time.Hour)) {
-		return nil, errors.New("settlement_date is not in the future")
+		return nil, ErrOTCSettlementNotFuture
 	}
 
 	// Resolve buyer/seller from parent.Direction. The PARENT POSTER
@@ -118,7 +119,7 @@ func (s *OTCOfferService) MintContractFromAcceptedNegotiation(ctx context.Contex
 		sellerAccountID = in.AcceptorAccountID
 	}
 	if buyerAccountID == 0 || sellerAccountID == 0 {
-		return nil, errors.New("both buyer and seller accounts must be bound")
+		return nil, ErrOTCAccountsNotBound
 	}
 
 	buyerAcct, err := s.accounts.GetAccount(ctx, &accountpb.GetAccountRequest{Id: buyerAccountID})
@@ -139,7 +140,7 @@ func (s *OTCOfferService) MintContractFromAcceptedNegotiation(ctx context.Contex
 	buyerCcy := buyerAcct.CurrencyCode
 	if buyerCcy != premiumCcy {
 		if s.exchange == nil {
-			return nil, errors.New("cross-currency OTC accept requires exchange client")
+			return nil, svcerr.New(codes.Internal, "cross-currency OTC accept requires exchange client")
 		}
 		conv, err := s.exchange.Convert(ctx, &exchangepb.ConvertRequest{
 			FromCurrency: premiumCcy, ToCurrency: buyerCcy,

@@ -135,7 +135,7 @@ func (s *OTCService) BuyOffer(
 		IdempotencyKey:  buyerDebitKey,
 	})
 	if err != nil {
-		return nil, errors.New("failed to debit buyer account: " + err.Error())
+		return nil, fmt.Errorf("failed to debit buyer account: %w", err)
 	}
 
 	// Credit seller's account: total. Holdings aggregate across accounts and
@@ -171,7 +171,7 @@ func (s *OTCService) BuyOffer(
 			UpdateAvailable: true,
 			IdempotencyKey:  compBuyerOnSellerCredit,
 		})
-		return nil, errors.New("failed to credit seller account: " + err.Error())
+		return nil, fmt.Errorf("failed to credit seller account: %w", err)
 	}
 
 	// Record capital gain for seller

@@ -3,18 +3,19 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
+	"google.golang.org/grpc/codes"
 
 	accountpb "github.com/exbanka/contract/accountpb"
 	exchangepb "github.com/exbanka/contract/exchangepb"
 	kafkamsg "github.com/exbanka/contract/kafka"
 	"github.com/exbanka/contract/shared/orderkind"
 	"github.com/exbanka/contract/shared/saga"
+	"github.com/exbanka/contract/shared/svcerr"
 	"github.com/exbanka/stock-service/internal/model"
 	stocksaga "github.com/exbanka/stock-service/internal/saga"
 )
@@ -54,17 +55,17 @@ func (s *OTCOfferService) Accept(ctx context.Context, in AcceptInput) (*model.Op
 		return nil, err
 	}
 	if o.IsTerminal() {
-		return nil, errors.New("offer is in a terminal state")
+		return nil, ErrOTCOfferTerminalState
 	}
 
 	// Self-accept guard: compare on the principal who last modified the offer.
 	// LastModifiedByPrincipal is the audit field carrying the acting user/
 	// employee for both same-bank and on-behalf paths.
 	if int64(o.LastModifiedByPrincipalID) == in.ActorUserID && o.LastModifiedByPrincipalType == in.ActorSystemType {
-		return nil, errors.New("you cannot accept your own most recent terms")
+		return nil, ErrOTCAcceptOwnTerms
 	}
 	if !o.SettlementDate.After(time.Now().UTC().Truncate(24 * time.Hour)) {
-		return nil, errors.New("settlement_date is not in the future")
+		return nil, ErrOTCSettlementNotFuture
 	}
 
 	buyerOwnerType, buyerOwnerID, sellerOwnerType, sellerOwnerID := identifyOTCBuyerSellerOwners(o, in.ActorUserID, in.ActorSystemType)
@@ -82,7 +83,7 @@ func (s *OTCOfferService) Accept(ctx context.Context, in AcceptInput) (*model.Op
 		sellerAccountID = in.AcceptorAccountID
 	}
 	if buyerAccountID == 0 || sellerAccountID == 0 {
-		return nil, errors.New("both buyer and seller accounts must be bound")
+		return nil, ErrOTCAccountsNotBound
 	}
 
 	buyerAcct, err := s.accounts.GetAccount(ctx, &accountpb.GetAccountRequest{Id: buyerAccountID})
@@ -103,7 +104,7 @@ func (s *OTCOfferService) Accept(ctx context.Context, in AcceptInput) (*model.Op
 	buyerCcy := buyerAcct.CurrencyCode
 	if buyerCcy != premiumCcy {
 		if s.exchange == nil {
-			return nil, errors.New("cross-currency OTC accept requires exchange client")
+			return nil, svcerr.New(codes.Internal, "cross-currency OTC accept requires exchange client")
 		}
 		conv, err := s.exchange.Convert(ctx, &exchangepb.ConvertRequest{
 			FromCurrency: premiumCcy,

@@ -19,21 +19,57 @@ import (
 	kafkamsg "github.com/exbanka/contract/kafka"
 )
 
+// clientReplicaReader is the local read-model the handler consults before
+// falling back to a synchronous GetClient (SP-1 hybrid lazy fallback).
+type clientReplicaReader interface {
+	GetByID(ctx context.Context, id uint64) (model.ClientReplica, error)
+	Upsert(ctx context.Context, in model.ClientReplica) error
+}
+
 type CardGRPCHandler struct {
 	pb.UnimplementedCardServiceServer
 	cardService      cardServiceFacade
 	producer         producerFacade
 	clientClient     clientpb.ClientServiceClient
 	changelogService *service.ChangelogService
+	clientReplica    clientReplicaReader
 }
 
-func NewCardGRPCHandler(cardService *service.CardService, producer *kafkaprod.Producer, clientClient clientpb.ClientServiceClient, changelogService *service.ChangelogService) *CardGRPCHandler {
+func NewCardGRPCHandler(cardService *service.CardService, producer *kafkaprod.Producer, clientClient clientpb.ClientServiceClient, changelogService *service.ChangelogService, clientReplica clientReplicaReader) *CardGRPCHandler {
 	return &CardGRPCHandler{
 		cardService:      cardService,
 		producer:         producer,
 		clientClient:     clientClient,
 		changelogService: changelogService,
+		clientReplica:    clientReplica,
 	}
+}
+
+// resolveClientEmail returns the client's email from the local replica, falling
+// back to a single synchronous GetClient on a miss and backfilling the replica
+// (SP-1 hybrid lazy fallback). Returns "" only if both sources fail.
+func (h *CardGRPCHandler) resolveClientEmail(ctx context.Context, ownerID uint64) string {
+	if h.clientReplica != nil {
+		if rep, err := h.clientReplica.GetByID(ctx, ownerID); err == nil {
+			return rep.Email
+		}
+	}
+	if h.clientClient == nil {
+		return ""
+	}
+	resp, err := h.clientClient.GetClient(ctx, &clientpb.GetClientRequest{Id: ownerID})
+	if err != nil {
+		log.Printf("CardGRPCHandler: client resolve fallback failed for %d: %v", ownerID, err)
+		return ""
+	}
+	if h.clientReplica != nil {
+		// ClientResponse has no Version; backfill at 0 so a later versioned
+		// event overwrites it via the repo's version guard.
+		_ = h.clientReplica.Upsert(ctx, model.ClientReplica{
+			ID: ownerID, Email: resp.Email, FirstName: resp.FirstName, LastName: resp.LastName, JMBG: resp.Jmbg,
+		})
+	}
+	return resp.Email
 }
 
 func (h *CardGRPCHandler) CreateCard(ctx context.Context, req *pb.CreateCardRequest) (*pb.CardResponse, error) {
@@ -139,11 +175,10 @@ func (h *CardGRPCHandler) BlockCard(ctx context.Context, req *pb.BlockCardReques
 	}
 
 	// Send email notification to card owner
-	if h.clientClient != nil && h.producer != nil {
-		clientResp, clientErr := h.clientClient.GetClient(ctx, &clientpb.GetClientRequest{Id: card.OwnerID})
-		if clientErr == nil {
+	if h.producer != nil {
+		if email := h.resolveClientEmail(ctx, card.OwnerID); email != "" {
 			emailErr := h.producer.SendEmail(ctx, kafkamsg.SendEmailMessage{
-				To:        clientResp.Email,
+				To:        email,
 				EmailType: kafkamsg.EmailTypeCardStatusChanged,
 				Data: map[string]string{
 					"card_last_four": maskCardNumber(card.CardNumber),
@@ -155,7 +190,7 @@ func (h *CardGRPCHandler) BlockCard(ctx context.Context, req *pb.BlockCardReques
 				log.Printf("CardGRPCHandler: failed to send block card email for card %d: %v", card.ID, emailErr)
 			}
 		} else {
-			log.Printf("CardGRPCHandler: failed to fetch client for card %d: %v", card.ID, clientErr)
+			log.Printf("CardGRPCHandler: skipping card-status notification for card %d: client %d email unresolved", card.ID, card.OwnerID)
 		}
 	}
 
@@ -189,11 +224,10 @@ func (h *CardGRPCHandler) UnblockCard(ctx context.Context, req *pb.UnblockCardRe
 	}
 
 	// Send email notification to card owner
-	if h.clientClient != nil && h.producer != nil {
-		clientResp, clientErr := h.clientClient.GetClient(ctx, &clientpb.GetClientRequest{Id: card.OwnerID})
-		if clientErr == nil {
+	if h.producer != nil {
+		if email := h.resolveClientEmail(ctx, card.OwnerID); email != "" {
 			emailErr := h.producer.SendEmail(ctx, kafkamsg.SendEmailMessage{
-				To:        clientResp.Email,
+				To:        email,
 				EmailType: kafkamsg.EmailTypeCardStatusChanged,
 				Data: map[string]string{
 					"card_last_four": maskCardNumber(card.CardNumber),
@@ -205,7 +239,7 @@ func (h *CardGRPCHandler) UnblockCard(ctx context.Context, req *pb.UnblockCardRe
 				log.Printf("CardGRPCHandler: failed to send unblock card email for card %d: %v", card.ID, emailErr)
 			}
 		} else {
-			log.Printf("CardGRPCHandler: failed to fetch client for card %d: %v", card.ID, clientErr)
+			log.Printf("CardGRPCHandler: skipping card-status notification for card %d: client %d email unresolved", card.ID, card.OwnerID)
 		}
 	}
 
@@ -239,11 +273,10 @@ func (h *CardGRPCHandler) DeactivateCard(ctx context.Context, req *pb.Deactivate
 	}
 
 	// Send email notification to card owner
-	if h.clientClient != nil && h.producer != nil {
-		clientResp, clientErr := h.clientClient.GetClient(ctx, &clientpb.GetClientRequest{Id: card.OwnerID})
-		if clientErr == nil {
+	if h.producer != nil {
+		if email := h.resolveClientEmail(ctx, card.OwnerID); email != "" {
 			emailErr := h.producer.SendEmail(ctx, kafkamsg.SendEmailMessage{
-				To:        clientResp.Email,
+				To:        email,
 				EmailType: kafkamsg.EmailTypeCardStatusChanged,
 				Data: map[string]string{
 					"card_last_four": maskCardNumber(card.CardNumber),
@@ -255,7 +288,7 @@ func (h *CardGRPCHandler) DeactivateCard(ctx context.Context, req *pb.Deactivate
 				log.Printf("CardGRPCHandler: failed to send deactivate card email for card %d: %v", card.ID, emailErr)
 			}
 		} else {
-			log.Printf("CardGRPCHandler: failed to fetch client for card %d: %v", card.ID, clientErr)
+			log.Printf("CardGRPCHandler: skipping card-status notification for card %d: client %d email unresolved", card.ID, card.OwnerID)
 		}
 	}
 
