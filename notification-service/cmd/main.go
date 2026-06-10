@@ -2,13 +2,14 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
+	"log/slog"
 	"time"
 
 	adminpb "github.com/exbanka/contract/adminpb"
 	"github.com/exbanka/contract/cronreg"
 	kafkamsg "github.com/exbanka/contract/kafka"
+	"github.com/exbanka/contract/logger"
 	"github.com/exbanka/contract/metrics"
 	notifpb "github.com/exbanka/contract/notificationpb"
 	shared "github.com/exbanka/contract/shared"
@@ -28,6 +29,7 @@ import (
 )
 
 func main() {
+	logger.Init("notification-service")
 	cfg := config.Load()
 
 	// Database
@@ -158,7 +160,7 @@ func main() {
 		Signals: shared.DefaultShutdownSignals,
 		OnReady: func() {
 			markReady()
-			fmt.Printf("Notification service listening on %s\n", cfg.GRPCAddr)
+			slog.Info("Notification service listening", "addr", cfg.GRPCAddr)
 		},
 	}); err != nil {
 		log.Fatalf("grpc: %v", err)

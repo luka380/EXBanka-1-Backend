@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
+	"log/slog"
 	"time"
 
 	"google.golang.org/grpc"
@@ -21,6 +21,7 @@ import (
 	"github.com/exbanka/auth-service/internal/service"
 	authpb "github.com/exbanka/contract/authpb"
 	kafkamsg "github.com/exbanka/contract/kafka"
+	"github.com/exbanka/contract/logger"
 	"github.com/exbanka/contract/metrics"
 	shared "github.com/exbanka/contract/shared"
 	"github.com/exbanka/contract/shared/grpcmw"
@@ -28,6 +29,7 @@ import (
 )
 
 func main() {
+	logger.Init("auth-service")
 	cfg := config.Load()
 
 	db, err := gorm.Open(postgres.Open(cfg.DSN()), &gorm.Config{
@@ -173,7 +175,7 @@ func main() {
 		Signals: shared.DefaultShutdownSignals,
 		OnReady: func() {
 			markReady()
-			fmt.Printf("Auth service listening on %s\n", cfg.GRPCAddr)
+			slog.Info("Auth service listening", "addr", cfg.GRPCAddr)
 		},
 	}); err != nil {
 		log.Fatalf("grpc: %v", err)

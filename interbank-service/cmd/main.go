@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -26,6 +27,7 @@ import (
 	adminpb "github.com/exbanka/contract/adminpb"
 	clientpb "github.com/exbanka/contract/clientpb"
 	"github.com/exbanka/contract/cronreg"
+	"github.com/exbanka/contract/logger"
 	"github.com/exbanka/contract/metrics"
 	shared "github.com/exbanka/contract/shared"
 	"github.com/exbanka/contract/shared/grpcmw"
@@ -41,6 +43,7 @@ import (
 )
 
 func main() {
+	logger.Init("interbank-service")
 	cfg := config.Load()
 	ctx := context.Background()
 
@@ -209,7 +212,7 @@ func main() {
 		Signals: shared.DefaultShutdownSignals,
 		OnReady: func() {
 			markReady()
-			fmt.Printf("interbank-service listening on %s (ops http :%s)\n", cfg.GRPCAddr, cfg.MetricsPort)
+			slog.Info("interbank-service listening", "addr", cfg.GRPCAddr, "metrics_port", cfg.MetricsPort)
 		},
 	}); err != nil {
 		log.Fatalf("interbank-service: grpc: %v", err)

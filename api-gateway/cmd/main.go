@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -21,6 +21,7 @@ import (
 	gatewaykafka "github.com/exbanka/api-gateway/internal/kafka"
 	"github.com/exbanka/api-gateway/internal/middleware"
 	"github.com/exbanka/api-gateway/internal/router"
+	"github.com/exbanka/contract/logger"
 	"github.com/exbanka/contract/metrics"
 )
 
@@ -34,6 +35,7 @@ import (
 // @name                        Authorization
 // @description                 Enter "Bearer <token>"
 func main() {
+	logger.Init("api-gateway")
 	cfg := config.Load()
 
 	authClient, authConn, err := grpcclients.NewAuthClient(cfg.AuthGRPCAddr)
@@ -399,7 +401,7 @@ func main() {
 	// Start HTTP server in goroutine
 	markReady()
 	go func() {
-		fmt.Printf("API Gateway listening on %s\n", cfg.HTTPAddr)
+		slog.Info("API Gateway listening", "addr", cfg.HTTPAddr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("failed to start server: %v", err)
 		}

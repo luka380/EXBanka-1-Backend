@@ -51,7 +51,7 @@ func Load() *Config {
 		DBPassword:          getEnv("INTERBANK_DB_PASSWORD", "postgres"),
 		DBName:              getEnv("INTERBANK_DB_NAME", "interbankdb"),
 		GRPCAddr:            getEnv("INTERBANK_GRPC_ADDR", ":50062"),
-		MetricsPort:         getEnv("INTERBANK_METRICS_PORT", "9108"),
+		MetricsPort:         getEnv("METRICS_PORT", "9112"),
 		AccountGRPCAddr:     getEnv("ACCOUNT_GRPC_ADDR", "localhost:50055"),
 		StockGRPCAddr:       getEnv("STOCK_GRPC_ADDR", "localhost:50060"),
 		ClientGRPCAddr:      getEnv("CLIENT_GRPC_ADDR", "localhost:50054"),

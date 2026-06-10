@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
+	"log/slog"
 	"time"
 
 	"google.golang.org/grpc"
@@ -23,12 +23,14 @@ import (
 	pb "github.com/exbanka/contract/cardpb"
 	clientpb "github.com/exbanka/contract/clientpb"
 	"github.com/exbanka/contract/cronreg"
+	"github.com/exbanka/contract/logger"
 	"github.com/exbanka/contract/metrics"
 	shared "github.com/exbanka/contract/shared"
 	"github.com/exbanka/contract/shared/grpcmw"
 )
 
 func main() {
+	logger.Init("card-service")
 	cfg := config.Load()
 
 	db, err := gorm.Open(postgres.Open(cfg.DSN()), &gorm.Config{
@@ -133,7 +135,7 @@ func main() {
 		Signals: shared.DefaultShutdownSignals,
 		OnReady: func() {
 			markReady()
-			fmt.Printf("card service listening on %s\n", cfg.GRPCAddr)
+			slog.Info("card service listening", "addr", cfg.GRPCAddr)
 		},
 	}); err != nil {
 		log.Fatalf("grpc: %v", err)
