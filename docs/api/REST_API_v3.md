@@ -4944,10 +4944,32 @@ List all stock exchanges with pagination.
 **Response 200:**
 ```json
 {
-  "exchanges": [ ],
+  "exchanges": [
+    {
+      "id": 1,
+      "name": "New York Stock Exchange",
+      "acronym": "NYSE",
+      "mic_code": "XNYS",
+      "polity": "USA",
+      "currency": "USD",
+      "time_zone": "America/New_York",
+      "open_time": "09:30",
+      "close_time": "16:00",
+      "pre_market_open": "07:00",
+      "post_market_close": "20:00",
+      "is_open": true
+    }
+  ],
   "total_count": 5
 }
 ```
+
+Each exchange object carries an `is_open` boolean indicating whether the
+exchange is currently open for trading. It is `true` when global testing mode is
+enabled, otherwise computed from the exchange's own trading hours (`open_time` /
+`close_time` interpreted in `time_zone`) at request time. The field is always
+present — a closed exchange reports `"is_open": false`. Purely additive; older
+clients that ignore unknown fields are unaffected.
 
 ---
 
@@ -4963,7 +4985,9 @@ Get a specific stock exchange by ID.
 |---|---|---|
 | `id` | int | Exchange ID |
 
-**Response 200:** Stock exchange object.
+**Response 200:** Stock exchange object, including the `is_open` boolean
+described above (true under testing mode, otherwise derived from the exchange's
+trading hours; always present, even when false).
 
 ---
 

@@ -903,6 +903,37 @@ func (s *OTCNegotiationService) LocalParentIsOpen(offerID uint64) bool {
 	return parent.IsOpenListing()
 }
 
+// ConsumeLocalSellOfferForSeller marks this bank's open LOCAL option listing for
+// (ownerType, ownerID, ticker, sell_initiated) as consumed. The cross-bank
+// accept path (Direction 2: we host the seller) calls this once an option
+// contract forms against the listing so it stops advertising inventory already
+// under contract. Because the termless /public-stock model carries no offer id
+// on the wire, the listing is resolved by its (owner, ticker, direction) unique
+// key — the partial unique index guarantees at most one open row. Idempotent: a
+// missing/already-consumed listing is a no-op (no error).
+func (s *OTCNegotiationService) ConsumeLocalSellOfferForSeller(ownerType model.OwnerType, ownerID *uint64, ticker string) error {
+	return s.offerRepo.ConsumeOpenByOwnerTickerDirection(ownerType, ownerID, ticker, model.OTCDirectionSellInitiated)
+}
+
+// LocalSellOfferOpenForSeller reports whether this bank has an OPEN local option
+// listing for (ownerType, ownerID, ticker, sell_initiated). The cross-bank accept
+// path (Direction 2) calls it BEFORE forming a contract to reject an accept
+// against a listing the seller already CONSUMED (a prior accept) or CANCELLED —
+// the termless /public-stock model carries no offer id on the wire, so the
+// listing is resolved by its (owner, ticker, direction) unique key rather than by
+// parent_offer_id. This is the key-based analogue of LocalParentIsOpen and the
+// precondition that keeps one listing backing exactly one accepted contract
+// (without it, every still-"ongoing" sibling bid could form another contract and
+// over-commit the seller's shares). A DB error returns false (fail closed — do
+// not form a contract on an unverifiable listing), mirroring LocalParentIsOpen.
+func (s *OTCNegotiationService) LocalSellOfferOpenForSeller(ownerType model.OwnerType, ownerID *uint64, ticker string) bool {
+	n, err := s.offerRepo.CountOpenByOwnerTickerDirection(ownerType, ownerID, ticker, model.OTCDirectionSellInitiated)
+	if err != nil {
+		return false
+	}
+	return n > 0
+}
+
 // ListMyNegotiations returns negotiation chains where the caller is the
 // bidder. The listing-poster sees their chains via a different code path
 // (list all chains on offers they posted), surfaced from the handler.

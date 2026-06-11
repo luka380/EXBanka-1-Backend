@@ -88,8 +88,13 @@ type Exchange struct {
 	CloseTime       string                 `protobuf:"bytes,9,opt,name=close_time,json=closeTime,proto3" json:"close_time,omitempty"`
 	PreMarketOpen   string                 `protobuf:"bytes,10,opt,name=pre_market_open,json=preMarketOpen,proto3" json:"pre_market_open,omitempty"`
 	PostMarketClose string                 `protobuf:"bytes,11,opt,name=post_market_close,json=postMarketClose,proto3" json:"post_market_close,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// is_open is true when the exchange is currently open for trading: true under
+	// testing mode, otherwise computed from the exchange's own trading-hours
+	// fields (open/close time + time zone) at the moment of the response. Purely
+	// additive — older clients ignore it.
+	IsOpen        bool `protobuf:"varint,12,opt,name=is_open,json=isOpen,proto3" json:"is_open,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Exchange) Reset() {
@@ -197,6 +202,13 @@ func (x *Exchange) GetPostMarketClose() string {
 		return x.PostMarketClose
 	}
 	return ""
+}
+
+func (x *Exchange) GetIsOpen() bool {
+	if x != nil {
+		return x.IsOpen
+	}
+	return false
 }
 
 type ListExchangesRequest struct {
@@ -18562,7 +18574,7 @@ var File_stock_stock_proto protoreflect.FileDescriptor
 
 const file_stock_stock_proto_rawDesc = "" +
 	"\n" +
-	"\x11stock/stock.proto\x12\x05stock\x1a\x1egoogle/protobuf/wrappers.proto\"\xc4\x02\n" +
+	"\x11stock/stock.proto\x12\x05stock\x1a\x1egoogle/protobuf/wrappers.proto\"\xdd\x02\n" +
 	"\bExchange\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
@@ -18576,7 +18588,8 @@ const file_stock_stock_proto_rawDesc = "" +
 	"close_time\x18\t \x01(\tR\tcloseTime\x12&\n" +
 	"\x0fpre_market_open\x18\n" +
 	" \x01(\tR\rpreMarketOpen\x12*\n" +
-	"\x11post_market_close\x18\v \x01(\tR\x0fpostMarketClose\"_\n" +
+	"\x11post_market_close\x18\v \x01(\tR\x0fpostMarketClose\x12\x17\n" +
+	"\ais_open\x18\f \x01(\bR\x06isOpen\"_\n" +
 	"\x14ListExchangesRequest\x12\x16\n" +
 	"\x06search\x18\x01 \x01(\tR\x06search\x12\x12\n" +
 	"\x04page\x18\x02 \x01(\x05R\x04page\x12\x1b\n" +

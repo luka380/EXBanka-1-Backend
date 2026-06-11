@@ -15,10 +15,11 @@ import (
 )
 
 type mockExchangeSvc struct {
-	listFn       func(search string, page, pageSize int) ([]model.StockExchange, int64, error)
-	getFn        func(id uint64) (*model.StockExchange, error)
-	setTestingFn func(enabled bool) error
-	getTestingFn func() bool
+	listFn           func(search string, page, pageSize int) ([]model.StockExchange, int64, error)
+	getFn            func(id uint64) (*model.StockExchange, error)
+	setTestingFn     func(enabled bool) error
+	getTestingFn     func() bool
+	isOpenForModelFn func(ex *model.StockExchange) bool
 }
 
 func (m *mockExchangeSvc) ListExchanges(search string, page, pageSize int) ([]model.StockExchange, int64, error) {
@@ -45,6 +46,13 @@ func (m *mockExchangeSvc) SetTestingMode(enabled bool) error {
 func (m *mockExchangeSvc) GetTestingMode() bool {
 	if m.getTestingFn != nil {
 		return m.getTestingFn()
+	}
+	return false
+}
+
+func (m *mockExchangeSvc) IsOpenForModel(ex *model.StockExchange) bool {
+	if m.isOpenForModelFn != nil {
+		return m.isOpenForModelFn(ex)
 	}
 	return false
 }
@@ -230,7 +238,7 @@ func TestToExchangeProto_PopulatesAllFields(t *testing.T) {
 		PreMarketOpen:   "07:00",
 		PostMarketClose: "20:00",
 	}
-	p := toExchangeProto(ex)
+	p := toExchangeProto(ex, true)
 	if p.Id != 7 {
 		t.Errorf("Id: %d", p.Id)
 	}
@@ -245,5 +253,52 @@ func TestToExchangeProto_PopulatesAllFields(t *testing.T) {
 	}
 	if p.Currency != "USD" {
 		t.Errorf("Currency: %q", p.Currency)
+	}
+	if !p.IsOpen {
+		t.Errorf("IsOpen: got false, want true (stamped from arg)")
+	}
+}
+
+// TestExchangeHandler_StampsIsOpen verifies List/Get stamp pb.Exchange.IsOpen
+// with whatever the service's IsOpenForModel predicate returns: open ⇒ true,
+// closed ⇒ false, and testing mode ⇒ true regardless of hours.
+func TestExchangeHandler_StampsIsOpen(t *testing.T) {
+	cases := []struct {
+		name      string
+		predicate func(*model.StockExchange) bool
+		want      bool
+	}{
+		{"open", func(*model.StockExchange) bool { return true }, true},
+		{"closed", func(*model.StockExchange) bool { return false }, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &mockExchangeSvc{
+				listFn: func(_ string, _, _ int) ([]model.StockExchange, int64, error) {
+					return []model.StockExchange{{ID: 1, Acronym: "NYSE"}}, 1, nil
+				},
+				getFn: func(id uint64) (*model.StockExchange, error) {
+					return &model.StockExchange{ID: id, Acronym: "NYSE"}, nil
+				},
+				isOpenForModelFn: tc.predicate,
+			}
+			h := newExchangeHandlerForTest(svc)
+
+			list, err := h.ListExchanges(context.Background(), &pb.ListExchangesRequest{})
+			if err != nil {
+				t.Fatalf("list: %v", err)
+			}
+			if got := list.Exchanges[0].IsOpen; got != tc.want {
+				t.Errorf("list is_open = %v, want %v", got, tc.want)
+			}
+
+			get, err := h.GetExchange(context.Background(), &pb.GetExchangeRequest{Id: 1})
+			if err != nil {
+				t.Fatalf("get: %v", err)
+			}
+			if got := get.IsOpen; got != tc.want {
+				t.Errorf("get is_open = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

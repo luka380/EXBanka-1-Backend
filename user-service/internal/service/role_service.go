@@ -140,15 +140,15 @@ func (s *RoleService) seedDefaultRoleMappings() error {
 	})
 }
 
-// EnsureAgentOTCPermissions backfills the EmployeeAgent role with the OTC
-// permissions it needs for full OTC trading — otc.read.all (see the
-// marketplace) and otc.trade.expire — on already-deployed DBs whose role
-// seeding ran before these grants existed. It is idempotent and additive-only:
-// it unions the missing grants onto the role and NEVER removes an existing one,
-// so admin customizations survive. It publishes a single
-// role-permissions-changed event if anything changed (so auth-service
+// EnsureAgentOTCPermissions backfills the EmployeeAgent role with the extra
+// grants it needs — full OTC trading (otc.read.all to see the marketplace,
+// otc.trade.expire) and bank-account management (bank_accounts.manage.any) — on
+// already-deployed DBs whose role seeding ran before these grants existed. It is
+// idempotent and additive-only: it unions the missing grants onto the role and
+// NEVER removes an existing one, so admin customizations survive. It publishes a
+// single role-permissions-changed event if anything changed (so auth-service
 // force-refreshes affected sessions). No-op if the role is absent or already
-// holds both permissions.
+// holds every grant.
 func (s *RoleService) EnsureAgentOTCPermissions() error {
 	role, err := s.roleRepo.GetByName("EmployeeAgent")
 	if err != nil || role == nil {
@@ -159,6 +159,7 @@ func (s *RoleService) EnsureAgentOTCPermissions() error {
 	want := []string{
 		string(permissions.Otc.Read.All),
 		string(permissions.Otc.Trade.Expire),
+		string(permissions.BankAccounts.Manage.Any),
 	}
 	have := make(map[string]struct{}, len(role.Permissions))
 	for _, p := range role.Permissions {

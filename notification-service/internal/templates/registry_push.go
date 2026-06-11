@@ -513,7 +513,7 @@ var pushDefs = []Definition{
 	},
 	// ── Auth ─────────────────────────────────────────────────────────────────
 	{
-		Type: "mobile_activation_requested", Channel: "push",
+		Type: "MOBILE_ACTIVATION_REQUESTED", Channel: "push",
 		Description: "A mobile device activation code was requested (also delivered by email).",
 		Variables: []Variable{
 			{"code", "The activation code", "123456"},

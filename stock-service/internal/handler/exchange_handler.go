@@ -17,6 +17,9 @@ type exchangeSvcFacade interface {
 	GetExchange(id uint64) (*model.StockExchange, error)
 	SetTestingMode(enabled bool) error
 	GetTestingMode() bool
+	// IsOpenForModel reports whether an already-loaded exchange is currently
+	// open (testing mode OR within trading hours) without a per-row DB lookup.
+	IsOpenForModel(ex *model.StockExchange) bool
 }
 
 // orderWaker lets enabling testing mode immediately wake the order-execution
@@ -56,8 +59,9 @@ func (h *ExchangeGRPCHandler) ListExchanges(ctx context.Context, req *pb.ListExc
 	}
 
 	resp := &pb.ListExchangesResponse{TotalCount: total, Exchanges: make([]*pb.Exchange, 0, len(exchanges))}
-	for _, ex := range exchanges {
-		resp.Exchanges = append(resp.Exchanges, toExchangeProto(&ex))
+	for i := range exchanges {
+		ex := &exchanges[i]
+		resp.Exchanges = append(resp.Exchanges, toExchangeProto(ex, h.svc.IsOpenForModel(ex)))
 	}
 	return resp, nil
 }
@@ -67,7 +71,7 @@ func (h *ExchangeGRPCHandler) GetExchange(ctx context.Context, req *pb.GetExchan
 	if err != nil {
 		return nil, err
 	}
-	return toExchangeProto(ex), nil
+	return toExchangeProto(ex, h.svc.IsOpenForModel(ex)), nil
 }
 
 func (h *ExchangeGRPCHandler) SetTestingMode(ctx context.Context, req *pb.SetTestingModeRequest) (*pb.SetTestingModeResponse, error) {
@@ -88,7 +92,7 @@ func (h *ExchangeGRPCHandler) GetTestingMode(ctx context.Context, req *pb.GetTes
 	return &pb.GetTestingModeResponse{TestingMode: enabled}, nil
 }
 
-func toExchangeProto(ex *model.StockExchange) *pb.Exchange {
+func toExchangeProto(ex *model.StockExchange, isOpen bool) *pb.Exchange {
 	return &pb.Exchange{
 		Id:              ex.ID,
 		Name:            ex.Name,
@@ -101,5 +105,6 @@ func toExchangeProto(ex *model.StockExchange) *pb.Exchange {
 		CloseTime:       ex.CloseTime,
 		PreMarketOpen:   ex.PreMarketOpen,
 		PostMarketClose: ex.PostMarketClose,
+		IsOpen:          isOpen,
 	}
 }

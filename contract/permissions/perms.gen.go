@@ -760,6 +760,7 @@ var DefaultRoles = map[string][]Permission{
 		"accounts.create.current",
 		"accounts.create.foreign",
 		"accounts.read.own",
+		"bank_accounts.manage.any",
 		"cards.block.any",
 		"cards.create.physical",
 		"cards.create.virtual",

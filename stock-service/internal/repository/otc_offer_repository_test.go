@@ -55,6 +55,60 @@ func TestMergeDuplicateOpenOffers_SumsAndConsumes(t *testing.T) {
 	require.Equal(t, int64(0), n2)
 }
 
+// TestConsumeOpenByOwnerTickerDirection covers the cross-bank-accept consume:
+// the target (owner, ticker, sell) open LOCAL listing flips to consumed, while a
+// different ticker, a different owner, a buy_initiated listing, and a REMOTE row
+// are all left untouched. A second call (already consumed) is an idempotent no-op.
+func TestConsumeOpenByOwnerTickerDirection(t *testing.T) {
+	model.SetOwnRouting("111")
+	db := newTestDB(t)
+	if err := db.AutoMigrate(&model.OTCOffer{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	repo := NewOTCOfferRepository(db)
+	owner := uint64(1)
+	other := uint64(2)
+	// Local rows: RoutingNumber left 0 → BeforeCreate stamps OwnRouting(111) and
+	// sets Local=true. The remote row gets a peer routing + native id so the hook
+	// derives Local=false (the discriminator is RoutingNumber==OwnRouting, not the
+	// struct field).
+	mk := func(o uint64, ticker, dir string) *model.OTCOffer {
+		return &model.OTCOffer{
+			InitiatorOwnerType: model.OwnerClient, InitiatorOwnerID: &o,
+			Direction: dir, StockID: 1, Ticker: ticker,
+			Quantity: decimal.NewFromInt(8), Status: model.OTCOfferStatusOpen,
+			LastModifiedByPrincipalType: "client", LastModifiedByPrincipalID: o,
+		}
+	}
+	target := mk(owner, "AAPL", model.OTCDirectionSellInitiated)
+	require.NoError(t, db.Create(target).Error)
+	otherTicker := mk(owner, "MSFT", model.OTCDirectionSellInitiated)
+	require.NoError(t, db.Create(otherTicker).Error)
+	otherOwner := mk(other, "AAPL", model.OTCDirectionSellInitiated)
+	require.NoError(t, db.Create(otherOwner).Error)
+	buyDir := mk(owner, "AAPL", model.OTCDirectionBuyInitiated)
+	require.NoError(t, db.Create(buyDir).Error)
+	remote := mk(owner, "AAPL", model.OTCDirectionSellInitiated)
+	remoteNID := "peer-aapl-1"
+	remote.RoutingNumber = 222 // peer routing → Local=false
+	remote.NativeID = &remoteNID
+	require.NoError(t, db.Create(remote).Error)
+	require.False(t, remote.Local, "remote row must persist as local=false")
+
+	require.NoError(t, repo.ConsumeOpenByOwnerTickerDirection(model.OwnerClient, &owner, "AAPL", model.OTCDirectionSellInitiated))
+
+	reload := func(id uint64) string { o, err := repo.GetByID(id); require.NoError(t, err); return o.Status }
+	require.Equal(t, model.OTCOfferStatusConsumed, reload(target.ID), "target consumed")
+	require.Equal(t, model.OTCOfferStatusOpen, reload(otherTicker.ID), "different ticker untouched")
+	require.Equal(t, model.OTCOfferStatusOpen, reload(otherOwner.ID), "different owner untouched")
+	require.Equal(t, model.OTCOfferStatusOpen, reload(buyDir.ID), "buy_initiated untouched")
+	require.Equal(t, model.OTCOfferStatusOpen, reload(remote.ID), "remote row untouched")
+
+	// Idempotent: a second call (nothing open for the key) is a no-op, no error.
+	require.NoError(t, repo.ConsumeOpenByOwnerTickerDirection(model.OwnerClient, &owner, "AAPL", model.OTCDirectionSellInitiated))
+	require.Equal(t, model.OTCOfferStatusConsumed, reload(target.ID))
+}
+
 // TestMergeDuplicateOpenOffers_CollapsesPending proves the migration now also
 // collapses pre-existing PENDING (and COUNTERED) local duplicates, not just the
 // status='open' ones. New local offers are created PENDING, so before the

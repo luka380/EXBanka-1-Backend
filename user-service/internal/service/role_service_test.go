@@ -482,6 +482,7 @@ func TestEnsureAgentOTCPermissions_AddsMissingAndPublishesOnce(t *testing.T) {
 	}
 	assert.True(t, codes[string(permissions.Otc.Read.All)], "otc.read.all backfilled")
 	assert.True(t, codes[string(permissions.Otc.Trade.Expire)], "otc.trade.expire backfilled")
+	assert.True(t, codes[string(permissions.BankAccounts.Manage.Any)], "bank_accounts.manage.any backfilled")
 	assert.True(t, codes["securities.trade.any"], "pre-existing grant kept")
 	assert.True(t, codes["custom.admin.grant"], "admin customization kept (additive-only)")
 

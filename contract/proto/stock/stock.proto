@@ -35,6 +35,11 @@ message Exchange {
   string close_time = 9;
   string pre_market_open = 10;
   string post_market_close = 11;
+  // is_open is true when the exchange is currently open for trading: true under
+  // testing mode, otherwise computed from the exchange's own trading-hours
+  // fields (open/close time + time zone) at the moment of the response. Purely
+  // additive — older clients ignore it.
+  bool is_open = 12;
 }
 
 message ListExchangesRequest {

@@ -63,9 +63,9 @@ func TestRequestActivation_Success(t *testing.T) {
 	}
 	require.NotNil(t, notif, "should publish a GeneralNotificationMessage to notification.general")
 	assert.Equal(t, uint64(100), notif.UserID, "notification targets the account's principal id")
-	assert.Equal(t, "mobile_activation_requested", notif.Type)
+	assert.Equal(t, "MOBILE_ACTIVATION_REQUESTED", notif.Type)
 	// The code is carried in Data so notification-service renders the
-	// "mobile_activation_requested" push template (not a literal body).
+	// "MOBILE_ACTIVATION_REQUESTED" push template (not a literal body).
 	var ac model.MobileActivationCode
 	require.NoError(t, db.Where("email = ?", "user@test.com").First(&ac).Error)
 	assert.Equal(t, ac.Code, notif.Data["code"], "notification Data must carry the activation code for the template")

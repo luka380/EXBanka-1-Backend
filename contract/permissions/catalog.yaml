@@ -153,6 +153,7 @@ default_roles:
       - clients.update.contact
       - accounts.create.current
       - accounts.create.foreign
+      - bank_accounts.manage.any
       - cards.create.physical
       - orders.place.own
       - orders.place.on_behalf_client

@@ -119,9 +119,9 @@ func (s *MobileDeviceService) RequestActivation(ctx context.Context, email strin
 	// failure must not fail the activation request (the email already went out).
 	_ = s.producer.Publish(ctx, kafkamsg.TopicGeneralNotification, kafkamsg.GeneralNotificationMessage{
 		UserID: uint64(account.PrincipalID),
-		Type:   "mobile_activation_requested",
+		Type:   "MOBILE_ACTIVATION_REQUESTED",
 		// Data (not literal Title/Message) so notification-service renders the
-		// admin-customizable "mobile_activation_requested" push template. The
+		// admin-customizable "MOBILE_ACTIVATION_REQUESTED" push template. The
 		// notification consumer drops the message if Data is set but the template
 		// type is unknown — the registry entry in registry_push.go is required.
 		Data: map[string]string{

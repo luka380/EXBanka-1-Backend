@@ -70,6 +70,17 @@ type LocalSellerValidator interface {
 // authoritatively, regardless of the best-effort cascade timing.
 type LocalParentChecker interface {
 	LocalParentIsOpen(offerID uint64) bool
+	// LocalSellOfferOpenForSeller is the TERMLESS analogue of LocalParentIsOpen:
+	// the /public-stock wire carries no offer id, so a termless bid's parent
+	// native id is "ps:<…>" (non-numeric) or absent and the numeric orphan guard
+	// above is skipped. When WE host the seller, the inbound accept resolves the
+	// listing by its (owner, ticker, sell_initiated) unique key to reject an accept
+	// on a listing already consumed (a prior accept) or cancelled.
+	LocalSellOfferOpenForSeller(ownerType model.OwnerType, ownerID *uint64, ticker string) bool
+	// ConsumeLocalSellOfferForSeller flips that listing to consumed once an inbound
+	// accept forms a contract against it — one listing backs exactly one accepted
+	// contract (symmetric with the outbound acceptRemoteNegotiation consume).
+	ConsumeLocalSellOfferForSeller(ownerType model.OwnerType, ownerID *uint64, ticker string) error
 }
 
 // SellerAccountResolver returns the seller's NOMINATED account NUMBER for a
@@ -815,6 +826,25 @@ func (h *PeerOTCGRPCHandler) AcceptNegotiation(ctx context.Context, req *stockpb
 		}
 	}
 
+	// Termless orphan-accept guard. The /public-stock wire carries no offer id, so
+	// a termless bid's parent native id is non-numeric ("ps:…") or absent and the
+	// numeric guard above is skipped. When WE host the seller, resolve the listing
+	// by its (owner, ticker, sell_initiated) unique key and reject an accept once
+	// the listing is no longer open — the seller already consumed it (a prior
+	// accept) or cancelled it. Without this an inbound accept of a still-"ongoing"
+	// sibling bid forms a second contract and over-commits the seller's shares, or
+	// forms a contract + moves premium on a withdrawn listing. Symmetric with the
+	// OUTBOUND acceptRemoteNegotiation gate. Skipped when ticker is unknown so a
+	// malformed mirror never blocks a legitimate accept.
+	if h.parentChecker != nil && sellerRouting == h.ownRouting && offer.Ticker != "" {
+		if ot, oid, perr := parseSellerOwner(sellerID); perr == nil {
+			if !h.parentChecker.LocalSellOfferOpenForSeller(ot, oid, offer.Ticker) {
+				return nil, status.Error(codes.FailedPrecondition,
+					"listing is no longer open (cancelled or already consumed)")
+			}
+		}
+	}
+
 	// Atomically claim the negotiation for acceptance (ongoing → accepted) BEFORE
 	// composing/dispatching the option-formation SI-TX. This serialises concurrent
 	// accepts of the same negotiation: only one wins the compare-and-set and
@@ -955,6 +985,22 @@ func (h *PeerOTCGRPCHandler) AcceptNegotiation(ctx context.Context, req *stockpb
 	if aerr := h.negRepo.AppendRemoteRevision(peerRouting, foreignID, acceptRev); aerr != nil {
 		log.Printf("WARN: peer-otc accept: failed to record accept revision for %s/%s: %v",
 			req.GetPeerBankCode(), req.GetNegotiationId().GetId(), aerr)
+	}
+
+	// Consume the LOCAL listing this contract formed against (we host the seller):
+	// one listing backs exactly one accepted contract. The termless /public-stock
+	// wire carries no offer id, so the listing is resolved by the seller's
+	// (owner, ticker, sell_initiated) key. Best-effort — the contract already
+	// formed on both banks, so a consume failure must not fail the accept (the
+	// guard above is the authoritative pre-form gate; this just retires the
+	// listing). Symmetric with the OUTBOUND acceptRemoteNegotiation consume.
+	if h.parentChecker != nil && sellerRouting == h.ownRouting && offer.Ticker != "" {
+		if ot, oid, perr := parseSellerOwner(sellerID); perr == nil {
+			if cerr := h.parentChecker.ConsumeLocalSellOfferForSeller(ot, oid, offer.Ticker); cerr != nil {
+				log.Printf("WARN: peer-otc accept: consume local listing failed for %s/%s: %v",
+					req.GetPeerBankCode(), req.GetNegotiationId().GetId(), cerr)
+			}
+		}
 	}
 
 	// Seller-side notification: this bank is the SELLER's bank (the

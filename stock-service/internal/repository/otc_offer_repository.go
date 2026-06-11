@@ -125,6 +125,36 @@ func (r *OTCOfferRepository) CountOpenByOwnerTickerDirection(ownerType model.Own
 	return n, q.Count(&n).Error
 }
 
+// ConsumeOpenByOwnerTickerDirection flips this bank's OPEN LOCAL offer for the
+// (owner, ticker, direction) triple to consumed. It matches the same
+// IsOpenListing status set ('open','PENDING','COUNTERED') as the partial unique
+// index, so it targets exactly the at-most-one open listing for that key. Used
+// by the cross-bank accept path (Direction 2: we host the seller) to remove a
+// listing from the marketplace once an option contract forms against it — the
+// termless /public-stock model carries no offer id on the wire, so the listing
+// is resolved by its unique key rather than by parent_offer_id.
+//
+// Idempotent: 0 rows affected (already consumed / cancelled / never existed) is
+// NOT an error. UpdateColumn (hooks skipped) is used because this is a terminal
+// status flip targeted by WHERE, not a load-modify-Save subject to the
+// optimistic-version contract — mirroring MergeDuplicateOpenOffers.
+func (r *OTCOfferRepository) ConsumeOpenByOwnerTickerDirection(ownerType model.OwnerType, ownerID *uint64, ticker, direction string) error {
+	openStatuses := []string{
+		model.OTCOfferStatusOpen,
+		model.OTCOfferStatusPending,
+		model.OTCOfferStatusCountered,
+	}
+	q := r.db.Model(&model.OTCOffer{}).
+		Where("status IN ? AND local = ? AND ticker = ? AND direction = ? AND initiator_owner_type = ?",
+			openStatuses, true, ticker, direction, ownerType)
+	if ownerID != nil {
+		q = q.Where("initiator_owner_id = ?", *ownerID)
+	} else {
+		q = q.Where("initiator_owner_id IS NULL")
+	}
+	return q.UpdateColumn("status", model.OTCOfferStatusConsumed).Error
+}
+
 func (r *OTCOfferRepository) GetByID(id uint64) (*model.OTCOffer, error) {
 	return r.getByID(r.db, id)
 }

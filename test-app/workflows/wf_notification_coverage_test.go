@@ -87,7 +87,7 @@ func TestWF_NotificationCoverage_MobileActivationRequested(t *testing.T) {
 		list, _ := helpers.RequireField(t, notifs, "notifications").([]interface{})
 		for _, raw := range list {
 			n, _ := raw.(map[string]interface{})
-			if n["type"] == "mobile_activation_requested" {
+			if n["type"] == "MOBILE_ACTIVATION_REQUESTED" {
 				found = true
 				break
 			}
@@ -98,6 +98,6 @@ func TestWF_NotificationCoverage_MobileActivationRequested(t *testing.T) {
 		time.Sleep(1 * time.Second)
 	}
 	if !found {
-		t.Fatalf("client did not receive a mobile_activation_requested notification within timeout")
+		t.Fatalf("client did not receive a MOBILE_ACTIVATION_REQUESTED notification within timeout")
 	}
 }
