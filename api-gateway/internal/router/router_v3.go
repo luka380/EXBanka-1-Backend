@@ -278,11 +278,6 @@ func SetupV3(r *gin.Engine, h *Handlers) {
 		me.DELETE("/otc/options/:id/negotiations/:nid", bankIfEmp, h.OTCOptions.CancelMyNegotiation)
 		me.PUT("/otc/options/:id", bankIfEmp, h.OTCOptions.UpdateMyOption)
 		me.DELETE("/otc/options/:id", bankIfEmp, h.OTCOptions.CancelMyListing)
-
-		// --- Phase 3: OTC stocks marketplace (sell + buy direction) ---
-		me.GET("/otc/stocks", bankIfEmp, h.OTCStock.ListMyOTCStocks)
-		me.POST("/otc/stocks", bankIfEmp, h.OTCStock.CreateOTCStockOffer)
-		me.DELETE("/otc/stocks/:id", bankIfEmp, h.OTCStock.CancelOTCStockOffer)
 	}
 
 	// ── SI-TX canonical prefix ───────────────────────────────────────
@@ -336,26 +331,6 @@ func SetupV3(r *gin.Engine, h *Handlers) {
 		securities.GET("/options", middleware.DenyClientToken(), h.Securities.ListOptions)
 		securities.GET("/options/:id", middleware.DenyClientToken(), h.Securities.GetOption)
 		securities.GET("/candles", h.Securities.GetCandles)
-	}
-
-	// ── OTC stocks marketplace (Phase 8 clean cut — replaces the
-	// legacy /api/v3/otc/offers group). Browsing is AnyAuth; buying
-	// requires the securities/otc trade permission.
-	otcStocksRead := v3.Group("/otc/stocks")
-	otcStocksRead.Use(middleware.AnyAuthMiddleware(h.TokenVerifier))
-	{
-		otcStocksRead.GET("", h.Portfolio.ListOTCOffers)
-	}
-	otcStocksTrade := v3.Group("/otc/stocks")
-	otcStocksTrade.Use(middleware.AnyAuthMiddleware(h.TokenVerifier))
-	otcStocksTrade.Use(middleware.RequirePermissionOrClient(middleware.PermAny, perms.Otc.Trade.Accept, perms.Securities.Trade.Any))
-	otcStocksTrade.Use(middleware.ResolveIdentity(middleware.OwnerIsBankIfEmployee))
-	{
-		otcStocksTrade.POST("/:id/buy", h.Portfolio.BuyOTCOffer)
-		// Phase 3B: fill a buy-direction offer with the caller's shares.
-		// Seller-can-deliver check + cash-already-reserved guarantee live
-		// inside OTCStockService.FillBuyOffer.
-		otcStocksTrade.POST("/:id/sell", h.OTCStock.SellOTCStockOffer)
 	}
 
 	// ── OTC option trading (Spec 2) — read endpoints ─────────────
@@ -875,16 +850,6 @@ func SetupV3(r *gin.Engine, h *Handlers) {
 		ordersOnBehalf.Use(middleware.ResolveIdentity(middleware.OwnerIsBankIfEmployee))
 		{
 			ordersOnBehalf.POST("", h.StockOrder.CreateOrderOnBehalf)
-		}
-
-		// OTC stocks — employee on-behalf buying (Phase 8 rename:
-		// /otc/offers/:id/buy-on-behalf moved here).
-		otcStocksOnBehalf := protected.Group("/otc/stocks")
-		otcStocksOnBehalf.Use(middleware.RequireAnyPermission(
-			perms.Otc.Trade.Accept, perms.Otc.Trade.OnBehalf))
-		otcStocksOnBehalf.Use(middleware.ResolveIdentity(middleware.OwnerIsBankIfEmployee))
-		{
-			otcStocksOnBehalf.POST("/:id/buy-on-behalf", h.Portfolio.BuyOTCOfferOnBehalf)
 		}
 
 		// Order management (supervisor) — read split from approve/reject.

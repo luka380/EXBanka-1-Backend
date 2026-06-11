@@ -115,11 +115,6 @@ func main() {
 		&model.FundHolding{},
 		&model.OTCOffer{},
 		&model.OTCOfferRevision{},
-		// OTC stock buy-direction offers — created by /api/v3/me/otc/stocks
-		// with direction=buy. Backed by a cash reservation on the buyer's
-		// account (account-service ReserveFunds) keyed on the synthetic
-		// order_id allocated from otc_stock_buy_offer_res_seq below.
-		&model.OTCStockBuyOffer{},
 		// Per-bidder negotiation chains against parent OTCOffer listings.
 		// Many bidders can negotiate one listing in parallel; first to
 		// accept wins atomically (see plan
@@ -174,11 +169,19 @@ func main() {
 	// safe on every startup (it just re-asserts local = routing==own).
 	backfillLocalDiscriminator(db, model.OwnRouting())
 
-	// Sequence backing OTCStockBuyOffer.AccountReservationOrderID. Offset
-	// start avoids collision with orders.id values used by other reservation
-	// flows (price-alert holds, recurring orders, etc.).
-	if err := db.Exec(`CREATE SEQUENCE IF NOT EXISTS otc_stock_buy_offer_res_seq START 1000000`).Error; err != nil {
-		log.Fatalf("create otc_stock_buy_offer_res_seq failed: %v", err)
+	// Drop the retired in-bank OTC stock-marketplace schema (the feature — the
+	// FE's "market tab" — was removed 2026-06-11; options now serve as cross-bank
+	// stock inventory). GORM AutoMigrate never drops columns/tables, so do it
+	// explicitly. Idempotent; best-effort.
+	for _, stmt := range []string{
+		`ALTER TABLE holdings DROP COLUMN IF EXISTS public_quantity`,
+		`ALTER TABLE holdings DROP COLUMN IF EXISTS public_price`,
+		`DROP TABLE IF EXISTS otc_stock_buy_offers`,
+		`DROP SEQUENCE IF EXISTS otc_stock_buy_offer_res_seq`,
+	} {
+		if err := db.Exec(stmt).Error; err != nil {
+			log.Printf("WARN: otc-stock-marketplace cleanup %q: %v", stmt, err)
+		}
 	}
 
 	// One-shot backfill for the new capital_gains.tax_collection_id column.
@@ -593,11 +596,6 @@ func main() {
 		accountClient, nameResolver, cfg.StateAccountNo,
 	)
 
-	otcSvc := service.NewOTCService(
-		holdingRepo, capitalGainRepo, listingRepo,
-		accountClient, nameResolver,
-	)
-
 	taxSvc := service.NewTaxService(
 		capitalGainRepo, taxCollectionRepo, holdingRepo,
 		accountClient, exchangeClient, cfg.StateAccountNo,
@@ -610,38 +608,6 @@ func main() {
 	// decoupled from any gRPC request ctx. See bug #3 in docs/Bugs.txt.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	// Unified OTC offer cache (local + cross-bank). Refresher rebuilds
-	// every 5 s by pulling local offers in-process from otcSvc and fanning
-	// out — via interbank-service's ProxyToPeer egress — GETs to active peer
-	// banks' /public-stock. peerBankAdminClient supplies the peer list; the
-	// resolution + signing + HTTP all happen inside interbank-service. The
-	// gRPC method OTCGRPCService.ListUnifiedOffers serves the cached view.
-	otcOfferCache := otccache.New()
-	otcRefresher := otccache.NewRefresher(otcOfferCache, otcSvc, peerBankAdminClient, peerEgressClient, cfg.OwnBankCode, 5*time.Second)
-	otcCacheEntry := cronRegistry.Register("otc-offer-cache-refresher", "Refreshes unified OTC offer cache from local + peer banks", 5*time.Second)
-	go func() {
-		ticker := time.NewTicker(5 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if !otcCacheEntry.BeginRun() {
-					continue
-				}
-				otcRefresher.Refresh(ctx)
-				otcCacheEntry.EndRun(nil)
-			case <-otcCacheEntry.TriggerChan():
-				if !otcCacheEntry.BeginRun() {
-					continue
-				}
-				otcRefresher.Refresh(ctx)
-				otcCacheEntry.EndRun(nil)
-			}
-		}
-	}()
 
 	// Phase 6 — cross-bank discovery of OPEN OTC OPTION listings.
 	// Currency resolved via the listings → exchanges chain (same lookup
@@ -1170,17 +1136,6 @@ func main() {
 		WithPeerOTCDispatch(peerNegDispatcher, otcNegRepo, accountClient). // SP-2b: bid route dispatches cross-bank for remote listings
 		WithCrossBankExerciser(peerOtcHandler)                             // SP-2b Task 5: exercise route dispatches cross-bank for remote contracts
 
-	// Phase 3: OTC stocks marketplace (sell + buy direction). The
-	// service uses narrow OTCStockListingResolver + OTCStockAccountClient
-	// interfaces — wire concrete adapters here so tests can swap them.
-	buyOfferRepo := repository.NewOTCStockBuyOfferRepository(db)
-	otcStockSvc := service.NewOTCStockService(
-		db, holdingRepo, buyOfferRepo,
-		&stockListingResolverAdapter{listings: listingRepo, stocks: stockRepo, exchanges: exchangeRepo},
-		newStockAccountClientAdapter(stockAccountClient),
-	).WithCapitalGain(capitalGainRepo)
-	otcStockMarketHandler := handler.NewOTCStockMarketHandler(otcStockSvc)
-
 	markReady, addReadinessCheck, metricsShutdown := metrics.StartMetricsServer(cfg.MetricsPort)
 	defer func() { _ = metricsShutdown(context.Background()) }()
 
@@ -1206,14 +1161,13 @@ func main() {
 			unifiedPortfolioSvc := service.NewUnifiedPortfolioService(holdingRepo, fundPositionRepo, fundRepo, fundHoldingRepo, listingRepo, fundAccountAdapter).
 				WithDividendService(dividendSvc)
 			pb.RegisterPortfolioGRPCServiceServer(s, handler.NewPortfolioHandler(portfolioSvc, taxSvc).WithUnifiedPortfolioService(unifiedPortfolioSvc))
-			pb.RegisterOTCGRPCServiceServer(s, handler.NewOTCHandlerWithCache(otcSvc, otcOfferCache).
+			pb.RegisterOTCGRPCServiceServer(s, handler.NewOTCHandler().
 				WithOptionCache(optionOfferCache).
 				WithMyNegotiations(otcNegRepo, ownRouting). // SP-2b: stamp my_negotiation_id on the unified offer list
 				WithOwnerLatestCounter(ownerLatestCounter)) // D2: re-source owner's terms from their latest counter
 			pb.RegisterTaxGRPCServiceServer(s, handler.NewTaxHandler(taxSvc))
 			pb.RegisterInvestmentFundServiceServer(s, fundHandler)
 			pb.RegisterOTCOptionsServiceServer(s, otcOptionsHandler)
-			pb.RegisterOTCStockMarketGRPCServiceServer(s, otcStockMarketHandler)
 			pb.RegisterPeerOTCServiceServer(s, peerOtcHandler)
 			watchlistRepo := repository.NewWatchlistRepository(db)
 			// SP6: one-time migration of legacy single-list items into per-owner

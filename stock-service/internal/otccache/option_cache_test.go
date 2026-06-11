@@ -45,6 +45,40 @@ func (f *fakePathEgressClient) GetPeersState(_ context.Context, _ *transactionpb
 	return nil, errors.New("not used")
 }
 
+// fakePeerBankAdminClient implements transactionpb.PeerBankAdminServiceClient for
+// the cache-refresh path: the refresher only calls ListPeerBanks (to enumerate
+// which peers to poll); per-peer HTTP fetch goes through PeerEgressService.
+// (Relocated 2026-06-11 from the retired otc-stock-marketplace refresher_test.go.)
+type fakePeerBankAdminClient struct {
+	listResp *transactionpb.ListPeerBanksResponse
+	listErr  error
+}
+
+func (f *fakePeerBankAdminClient) ListPeerBanks(ctx context.Context, in *transactionpb.ListPeerBanksRequest, opts ...grpc.CallOption) (*transactionpb.ListPeerBanksResponse, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return f.listResp, nil
+}
+func (f *fakePeerBankAdminClient) GetPeerBank(ctx context.Context, in *transactionpb.GetPeerBankRequest, opts ...grpc.CallOption) (*transactionpb.PeerBank, error) {
+	return nil, errors.New("not used")
+}
+func (f *fakePeerBankAdminClient) CreatePeerBank(ctx context.Context, in *transactionpb.CreatePeerBankRequest, opts ...grpc.CallOption) (*transactionpb.PeerBank, error) {
+	return nil, errors.New("not used")
+}
+func (f *fakePeerBankAdminClient) UpdatePeerBank(ctx context.Context, in *transactionpb.UpdatePeerBankRequest, opts ...grpc.CallOption) (*transactionpb.PeerBank, error) {
+	return nil, errors.New("not used")
+}
+func (f *fakePeerBankAdminClient) DeletePeerBank(ctx context.Context, in *transactionpb.DeletePeerBankRequest, opts ...grpc.CallOption) (*transactionpb.DeletePeerBankResponse, error) {
+	return nil, errors.New("not used")
+}
+func (f *fakePeerBankAdminClient) ResolvePeerByAPIToken(ctx context.Context, in *transactionpb.ResolvePeerByAPITokenRequest, opts ...grpc.CallOption) (*transactionpb.ResolvePeerByAPITokenResponse, error) {
+	return nil, errors.New("not used")
+}
+func (f *fakePeerBankAdminClient) ResolvePeerByBankCode(ctx context.Context, in *transactionpb.ResolvePeerByBankCodeRequest, opts ...grpc.CallOption) (*transactionpb.ResolvePeerByBankCodeResponse, error) {
+	return nil, errors.New("not used")
+}
+
 // ---------------------------------------------------------------------------
 // buildAndMirrorRemoteStockShells (synthesized sell_initiated shells)
 // ---------------------------------------------------------------------------

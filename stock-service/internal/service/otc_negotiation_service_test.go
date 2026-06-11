@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -227,6 +228,57 @@ func TestAcceptNegotiation_PosterAcceptsBidderTerms(t *testing.T) {
 	revs, _ := env.negRepo.ListRevisions(neg.ID)
 	if len(revs) != 2 || revs[1].Action != model.OTCNegotiationActionAccept {
 		t.Errorf("expected ACCEPT revision second, got revs=%+v", revs)
+	}
+}
+
+// failingFormer always fails contract formation — exercises the
+// restore-on-formation-failure path.
+type failingFormer struct{}
+
+func (failingFormer) MintContractFromAcceptedNegotiation(_ context.Context, _ MintFromNegotiationInput) (*model.OptionContract, error) {
+	return nil, fmt.Errorf("insufficient available balance")
+}
+
+// TestAcceptNegotiation_FormationFailure_RestoresListing: when the
+// contract-formation saga returns an error (no contract forms), the listing the
+// accept consumed + the siblings it cascade-cancelled must be RESTORED — the
+// seller must NOT lose their listing for a deal that never happened. Regression
+// for the user-reported 2026-06-11 bug ("saga faulted, listing is deleted, no
+// contract"). The winning chain is marked failed.
+func TestAcceptNegotiation_FormationFailure_RestoresListing(t *testing.T) {
+	env := newNegTestEnv(t)
+	env.svc = env.svc.WithContractFormer(failingFormer{})
+	listing := seedListing(t, env, 1, model.OTCDirectionSellInitiated, model.OTCOfferStatusOpen)
+	priorStatus := listing.Status
+	neg, _ := env.svc.OpenNegotiation(context.Background(), sampleOpenInput(listing.ID, 7))
+	sib, _ := env.svc.OpenNegotiation(context.Background(), sampleOpenInput(listing.ID, 8))
+	sibPrior := sib.Status
+
+	_, err := env.svc.AcceptNegotiation(context.Background(), AcceptNegotiationInput{
+		NegotiationID:       neg.ID,
+		CallerOwnerType:     model.OwnerClient,
+		CallerOwnerID:       u64p(1),
+		ActingPrincipalType: "client",
+		ActingPrincipalID:   1,
+		AcceptorAccountID:   17, // non-zero → reaches the mint saga (which fails)
+	})
+	if err == nil {
+		t.Fatal("expected accept to fail when contract formation fails")
+	}
+
+	gotListing, _ := env.offerRepo.GetByID(listing.ID)
+	if gotListing.Status != priorStatus {
+		t.Errorf("listing status after formation failure = %q, want RESTORED to %q (not consumed)", gotListing.Status, priorStatus)
+	}
+	var gotNeg model.OTCNegotiation
+	_ = env.db.First(&gotNeg, neg.ID).Error
+	if gotNeg.Status != "failed" {
+		t.Errorf("winning neg status = %q, want failed", gotNeg.Status)
+	}
+	var gotSib model.OTCNegotiation
+	_ = env.db.First(&gotSib, sib.ID).Error
+	if gotSib.Status != sibPrior {
+		t.Errorf("sibling status after formation failure = %q, want RESTORED to %q (not cancelled)", gotSib.Status, sibPrior)
 	}
 }
 

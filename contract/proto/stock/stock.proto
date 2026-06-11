@@ -513,13 +513,12 @@ message DeclineOrderRequest {
 service PortfolioGRPCService {
   rpc ListHoldings(ListHoldingsRequest) returns (ListHoldingsResponse);
   rpc GetPortfolioSummary(GetPortfolioSummaryRequest) returns (PortfolioSummary);
-  rpc MakePublic(MakePublicRequest) returns (Holding);
   rpc ExerciseOption(ExerciseOptionRequest) returns (ExerciseResult);
   rpc ExerciseOptionByOptionID(ExerciseOptionByOptionIDRequest) returns (ExerciseResult);
   // GetHolding returns one Holding by ID. Carries owner_type +
   // owner_id alongside the response so the gateway can perform the
   // CLAUDE.md ownership pre-check before calling mutating RPCs like
-  // ExerciseOption / MakePublic. (Fix R5, 2026-05-16.)
+  // ExerciseOption. (Fix R5, 2026-05-16.)
   rpc GetHolding(GetHoldingRequest) returns (HoldingWithOwner);
   // ListHoldingTransactions returns the executed order-transactions that
   // contributed to a given holding. Since holdings aggregate per
@@ -603,7 +602,7 @@ message Holding {
   string average_price = 6;
   string current_price = 7;
   string profit = 8;
-  int64 public_quantity = 9;
+  reserved 9; // was public_quantity (OTC stock marketplace, removed 2026-06-11)
   uint64 account_id = 10;
   string last_modified = 11;
 }
@@ -683,16 +682,6 @@ message PortfolioSummary {
   int64 closed_trades_this_year = 11;
 }
 
-message MakePublicRequest {
-  uint64 holding_id = 1;
-  uint64 user_id = 2;
-  int64 quantity = 3;
-  // system_type is "client" or "employee" — forwarded from the JWT context
-  // by api-gateway so user-scoped queries filter by (user_id, system_type)
-  // and avoid cross-system-type data leaks.
-  string system_type = 10;
-}
-
 message ExerciseOptionRequest {
   uint64 holding_id = 1;
   uint64 user_id = 2;
@@ -758,91 +747,10 @@ message ListHoldingTransactionsResponse {
 // ==================== OTC Trading ====================
 
 service OTCGRPCService {
-  rpc ListOffers(ListOTCOffersRequest) returns (ListOTCOffersResponse);
-  rpc BuyOffer(BuyOTCOfferRequest) returns (OTCTransaction);
-  // Unified view: local offers from this bank's holdings + remote offers
-  // pulled from every active peer bank's GET /public-stock. Backed by
-  // an in-process cache refreshed every ~5 s by stock-service.
-  rpc ListUnifiedOffers(ListUnifiedOTCOffersRequest) returns (ListUnifiedOTCOffersResponse);
-  // Phase 6: cross-bank discovery of OPEN OTC OPTION LISTINGS. Local
-  // rows come from otc_offers (Phase 2 marketplace); remote rows pulled
-  // every ~5 s from peer banks' GET /public-option-offers. Same partial-
-  // failure tolerance as ListUnifiedOffers (peers_total / peers_reached).
+  // Cross-bank discovery of OPEN OTC OPTION LISTINGS. Local rows come from
+  // otc_offers; remote rows are pulled every ~5 s from peer banks' GET
+  // /public-stock. Partial-failure tolerant (peers_total / peers_reached).
   rpc ListUnifiedOptionOffers(ListUnifiedOptionOffersRequest) returns (ListUnifiedOptionOffersResponse);
-}
-
-message OTCOffer {
-  uint64 id = 1;
-  uint64 seller_id = 2;
-  string seller_name = 3;
-  string security_type = 4;
-  string ticker = 5;
-  string name = 6;
-  int64 quantity = 7;
-  string price_per_unit = 8;
-  string created_at = 9;
-}
-
-message ListOTCOffersRequest {
-  string security_type = 1;
-  string ticker = 2;
-  int32 page = 3;
-  int32 page_size = 4;
-}
-
-message ListOTCOffersResponse {
-  repeated OTCOffer offers = 1;
-  int64 total_count = 2;
-}
-
-// UnifiedOTCOffer is one entry in the cross-bank-aggregated OTC view.
-// `kind` discriminates the buy flow:
-//   - "local"  → buy via POST /api/v3/otc/offers/{id}/buy
-//   - "remote" → bid via the unified POST /api/v3/otc/options/{id}/bid;
-//                stock-service dispatches the cross-bank negotiation
-//                (SP-2b folded the retired /me/peer-otc/negotiations
-//                client route into the unified surface).
-// Local-only fields (id, seller_id, seller_name, name, created_at) are
-// zero/empty on remote offers; owner_id is empty on local offers.
-message UnifiedOTCOffer {
-  string kind = 1;
-  string bank_code = 2;
-
-  // Local-only
-  uint64 id = 3;
-  uint64 seller_id = 4;
-  string seller_name = 5;
-  string name = 6;
-  string created_at = 7;
-
-  // Remote-only. SI-TX owner shape: "0" means bank-owned, "1+" is a
-  // client id at the seller bank.
-  string owner_id = 8;
-
-  // Common
-  string security_type = 9;
-  string ticker = 10;
-  int64 quantity = 11;
-  string price_per_unit = 12;
-  string currency = 13;
-}
-
-message ListUnifiedOTCOffersRequest {
-  string security_type = 1;
-  string ticker = 2;
-  string kind = 3;       // optional filter: "local" | "remote"
-  string bank_code = 4;  // optional filter
-  int32 page = 5;
-  int32 page_size = 6;
-}
-
-message ListUnifiedOTCOffersResponse {
-  repeated UnifiedOTCOffer offers = 1;
-  int64 total_count = 2;
-  int32 peers_total = 3;
-  int32 peers_reached = 4;
-  bool partial = 5;
-  int64 last_refresh_unix = 6;
 }
 
 // Phase 6 — unified cross-bank view of open OTC OPTION listings.
@@ -933,25 +841,6 @@ message ListUnifiedOptionOffersResponse {
   int32 peers_reached     = 4;
   bool  partial           = 5;
   int64 last_refresh_unix = 6;
-}
-
-message BuyOTCOfferRequest {
-  uint64 offer_id = 1;
-  uint64 buyer_id = 2;
-  string system_type = 3;
-  int64 quantity = 4;
-  uint64 account_id = 5;
-  uint64 acting_employee_id    = 6;
-  uint64 on_behalf_of_client_id = 7;
-}
-
-message OTCTransaction {
-  uint64 id = 1;
-  uint64 offer_id = 2;
-  int64 quantity = 3;
-  string price_per_unit = 4;
-  string total_price = 5;
-  string commission = 6;
 }
 
 // ==================== Tax ====================
@@ -1557,91 +1446,6 @@ message GetOfferTimelineResponse {
 message ListNegotiationsResponse {
   repeated OTCNegotiationResponse negotiations = 1;
   int64                            total       = 2;
-}
-
-// --------------------------------------------------------------------
-// OTCStockMarketGRPCService — Phase 3 stocks marketplace (sell + buy
-// directions). Wires the new OTCStockService. Fill RPCs are deferred
-// to Phase 3B; for now the deprecated OTCGRPCService.BuyOffer backs
-// sell-side fills under the legacy route.
-// See docs/superpowers/plans/2026-05-16-otc-stocks-marketplace.md.
-// --------------------------------------------------------------------
-service OTCStockMarketGRPCService {
-  rpc CreateOTCStockOffer(CreateOTCStockOfferRequest) returns (OTCStockOfferResponse);
-  rpc CancelOTCStockOffer(CancelOTCStockOfferRequest) returns (CancelOTCStockOfferResponse);
-  rpc ListMyOTCStocks(ListMyOTCStocksRequest)         returns (ListMyOTCStocksResponse);
-
-  // SellOTCStockOffer fills a buy-direction offer: seller decrements
-  // their holding, buyer's reserved cash is settled via account-service
-  // PartialSettleReservation, seller's account is credited, buyer's
-  // holding is upserted. Multi-step saga with compensation on each
-  // intermediate failure.
-  rpc SellOTCStockOffer(SellOTCStockOfferRequest) returns (OTCStockFillResult);
-}
-
-message SellOTCStockOfferRequest {
-  uint64 offer_id              = 1; // otc_stock_buy_offers.id
-  string seller_owner_type     = 2;
-  uint64 seller_owner_id       = 3;
-  int64  quantity              = 4;
-  uint64 seller_account_id     = 5; // where proceeds are credited
-  uint64 acting_employee_id    = 6;
-}
-
-message OTCStockFillResult {
-  uint64 offer_id        = 1;
-  int64  filled_quantity = 2;
-  string price_per_unit  = 3;
-  string total_amount    = 4;
-  string seller_credited_account_number = 5;
-}
-
-message OTCStockOfferResponse {
-  string direction      = 1;   // "sell" | "buy"
-  uint64 id             = 2;   // holdings.id for sell; otc_stock_buy_offers.id for buy
-  string owner_type     = 3;
-  uint64 owner_id       = 4;
-  uint64 account_id     = 5;
-  string ticker         = 6;
-  string name           = 7;
-  int64  quantity       = 8;   // sell: PublicQuantity; buy: RemainingQuantity
-  string price_per_unit = 9;
-  string currency       = 10;
-  string status         = 11;  // sell: "" (public_qty>0 IS the active signal); buy: row.Status
-  string created_at     = 12;
-}
-
-message CreateOTCStockOfferRequest {
-  string owner_type            = 1;
-  uint64 owner_id              = 2;
-  string direction             = 3;   // "sell" | "buy"
-  uint64 holding_id            = 4;   // sell only — which holding row to make public
-  uint64 listing_id            = 5;   // buy only — which security
-  int64  quantity              = 6;
-  string price_per_unit        = 7;   // buy only — buyer's offered price
-  uint64 buyer_account_id      = 8;   // buy only — where to reserve cash from
-  uint64 acting_employee_id    = 9;
-}
-
-message CancelOTCStockOfferRequest {
-  string owner_type = 1;
-  uint64 owner_id   = 2;
-  string direction  = 3;   // "sell" | "buy"
-  uint64 id         = 4;   // holding_id for sell, otc_stock_buy_offers.id for buy
-}
-message CancelOTCStockOfferResponse { bool ok = 1; }
-
-message ListMyOTCStocksRequest {
-  string owner_type = 1;
-  uint64 owner_id   = 2;
-  string direction  = 3;   // "" | "sell" | "buy"
-  int32  page       = 4;
-  int32  page_size  = 5;
-}
-
-message ListMyOTCStocksResponse {
-  repeated OTCStockOfferResponse offers = 1;
-  int64                          total  = 2;
 }
 
 message SubmitOTCRatingRequest {

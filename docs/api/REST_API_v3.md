@@ -5690,9 +5690,9 @@ Exercise an options contract.
 
 ---
 
-## 29. OTC Stocks Marketplace
+## 29. OTC Stocks Marketplace (REMOVED 2026-06-11)
 
-The OTC stocks surface (publish/fill standing share offers, both sell- and buy-direction) lives under `/api/v3/otc/stocks/...` and `/api/v3/me/otc/stocks/...`. See [Section 47.1](#471-stocks-marketplace) for the full route documentation.
+The in-bank OTC stocks surface (`/api/v3/otc/stocks/...`, `/api/v3/me/otc/stocks/...`, `make-public`, `Holding.public_quantity`) was **removed** — the frontend's "market tab" was retired. Option offers (`/api/v3/otc/options/...`, [Section 47](#47-otc-marketplace)) now serve as the cross-bank "stock" inventory on `/public-stock`.
 
 ---
 
@@ -8144,12 +8144,9 @@ Permanently cancel.
 
 ## 47. OTC Marketplace
 
-The OTC surface is split into two clearly-separated marketplaces:
+The OTC marketplace is the **option-contract** marketplace under `/api/v3/otc/options/...` — **with negotiation**. Any user can post an option listing; many other users can each open their own bid chain on the same listing; first-to-accept wins atomically and sibling chains cascade-cancel inside the same DB transaction. (The in-bank stock marketplace `/api/v3/otc/stocks/...` + `/api/v3/me/otc/stocks/...` — publish/fill standing share offers — was **removed 2026-06-11** along with `make-public` and `Holding.public_quantity`; option offers now serve as the cross-bank "stock" inventory on `/public-stock`.)
 
-- **`/api/v3/otc/stocks/...`** — public-stock listings, **no negotiation**. Sellers publish shares, buyers fill outright. Includes both sell-direction (publish shares from a holding) and buy-direction (publish a standing offer to buy at a fixed price, backed by a cash reservation).
-- **`/api/v3/otc/options/...`** — option-contract marketplace, **with negotiation**. Any user can post an option listing; many other users can each open their own bid chain on the same listing; first-to-accept wins atomically and sibling chains cascade-cancel inside the same DB transaction.
-
-Both marketplaces support local + cross-bank discovery (peer banks publish their listings via `/api/v3/cross-bank-protocol/public-stock` — the sole cross-bank discovery surface; each bank's stock-service polls every ~5 s and merges into an in-memory cache).
+It supports local + cross-bank discovery (peer banks publish their listings via `/api/v3/cross-bank-protocol/public-stock` — the sole cross-bank discovery surface; each bank's stock-service polls every ~5 s and merges into an in-memory cache).
 
 > **The bank is a first-class cross-bank OTC principal.** An employee acting **as the bank** (via the `bankIfEmp` group, which resolves `owner_type="bank"`) participates in the cross-bank option marketplace exactly like a client, settling against **BANK** accounts/holdings (owner sentinel `1000000000`):
 > - **Bank-owned offers are biddable cross-bank.** When a bank-owned `OTCOffer` is published to peers, its `sellerId` is the stable wire identity `employee-<ActingEmployeeID>` (never the legacy literal `"bank"`); legacy/seed bank offers with no acting employee are not exposed cross-bank. A peer bank may bid on it.
@@ -8158,166 +8155,6 @@ Both marketplaces support local + cross-bank discovery (peer banks publish their
 > - **The bank sees its own remote chains in every read view** — `ListMyNegotiations`, the per-listing `negotiations` view, history, timeline, and the `my_negotiation_id` stamp — matched by the `employee-<N>` prefix. Client and bank principal scopes never cross.
 > - **Exercise strike-account gate.** The cross-bank exercise's caller-supplied `buyer_account_number` is gated by the gateway's `ResolveAndCheckAccountByNumber` (a bank-acting employee must bind a BANK account, else `403`), and stock-service re-asserts the bank settlement.
 > - **Inbound back-compat.** A peer that still sends the legacy literal `"bank"` party id is parsed to bank ownership; the wire-conformant `employee-<N>` form is parsed identically (the numeric id is audit-only).
-
-### 47.1 Stocks marketplace
-
-#### POST /api/v3/me/otc/stocks
-
-Create a sell or buy OTC stock offer. Direction-keyed body.
-
-**Authentication:** Any JWT (`AnyAuthMiddleware` + `ResolveIdentity`)
-
-**Request Body:**
-
-| Field | Type | Required when | Description |
-|---|---|---|---|
-| `direction` | string | always | `sell` or `buy` |
-| `holding_id` | int | direction=sell | Caller's holding to publish shares from. Accumulative — calling twice with qty=N each time results in 2N public shares. |
-| `listing_id` | int | direction=buy | Stock listing to bid on |
-| `quantity` | int | always | Positive integer |
-| `price_per_unit` | string (decimal) | **always (Phase 11)** | direction=sell: seller's asking price per share (re-list with new price overwrites — latest call wins). direction=buy: buyer's bid price. Stored on `Holding.PublicPrice` for sell; backs the `/public-stock` peer endpoint + the local `/otc/stocks` cache so peer banks see the real ask rather than the previous "0" placeholder. |
-| `buyer_account_id` | int | direction=buy | Caller's account; cash will be reserved here at create time. Currency must match the listing's exchange currency. |
-
-**Response 201:** `{ "offer": OTCStockOfferResponse }` — direction-aware projection.
-
-**Response 400:** Validation (missing/bad direction, non-positive quantity, missing direction-specific field, currency mismatch, ownership of buyer_account_id failed).
-
-**Response 403:** Buyer account does not belong to caller, or holding ownership failed (sell direction enforces this in the service layer's `SELECT FOR UPDATE` TX).
-
-**Atomic safety (sell direction):** The TX locks the holding with `SELECT FOR UPDATE` and rejects if `OTCSafeAvailable() = Quantity - ReservedQuantity - PublicQuantity` is less than the requested addition — preventing double-commit of shares that are already locked by orders or earlier public offers.
-
-**Atomic safety (buy direction):** The OTCStockBuyOffer row is written in a TX, then `account-service.ReserveFunds` is called after commit. On reservation failure the row is rolled to `cancelled` in a compensating TX. Saga recovery (Phase 3B) reconciles the small orphan window if the process crashes between commit and reserve.
-
----
-
-#### GET /api/v3/me/otc/stocks
-
-List the caller's own OTC stock offers, both directions merged.
-
-**Query Parameters:**
-
-| Parameter | Type | Description |
-|---|---|---|
-| `direction` | string | Filter to `sell` or `buy`; omit for both |
-| `page` | int | 1-based, default 1 |
-| `page_size` | int | Default 20, max 200 |
-
-**Response 200:** `{ "offers": [OTCStockOfferResponse...], "total": int }`. Sell rows carry `quantity = PublicQuantity` (the active signal); buy rows carry `quantity = RemainingQuantity` and `status = active|filled|cancelled|expired`.
-
----
-
-#### DELETE /api/v3/me/otc/stocks/:id
-
-Cancel the caller's sell or buy offer.
-
-**Path/Query Params:** `id` (holding_id for sell, buy-offer id for buy) + required `?direction=sell|buy`.
-
-**Response 204:** Cancelled.
-
-- **Sell**: zeros `PublicQuantity` inside `SELECT FOR UPDATE` TX. Rejects with 412 if no active sell offer exists on the holding.
-- **Buy**: flips status to `cancelled` in a TX, then calls `ReleaseReservation` to release any remaining held cash. Rejects with 403 if caller is not the buy-offer's owner; 412 if already terminal.
-
-**Response 403/404/412** per service-sentinel mapping.
-
----
-
-#### GET /api/v3/otc/stocks
-
-Unified marketplace listing of sell + buy directions across local + remote peer banks. Same partial-failure semantics as `/otc/options` (cache refreshed every ~5 s; `peers_total` / `peers_reached` / `partial=true` reflect the most recent refresh).
-
-**Query Parameters:** `direction` (`sell`|`buy`), `ticker`, `kind` (`local`|`remote`), `bank_code`, `page`, `page_size` (default 10).
-
----
-
-#### POST /api/v3/otc/stocks/:id/buy
-
-Fill a sell offer with the caller's cash. Race-hardened: the seller's holding is `SELECT FOR UPDATE`'d before any money moves, so two concurrent buyers cannot double-spend the same `PublicQuantity` on the same holding.
-
-**Request Body:** `{ "quantity": int, "account_id": int }` (caller's account that pays).
-
----
-
-#### POST /api/v3/otc/stocks/:id/sell
-
-**Phase 3B — buy-direction fill.** Caller sells the requested quantity of shares into an existing buy offer. The seller's holding is locked with `SELECT FOR UPDATE` and a shares-available check (`Quantity - ReservedQuantity ≥ requested qty`) runs **before** any money moves — the caller literally cannot sell shares they don't have. The buyer's cash was already reserved at buy-offer-create time via account-service `ReserveFunds`, so payment is guaranteed; `PartialSettleReservation` consumes part of that reservation atomically.
-
-**Authentication:** Any JWT + `securities.trade` OR `otc.trade.accept`.
-
-**Path Parameters:**
-- `id` — `otc_stock_buy_offers.id` of the buy offer being filled.
-
-**Request Body:**
-```json
-{
-  "quantity": 5,
-  "seller_account_id": 42
-}
-```
-
-| Field | Type | Description |
-|---|---|---|
-| `quantity` | int | Positive integer; must be ≤ offer's `remaining_quantity` |
-| `seller_account_id` | int | Caller's account that receives proceeds; must match buyer offer's currency |
-
-**Saga ordering:**
-1. `SELECT FOR UPDATE` buy offer + decrement `RemainingQuantity` + `ReservedAmount`; flip status to `filled` when `RemainingQuantity` reaches 0.
-2. `SELECT FOR UPDATE` seller's holding by `(owner, stock_id)` + verify shares + decrement `Quantity`.
-3. `PartialSettleReservation` on buyer's reservation (debits buyer; ledger entry).
-4. `CreditAccount` on seller's chosen destination.
-5. `Upsert` buyer's holding (best-effort post-money bookkeeping).
-
-Failure at any step reverses the prior steps via compensating account-service calls + repo updates with deterministic idempotency keys.
-
-**Response 200:**
-```json
-{
-  "fill": {
-    "offer_id": 7,
-    "filled_quantity": 5,
-    "price_per_unit": "100.00",
-    "total_amount": "500.00",
-    "seller_credited_account_number": "111000123456789011"
-  }
-}
-```
-
-**Response 400:** Validation (non-positive quantity, missing `seller_account_id`).
-
-**Response 403:** `seller_account_id` does not belong to caller.
-
-**Response 412:**
-- `ErrOTCStockBuyOfferNotActive` — offer already filled/cancelled/expired.
-- `ErrOTCStockInsufficientRemainingQty` — fill exceeds offer's `remaining_quantity`.
-- `ErrOTCStockInsufficientShares` — seller is short on shares (no money moves).
-- `ErrOTCStockCurrencyMismatch` — seller's account currency differs from offer's.
-- `ErrOTCBuyOwnOffer` — caller is the buy offer's owner.
-
----
-
-#### POST /api/v3/otc/stocks/:id/buy-on-behalf
-
-Employee buys a sell offer **on behalf of a client**. The acquired shares land in the named client's holdings and the named client's account pays.
-
-**Authentication:** Employee JWT + (`otc.trade.accept` OR `otc.trade.on_behalf`) + `ResolveIdentity`.
-
-**Path Parameters:**
-- `id` — the sell offer's id (holding id).
-
-**Request Body:**
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `client_id` | uint64 | yes | The client the purchase is made for. |
-| `account_id` | uint64 | yes | The account that pays — the gateway verifies it belongs to `client_id` (else `403`). |
-| `quantity` | int64 | yes | Positive integer. |
-
-**Response 200:** Purchase result (same shape as `POST /api/v3/otc/stocks/:id/buy`).
-
-**Response 400:** Missing/zero `client_id` or `account_id`, non-positive `quantity`, or invalid offer id.
-
-**Response 403:** `account_id` does not belong to `client_id`.
-
-**Response 404:** Account not found.
 
 ### 47.2 Options marketplace — parallel negotiation chains
 
@@ -9153,7 +8990,7 @@ Portfolios are identified by a URL-safe `portfolio_id` string:
 }
 ```
 
-> **`holding_id` on security positions.** Each `securities` position carries `holding_id` — the numeric id of the underlying holdings row (`asset_type` `stock`/`option`/`future`). This is the id required by **make-public** (`POST /api/v3/me/otc/stocks` with `direction=sell`) and **exercise** (`POST /api/v3/me/portfolio/:id/exercise`), so a client can act on a position straight from this response without a separate lookup. Fund positions omit `holding_id` (they are keyed by `fund_id`, not a holding).
+> **`holding_id` on security positions.** Each `securities` position carries `holding_id` — the numeric id of the underlying holdings row (`asset_type` `stock`/`option`/`future`). This is the id required by **exercise** (`POST /api/v3/me/portfolio/:id/exercise`), so a client can act on a position straight from this response without a separate lookup. Fund positions omit `holding_id` (they are keyed by `fund_id`, not a holding).
 
 ### 48.2 Portfolio by ID (generic form)
 

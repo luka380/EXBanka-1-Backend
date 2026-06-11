@@ -169,7 +169,7 @@ func TestListUnifiedOptionOffers_StampsMyNegotiation_LocalAndRemote(t *testing.T
 		},
 	}
 
-	h := NewOTCHandler(nil).WithOptionCache(cache).WithMyNegotiations(lister, 111)
+	h := NewOTCHandler().WithOptionCache(cache).WithMyNegotiations(lister, 111)
 	resp, err := h.ListUnifiedOptionOffers(context.Background(), &stockpb.ListUnifiedOptionOffersRequest{
 		Page: 1, PageSize: 10, ActingOwnerType: "client", ActingOwnerId: 5,
 	})
@@ -219,7 +219,7 @@ func TestListUnifiedOptionOffers_BankBidder_StampsRemote(t *testing.T) {
 		},
 	}
 
-	h := NewOTCHandler(nil).WithOptionCache(cache).WithMyNegotiations(lister, 111)
+	h := NewOTCHandler().WithOptionCache(cache).WithMyNegotiations(lister, 111)
 	resp, err := h.ListUnifiedOptionOffers(context.Background(), &stockpb.ListUnifiedOptionOffersRequest{
 		Page: 1, PageSize: 10, ActingOwnerType: "bank", ActingOwnerId: 0,
 	})
@@ -256,7 +256,7 @@ func TestListUnifiedOptionOffers_MultipleChains_ActiveWins(t *testing.T) {
 				CreatedAt: time.Now().Add(-time.Hour), Quantity: decimal.NewFromInt(1)},
 		},
 	}
-	h := NewOTCHandler(nil).WithOptionCache(cache).WithMyNegotiations(lister, 111)
+	h := NewOTCHandler().WithOptionCache(cache).WithMyNegotiations(lister, 111)
 	resp, err := h.ListUnifiedOptionOffers(context.Background(), &stockpb.ListUnifiedOptionOffersRequest{
 		Page: 1, PageSize: 10, ActingOwnerType: "client", ActingOwnerId: 5,
 	})
@@ -290,7 +290,7 @@ func TestListUnifiedOptionOffers_BidderSeesChainTerms(t *testing.T) {
 				SettlementDate: time.Date(2030, 12, 31, 0, 0, 0, 0, time.UTC)},
 		},
 	}
-	h := NewOTCHandler(nil).WithOptionCache(cache).WithMyNegotiations(lister, 111)
+	h := NewOTCHandler().WithOptionCache(cache).WithMyNegotiations(lister, 111)
 	resp, err := h.ListUnifiedOptionOffers(context.Background(), &stockpb.ListUnifiedOptionOffersRequest{
 		Page: 1, PageSize: 10, ActingOwnerType: "client", ActingOwnerId: 5,
 		ActorUserId: 5, ActorSystemType: "client",
@@ -322,7 +322,7 @@ func TestListUnifiedOptionOffers_OwnerSeesLatestCounter(t *testing.T) {
 		gotOffer, gotType, gotID = offerID, principalType, principalID
 		return &OfferTerms{StrikePrice: "120.00", Premium: "9.00", SettlementDate: "2031-01-31T00:00:00Z"}, nil
 	}
-	h := NewOTCHandler(nil).WithOptionCache(cache).WithOwnerLatestCounter(fn)
+	h := NewOTCHandler().WithOptionCache(cache).WithOwnerLatestCounter(fn)
 	resp, err := h.ListUnifiedOptionOffers(context.Background(), &stockpb.ListUnifiedOptionOffersRequest{
 		Page: 1, PageSize: 10, ActingOwnerType: "client", ActingOwnerId: 5,
 		ActorUserId: 5, ActorSystemType: "client",
@@ -352,7 +352,7 @@ func TestListUnifiedOptionOffers_OwnerNoCounter_Empty(t *testing.T) {
 		},
 	})
 	fn := func(uint64, string, uint64) (*OfferTerms, error) { return nil, nil }
-	h := NewOTCHandler(nil).WithOptionCache(cache).WithOwnerLatestCounter(fn)
+	h := NewOTCHandler().WithOptionCache(cache).WithOwnerLatestCounter(fn)
 	resp, err := h.ListUnifiedOptionOffers(context.Background(), &stockpb.ListUnifiedOptionOffersRequest{
 		Page: 1, PageSize: 10, ActingOwnerType: "client", ActingOwnerId: 5,
 		ActorUserId: 5, ActorSystemType: "client",
@@ -382,7 +382,7 @@ func TestListUnifiedOptionOffers_NonParticipant_Empty(t *testing.T) {
 		t.Fatalf("owner-latest-counter must not be called for a non-owner")
 		return nil, nil
 	}
-	h := NewOTCHandler(nil).WithOptionCache(cache).
+	h := NewOTCHandler().WithOptionCache(cache).
 		WithMyNegotiations(&fakeMyNegLister{}, 111).WithOwnerLatestCounter(fn)
 	resp, err := h.ListUnifiedOptionOffers(context.Background(), &stockpb.ListUnifiedOptionOffersRequest{
 		Page: 1, PageSize: 10, ActingOwnerType: "client", ActingOwnerId: 5,
@@ -406,7 +406,7 @@ func TestListUnifiedOptionOffers_NoLister_NoStamp(t *testing.T) {
 			{Kind: "local", BankCode: "111", RoutingNumber: 111, OfferID: "42", LocalID: 42, Ticker: "AAPL", Direction: "sell_initiated"},
 		},
 	})
-	h := NewOTCHandler(nil).WithOptionCache(cache) // no WithMyNegotiations
+	h := NewOTCHandler().WithOptionCache(cache) // no WithMyNegotiations
 	resp, err := h.ListUnifiedOptionOffers(context.Background(), &stockpb.ListUnifiedOptionOffersRequest{
 		Page: 1, PageSize: 10, ActingOwnerType: "client", ActingOwnerId: 5,
 	})
