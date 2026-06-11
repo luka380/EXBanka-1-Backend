@@ -1014,11 +1014,10 @@ func (h *OTCOptionsHandler) GetOfferTimeline(ctx context.Context, in *stockpb.Ge
 		})
 	}
 	// Merge the REMOTE chains a peer placed on this LOCAL listing (P1: the
-	// timeline must show BOTH local and remote chains, not just local). A remote
-	// mirror carries only CURRENT terms (no per-revision history), so each chain
-	// contributes one entry — same shape as remoteOfferTimeline. Correlated to
-	// this listing by lot key via the shared helper, so it never pulls chains on
-	// another listing.
+	// timeline must show BOTH local and remote chains, not just local). Correlated
+	// to this listing by (seller, ticker) via the shared helper — the termless wire
+	// carries no offer id, so a lot-key match would drop every cross-bank bid — and
+	// never pulls chains on another ticker.
 	peerRows, perr := h.remoteBidderChainsOnLocalListing(offer)
 	if perr != nil {
 		return nil, status.Errorf(codes.Internal, "list peer negotiations: %v", perr)
