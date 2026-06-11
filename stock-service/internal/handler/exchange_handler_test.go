@@ -49,6 +49,32 @@ func (m *mockExchangeSvc) GetTestingMode() bool {
 	return false
 }
 
+// recordingWaker counts WakeAll calls.
+type recordingWaker struct{ calls int }
+
+func (w *recordingWaker) WakeAll() { w.calls++ }
+
+// TestExchangeHandler_SetTestingMode_WakesEngineOnEnable verifies enabling
+// testing mode wakes the order engine (so queued orders fill at once) while
+// disabling it does not.
+func TestExchangeHandler_SetTestingMode_WakesEngineOnEnable(t *testing.T) {
+	w := &recordingWaker{}
+	h := newExchangeHandlerForTest(&mockExchangeSvc{}).WithWaker(w)
+
+	if _, err := h.SetTestingMode(context.Background(), &pb.SetTestingModeRequest{Enabled: true}); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	if w.calls != 1 {
+		t.Fatalf("WakeAll calls after enable = %d, want 1", w.calls)
+	}
+	if _, err := h.SetTestingMode(context.Background(), &pb.SetTestingModeRequest{Enabled: false}); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if w.calls != 1 {
+		t.Fatalf("WakeAll must not fire on disable; calls = %d, want 1", w.calls)
+	}
+}
+
 func TestExchangeHandler_ListExchanges_Success(t *testing.T) {
 	svc := &mockExchangeSvc{
 		listFn: func(_ string, _, _ int) ([]model.StockExchange, int64, error) {

@@ -511,4 +511,15 @@ var pushDefs = []Definition{
 		DefaultSubject: "OTC contract expiring soon",
 		DefaultBody:    "Your OTC option on {{ticker}} expires in {{days_remaining}} day(s) ({{settlement_date}}).",
 	},
+	// ── Auth ─────────────────────────────────────────────────────────────────
+	{
+		Type: "mobile_activation_requested", Channel: "push",
+		Description: "A mobile device activation code was requested (also delivered by email).",
+		Variables: []Variable{
+			{"code", "The activation code", "123456"},
+			{"expires_in", "How long the code stays valid", "15 minutes"},
+		},
+		DefaultSubject: "Mobile activation code",
+		DefaultBody:    "Your mobile activation code is {{code}}. It expires in {{expires_in}}. If you did not request this, contact support immediately.",
+	},
 }

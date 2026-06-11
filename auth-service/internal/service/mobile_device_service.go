@@ -120,10 +120,14 @@ func (s *MobileDeviceService) RequestActivation(ctx context.Context, email strin
 	_ = s.producer.Publish(ctx, kafkamsg.TopicGeneralNotification, kafkamsg.GeneralNotificationMessage{
 		UserID: uint64(account.PrincipalID),
 		Type:   "mobile_activation_requested",
-		Title:  "Mobile Activation Code",
-		Message: fmt.Sprintf(
-			"Your mobile activation code is %s. It expires in %d minutes. If you did not request this, contact support immediately.",
-			code, int(s.mobileActivationExp.Minutes())),
+		// Data (not literal Title/Message) so notification-service renders the
+		// admin-customizable "mobile_activation_requested" push template. The
+		// notification consumer drops the message if Data is set but the template
+		// type is unknown — the registry entry in registry_push.go is required.
+		Data: map[string]string{
+			"code":       code,
+			"expires_in": fmt.Sprintf("%d minutes", int(s.mobileActivationExp.Minutes())),
+		},
 	})
 
 	return nil

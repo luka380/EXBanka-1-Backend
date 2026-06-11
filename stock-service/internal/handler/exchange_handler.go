@@ -19,13 +19,28 @@ type exchangeSvcFacade interface {
 	GetTestingMode() bool
 }
 
+// orderWaker lets enabling testing mode immediately wake the order-execution
+// engine so every queued order (old and new) fills at once instead of waiting
+// on its per-order timer. Optional — nil leaves the toggle a pure setting write.
+type orderWaker interface {
+	WakeAll()
+}
+
 type ExchangeGRPCHandler struct {
 	pb.UnimplementedStockExchangeGRPCServiceServer
-	svc exchangeSvcFacade
+	svc   exchangeSvcFacade
+	waker orderWaker
 }
 
 func NewExchangeGRPCHandler(svc *service.ExchangeService) *ExchangeGRPCHandler {
 	return &ExchangeGRPCHandler{svc: svc}
+}
+
+// WithWaker wires the order-execution engine so SetTestingMode(true) immediately
+// drives all queued orders to fill. Returns the handler for chaining.
+func (h *ExchangeGRPCHandler) WithWaker(w orderWaker) *ExchangeGRPCHandler {
+	h.waker = w
+	return h
 }
 
 // newExchangeHandlerForTest constructs an ExchangeGRPCHandler with an
@@ -58,6 +73,12 @@ func (h *ExchangeGRPCHandler) GetExchange(ctx context.Context, req *pb.GetExchan
 func (h *ExchangeGRPCHandler) SetTestingMode(ctx context.Context, req *pb.SetTestingModeRequest) (*pb.SetTestingModeResponse, error) {
 	if err := h.svc.SetTestingMode(req.Enabled); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to set testing mode: %v", err)
+	}
+	// Enabling testing mode fills every queued order (old and new) immediately:
+	// wake all in-flight order goroutines so they re-evaluate now rather than
+	// finishing their timers.
+	if req.Enabled && h.waker != nil {
+		h.waker.WakeAll()
 	}
 	return &pb.SetTestingModeResponse{TestingMode: req.Enabled}, nil
 }

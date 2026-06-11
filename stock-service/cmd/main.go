@@ -908,6 +908,7 @@ func main() {
 	// a terminal state with no human intervention. Done here (not at
 	// construction) because otcOfferSvc only exists now.
 	sagaRecovery.WithExerciseRecoverer(otcOfferSvc)
+	sagaRecovery.WithAcceptRecoverer(otcOfferSvc)
 	sagaRecovery.WithFundRecoverer(fundService)
 	sagaRecovery.WithPlacementRecoverer(orderSvc)
 	sagaRecovery.WithFillRecoverer(portfolioSvc, orderTxRepo)
@@ -1199,7 +1200,7 @@ func main() {
 			grpc.ChainStreamInterceptor(metrics.GRPCStreamServerInterceptor()),
 		},
 		Register: func(s *grpc.Server) {
-			pb.RegisterStockExchangeGRPCServiceServer(s, handler.NewExchangeGRPCHandler(exchangeSvc))
+			pb.RegisterStockExchangeGRPCServiceServer(s, handler.NewExchangeGRPCHandler(exchangeSvc).WithWaker(execEngine))
 			pb.RegisterSecurityGRPCServiceServer(s, handler.NewSecurityHandler(secSvc, listingSvc, candleSvc, listingRepo))
 			pb.RegisterOrderGRPCServiceServer(s, handler.NewOrderHandler(orderSvc, execEngine))
 			unifiedPortfolioSvc := service.NewUnifiedPortfolioService(holdingRepo, fundPositionRepo, fundRepo, fundHoldingRepo, listingRepo, fundAccountAdapter).

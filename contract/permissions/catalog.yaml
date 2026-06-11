@@ -158,8 +158,10 @@ default_roles:
       - orders.place.on_behalf_client
       - securities.trade.any
       - securities.read.holdings_own
+      - otc.read.all
       - otc.trade.accept
       - otc.trade.exercise
+      - otc.trade.expire
       - otc.trade.on_behalf
       - funds.invest.own
       - funds.invest.on_behalf_client
