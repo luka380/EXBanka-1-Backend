@@ -965,6 +965,24 @@ func (h *PeerOTCGRPCHandler) AcceptNegotiation(ctx context.Context, req *stockpb
 		}
 		return nil, status.Errorf(codes.Internal, "dispatch: %v", err)
 	}
+
+	// Settlement-outcome gate. InitiateOutboundTxWithPostings returns the SI-TX
+	// row's terminal status. "rolled_back"/"failed" means a bank voted NO (e.g.
+	// genuine insufficiency) and NO contract formed. Revert the acceptance claim
+	// (accepted → ongoing) so the chain can be re-accepted, record NO accept
+	// revision, do NOT consume the listing, and return an error — so the OUTBOUND
+	// acceptRemoteNegotiation fails at its HTTP-code guard and the seller KEEPS
+	// their listing (closes the "listing deleted, no contract, money error" bug).
+	// committed/committing/pending all proceed (the contract has/will settle).
+	if txStatus := resp.GetStatus(); txStatus == "rolled_back" || txStatus == "failed" {
+		if _, rerr := h.negRepo.CompareAndSetRemoteNegStatus(peerRouting, req.GetNegotiationId().GetId(), "accepted", "ongoing"); rerr != nil {
+			log.Printf("WARN: peer-otc accept: failed to revert claim for %s/%s after %s settlement: %v",
+				req.GetPeerBankCode(), req.GetNegotiationId().GetId(), txStatus, rerr)
+		}
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"cross-bank settlement did not commit (%s): no contract formed", txStatus)
+	}
+
 	// Negotiation was already claimed as "accepted" before dispatch (the
 	// concurrency guard); no post-dispatch status update needed.
 	//
