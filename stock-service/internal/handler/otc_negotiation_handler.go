@@ -837,8 +837,8 @@ func (h *OTCOptionsHandler) remoteBidderChainsOnLocalListing(parentOffer *model.
 		return nil, err
 	}
 	// The cross-bank lot key of a LOCAL listing is its native_id column when set,
-	// otherwise the offer's SURROGATE id as a string — what GetPublicOptionOffers
-	// publishes and what a peer bidder echoes back as parentOfferId.id.
+	// otherwise the offer's SURROGATE id as a string — the id a peer bidder
+	// echoes back as parentOfferId.id.
 	parentNative := localOfferCrossBankNativeID(parentOffer)
 	out := make([]model.OTCNegotiation, 0, len(rows))
 	for i := range rows {
@@ -857,8 +857,7 @@ func (h *OTCOptionsHandler) remoteBidderChainsOnLocalListing(parentOffer *model.
 // localOfferCrossBankNativeID returns the cross-bank lot key of a LOCAL OTC
 // listing — the id a peer bidder echoes back as parentOfferId.id. It is the
 // offer's native_id column when populated, otherwise the offer's SURROGATE id as
-// a string, which is exactly what GetPublicOptionOffers publishes for a local
-// offer (OfferId.Id = strconv(o.ID)). A local offer's native_id stays empty, so
+// a string (strconv(o.ID)). A local offer's native_id stays empty, so
 // without this fallback an inbound cross-bank chain (keyed on the surrogate id)
 // could never be correlated to the listing it bid on.
 func localOfferCrossBankNativeID(o *model.OTCOffer) string {

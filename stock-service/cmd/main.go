@@ -845,6 +845,53 @@ func main() {
 
 	// --- Intra-bank OTC Options (Spec 2 / Celina 4) ---
 	otcOfferRepo := repository.NewOTCOfferRepository(db)
+
+	// Option offers became termless "optionable inventory": the preset-term
+	// columns were removed from the model. GORM AutoMigrate ADDS/MODIFIES columns
+	// but NEVER drops them, so a previously-deployed otc_offers table keeps these
+	// columns — and strike_price/premium/settlement_date carry a NOT NULL
+	// constraint, which makes every new (termless) insert fail with
+	// "null value in column ... violates not-null constraint". Drop them
+	// explicitly. Idempotent (IF EXISTS); a no-op on a fresh DB created from the
+	// new model. Terms now live only on the negotiation chain.
+	for _, col := range []string{
+		"strike_price", "premium", "settlement_date",
+		"strike_currency", "premium_currency", "has_preset_terms",
+	} {
+		if err := db.Exec("ALTER TABLE otc_offers DROP COLUMN IF EXISTS " + col).Error; err != nil {
+			log.Printf("WARN: drop otc_offers.%s failed: %v", col, err)
+		}
+	}
+
+	// One-open-offer-per-(owner, ticker, direction): collapse any pre-existing
+	// duplicate open LOCAL offers BEFORE creating the partial unique index, else
+	// the index creation would fail on legacy duplicates. Migration first, index
+	// second — order matters.
+	//
+	// Status set: the FULL open-listing set ('open','PENDING','COUNTERED').
+	// New LOCAL offers are created PENDING (never 'open'), so the previous
+	// status='open' predicate matched ZERO local rows — the index enforced
+	// nothing and the merge was inert. The widened predicate makes the index the
+	// authoritative backstop for the invariant (OTCOfferService.Create maps its
+	// 23505 violation to ErrOTCOfferDuplicateOpen, closing the count pre-check's
+	// TOCTOU).
+	//
+	// DROP before CREATE: `CREATE ... IF NOT EXISTS` will NOT replace an index
+	// that already exists under the same name with the OLD (status='open')
+	// predicate, so a previously-deployed DB would keep the inert index. Dropping
+	// first forces the corrected predicate to take effect on upgrade. The merge
+	// stays BEFORE the create so pre-existing PENDING/COUNTERED duplicates are
+	// collapsed first (otherwise the unique index build fails on them).
+	db.Exec(`DROP INDEX IF EXISTS ux_otc_offer_open_owner_ticker_dir`)
+	if n, err := otcOfferRepo.MergeDuplicateOpenOffers(); err != nil {
+		log.Printf("WARN: OTC offer duplicate merge failed: %v", err)
+	} else if n > 0 {
+		log.Printf("OTC offer migration: merged %d duplicate open offers", n)
+	}
+	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS ux_otc_offer_open_owner_ticker_dir
+		ON otc_offers (initiator_owner_id, ticker, direction)
+		WHERE status IN ('open','PENDING','COUNTERED') AND local = true AND initiator_owner_id IS NOT NULL`)
+
 	otcRevisionRepo := repository.NewOTCOfferRevisionRepository(db)
 	optionContractRepo := repository.NewOptionContractRepository(db)
 	otcReadReceiptRepo := repository.NewOTCReadReceiptRepository(db)
@@ -861,7 +908,6 @@ func main() {
 	// a terminal state with no human intervention. Done here (not at
 	// construction) because otcOfferSvc only exists now.
 	sagaRecovery.WithExerciseRecoverer(otcOfferSvc)
-	sagaRecovery.WithAcceptRecoverer(otcOfferSvc)
 	sagaRecovery.WithFundRecoverer(fundService)
 	sagaRecovery.WithPlacementRecoverer(orderSvc)
 	sagaRecovery.WithFillRecoverer(portfolioSvc, orderTxRepo)
@@ -965,10 +1011,9 @@ func main() {
 	peerOtcHandler := handler.NewPeerOTCGRPCHandler(otcNegRepo, peerOptionRepo, holdingRepo, peerTxClient, ownRouting)
 	peerOtcHandler.SetHoldingReserver(holdingReservationSvc)
 	peerOtcHandler = peerOtcHandler.WithNotifier(producer)
-	// Phase 6: cross-bank option discovery — the peer endpoint
-	// (GET /api/v3/public-option-offers) needs the OTC offers repo +
-	// the currency resolver to stamp strike/premium currency.
-	peerOtcHandler = peerOtcHandler.WithOTCOfferReader(otcOfferRepo, optionCurrencyResolver)
+	// Cross-bank option discovery: the peer /public-stock catalog serves
+	// our open, sell-initiated, public, local OTC option offers.
+	peerOtcHandler = peerOtcHandler.WithOTCOfferReader(otcOfferRepo)
 	peerOtcHandler = peerOtcHandler.WithCapitalGain(capitalGainRepo)
 	// Phantom-seller guard: reject inbound cross-bank negotiations whose
 	// client-<n> seller does not resolve to a real local client (closes the
@@ -995,7 +1040,7 @@ func main() {
 
 	// OTC expiry cron (daily). Covers intra-bank option_contracts and
 	// — via WithPeerContracts — cross-bank peer_option_contracts.
-	otcExpiry := service.NewOTCExpiryCron(optionContractRepo, otcOfferRepo, holdingReservationSvc, producer, cfg.OTCExpiryBatchSize, cfg.OTCExpiryCronUTC, cronRegistry).
+	otcExpiry := service.NewOTCExpiryCron(optionContractRepo, holdingReservationSvc, producer, cfg.OTCExpiryBatchSize, cfg.OTCExpiryCronUTC, cronRegistry).
 		WithOutbox(ob, db).
 		WithPeerContracts(peerOptionRepo).
 		WithCapitalGains(capitalGainRepo).
@@ -1084,23 +1129,6 @@ func main() {
 		}
 	}()
 
-	peerAgg := func(offerIDs []uint64) (map[uint64]handler.PeerOfferAggregate, error) {
-		got, err := otcNegRepo.AggregateActiveBidsByOffer(offerIDs)
-		if err != nil {
-			return nil, err
-		}
-		out := make(map[uint64]handler.PeerOfferAggregate, len(got))
-		for id, a := range got {
-			out[id] = handler.PeerOfferAggregate{
-				BestBid:     a.BestBid.String(),
-				BestAsk:     a.BestAsk.String(),
-				ActiveCount: a.ActiveCount,
-			}
-		}
-		return out, nil
-	}
-	peerOtcHandler.WithBidsAggregator(peerAgg)
-
 	// SP-2b — cross-bank bid dispatch. The bid route (OpenNegotiation)
 	// dispatches local OR cross-bank based on whether the parent listing is a
 	// local or a folded-in remote OTCOffer. As of the 2026-06-07 cutover the
@@ -1108,6 +1136,26 @@ func main() {
 	// counter/accept/cancel) through interbank-service's ProxyToPeer egress —
 	// peer resolution + signing live there, not in stock-service.
 	peerNegDispatcher := peeregress.NewDispatcher(peerEgressClient)
+
+	// D2 — owner-latest-counter adapter: re-source an offer-row's terms onto the
+	// LOCAL offers the acting owner posted, from that principal's most recent
+	// counter revision. Formats decimals StringFixed(2) and the date as RFC3339
+	// UTC, matching the per-viewer projection on the bidder side. Returns nil
+	// when the principal never authored a revision on the offer.
+	ownerLatestCounter := func(offerID uint64, principalType string, principalID uint64) (*handler.OfferTerms, error) {
+		rev, err := otcNegRepo.LatestRevisionByAuthorForOffer(offerID, principalType, principalID)
+		if err != nil {
+			return nil, err
+		}
+		if rev == nil {
+			return nil, nil
+		}
+		return &handler.OfferTerms{
+			StrikePrice:    rev.StrikePrice.StringFixed(2),
+			Premium:        rev.Premium.StringFixed(2),
+			SettlementDate: rev.SettlementDate.UTC().Format(time.RFC3339),
+		}, nil
+	}
 
 	otcOptionsHandler := handler.NewOTCOptionsHandler(otcOfferSvc, optionContractRepo).
 		WithListings(listingRepo).
@@ -1117,6 +1165,7 @@ func main() {
 		WithRemoteOffers(otcOfferRepo, cfg.OwnBankCode).
 		WithPeerNegotiations(otcNegRepo).                                  // SP-1 Task 7 + SP-2a: unified local+remote negotiation list (REMOTE rows in otc_negotiations)
 		WithMyNegotiations(otcNegRepo).                                    // SP-2b: stamp my_negotiation_id on GetOffer (caller's own bidder chain)
+		WithOwnerLatestCounter(ownerLatestCounter).                        // D2: re-source GetOffer terms from the owner's latest counter
 		WithPeerOTCDispatch(peerNegDispatcher, otcNegRepo, accountClient). // SP-2b: bid route dispatches cross-bank for remote listings
 		WithCrossBankExerciser(peerOtcHandler)                             // SP-2b Task 5: exercise route dispatches cross-bank for remote contracts
 
@@ -1158,7 +1207,8 @@ func main() {
 			pb.RegisterPortfolioGRPCServiceServer(s, handler.NewPortfolioHandler(portfolioSvc, taxSvc).WithUnifiedPortfolioService(unifiedPortfolioSvc))
 			pb.RegisterOTCGRPCServiceServer(s, handler.NewOTCHandlerWithCache(otcSvc, otcOfferCache).
 				WithOptionCache(optionOfferCache).
-				WithMyNegotiations(otcNegRepo, ownRouting)) // SP-2b: stamp my_negotiation_id on the unified offer list
+				WithMyNegotiations(otcNegRepo, ownRouting). // SP-2b: stamp my_negotiation_id on the unified offer list
+				WithOwnerLatestCounter(ownerLatestCounter)) // D2: re-source owner's terms from their latest counter
 			pb.RegisterTaxGRPCServiceServer(s, handler.NewTaxHandler(taxSvc))
 			pb.RegisterInvestmentFundServiceServer(s, fundHandler)
 			pb.RegisterOTCOptionsServiceServer(s, otcOptionsHandler)

@@ -171,13 +171,16 @@ func (r *Refresher) refresh(ctx context.Context) {
 			wg.Add(1)
 			go func(peer *transactionpb.PeerBank) {
 				defer wg.Done()
-				peerOffers, err := r.fetchPeer(cycleCtx, peer)
-				if err != nil {
+				// SI-TX has no direct cross-bank stock buy/sell — a peer's public
+				// stock is acquirable only by negotiating an OPTION on it, which the
+				// OPTIONS feed surfaces as /public-stock "shells". So peer stock
+				// OFFERS are NOT shown in the stocks marketplace (which is intra-bank
+				// only); the poll still runs to confirm peer liveness for peersReached.
+				if _, err := r.fetchPeer(cycleCtx, peer); err != nil {
 					log.Printf("otccache: peer %s fetch failed: %v", peer.GetBankCode(), err)
 					return
 				}
 				mu.Lock()
-				offers = append(offers, peerOffers...)
 				peersReached++
 				mu.Unlock()
 			}(p)

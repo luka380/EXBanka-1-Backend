@@ -276,6 +276,7 @@ func SetupV3(r *gin.Engine, h *Handlers) {
 		me.POST("/otc/options/:id/negotiations/:nid/accept", bankIfEmp, h.OTCOptions.AcceptMyNegotiation)
 		me.POST("/otc/options/:id/negotiations/:nid/reject", bankIfEmp, h.OTCOptions.RejectMyNegotiation)
 		me.DELETE("/otc/options/:id/negotiations/:nid", bankIfEmp, h.OTCOptions.CancelMyNegotiation)
+		me.PUT("/otc/options/:id", bankIfEmp, h.OTCOptions.UpdateMyOption)
 		me.DELETE("/otc/options/:id", bankIfEmp, h.OTCOptions.CancelMyListing)
 
 		// --- Phase 3: OTC stocks marketplace (sell + buy direction) ---
@@ -297,9 +298,8 @@ func SetupV3(r *gin.Engine, h *Handlers) {
 		crossBank.POST("/interbank", h.PeerTx.PostInterbank)
 		// CHECK_STATUS: peer banks query state of a cross-bank TX (Celina-5 §"Mehanizam za Retry")
 		crossBank.GET("/interbank/:transaction_id/status", h.PeerTxStatus.GetTxStatus)
-		// OTC stock + option discovery (Phase 4 + 6)
+		// OTC stock + option discovery (cross-bank option discovery is /public-stock only)
 		crossBank.GET("/public-stock", h.PeerOTC.GetPublicStocks)
-		crossBank.GET("/public-option-offers", h.PeerOTC.GetPublicOptionOffers)
 		// Cross-bank OTC negotiations (Phase 4)
 		crossBank.POST("/negotiations", h.PeerOTC.CreateNegotiation)
 		crossBank.PUT("/negotiations/:rid/:id", h.PeerOTC.UpdateNegotiation)

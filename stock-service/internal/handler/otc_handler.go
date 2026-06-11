@@ -31,6 +31,10 @@ type OTCHandler struct {
 	// ownRouting keys the remote-chain → remote-offer match.
 	myNegs     MyNegotiationLister
 	ownRouting int64
+	// ownerLatestCounter is optional; when wired, ListUnifiedOptionOffers
+	// re-sources the strike/premium/settlement of each LOCAL offer the caller
+	// OWNS from the acting principal's most recent counter on that offer (D2).
+	ownerLatestCounter OwnerLatestCounterFn
 }
 
 // NewOTCHandler keeps the prior signature for backwards compatibility
@@ -65,6 +69,16 @@ func (h *OTCHandler) WithMyNegotiations(l MyNegotiationLister, ownRouting int64)
 	cp := *h
 	cp.myNegs = l
 	cp.ownRouting = ownRouting
+	return &cp
+}
+
+// WithOwnerLatestCounter wires the owner-latest-counter source so
+// ListUnifiedOptionOffers can project the acting owner's most recent counter
+// terms onto the LOCAL offers they own (D2). Returns a copy so cmd/main.go can
+// chain wire-up calls.
+func (h *OTCHandler) WithOwnerLatestCounter(fn OwnerLatestCounterFn) *OTCHandler {
+	cp := *h
+	cp.ownerLatestCounter = fn
 	return &cp
 }
 
@@ -314,8 +328,14 @@ func (h *OTCHandler) ListUnifiedOptionOffers(ctx context.Context, req *pb.ListUn
 		log.Printf("WARN ListUnifiedOptionOffers: my-negotiation index failed (continuing without my_negotiation_id): %v", err)
 		myNegIdx = myNegotiationIndex{}
 	}
+	// Acting PRINCIPAL ("client"/"employee" + id) for the OWNER term branch. It
+	// differs from the acting OWNER (which collapses every employee to "bank"):
+	// the revision author of a bank-owned counter is "employee-<N>".
+	actorPrincipalType := req.GetActorSystemType()
+	actorPrincipalID := uint64(req.GetActorUserId())
 	out := make([]*pb.UnifiedOptionOffer, 0, end-start)
 	for _, o := range filtered[start:end] {
+		meOwner := otcMeOwner(actingOwnerType, actingOwnerID, o.Kind, o.SellerID)
 		item := &pb.UnifiedOptionOffer{
 			Kind:              o.Kind,
 			BankCode:          o.BankCode,
@@ -336,24 +356,27 @@ func (h *OTCHandler) ListUnifiedOptionOffers(ctx context.Context, req *pb.ListUn
 			BestAsk:           o.BestAsk,
 			ActiveChainsCount: o.ActiveChainsCount,
 			LocalId:           o.LocalID,
-			MeOwner:           otcMeOwner(actingOwnerType, actingOwnerID, o.Kind, o.SellerID),
-			HasPresetTerms:    o.HasPresetTerms,
+			MeOwner:           meOwner,
 		}
 		// LOCAL offers: chain keyed by parent_offer_id == local offer id
 		// (== LocalID). REMOTE offers: chain keyed by the peer-hosted parent
 		// (routing, native) — the remote cache row carries native id in OfferID
 		// and the peer routing in RoutingNumber.
+		var stamp myNegStamp
+		var haveStamp bool
 		if o.Kind == "remote" {
-			if s, ok := myNegIdx.remoteFor(o.RoutingNumber, o.OfferID); ok {
-				item.MyNegotiationId = s.id
-				item.MyNegotiationStatus = s.status
-			}
+			stamp, haveStamp = myNegIdx.remoteFor(o.RoutingNumber, o.OfferID)
 		} else {
-			if s, ok := myNegIdx.localFor(o.LocalID); ok {
-				item.MyNegotiationId = s.id
-				item.MyNegotiationStatus = s.status
-			}
+			stamp, haveStamp = myNegIdx.localFor(o.LocalID)
 		}
+		if haveStamp {
+			item.MyNegotiationId = stamp.id
+			item.MyNegotiationStatus = stamp.status
+		}
+		// D2 — the listing is termless; re-source strike/premium/settlement per
+		// viewer. BIDDER (not the owner, has a chain) → that chain's current
+		// terms. OWNER of a LOCAL offer → their most recent counter. Else empty.
+		h.projectViewerTerms(item, o, stamp, haveStamp, actorPrincipalType, actorPrincipalID)
 		out = append(out, item)
 	}
 	var lastRefreshUnix int64
@@ -369,4 +392,43 @@ func (h *OTCHandler) ListUnifiedOptionOffers(ctx context.Context, req *pb.ListUn
 		Partial:         snap.PeersTotal > 0 && snap.PeersReached < snap.PeersTotal,
 		LastRefreshUnix: lastRefreshUnix,
 	}, nil
+}
+
+// projectViewerTerms re-sources strike/premium/settlement onto one unified
+// offer item per viewer (D2). The listing itself is termless, so the cache
+// leaves those fields empty; this fills them from the caller's position:
+//
+//   - BIDDER (me_owner==false with an own chain on this offer): the chain's
+//     CURRENT terms (carried in the stamp).
+//   - OWNER (me_owner==true on a LOCAL offer): the acting principal's most
+//     recent counter via the wired owner-latest-counter source.
+//   - neither / no chain / no counter: left empty (the cache value, "").
+//
+// Remote offers are never me_owner, so a bidder on a remote shell still gets
+// the bidder branch. best_bid/best_ask/active_chains_count are untouched.
+func (h *OTCHandler) projectViewerTerms(
+	item *pb.UnifiedOptionOffer,
+	o otccache.OptionOffer,
+	stamp myNegStamp,
+	haveStamp bool,
+	actorPrincipalType string,
+	actorPrincipalID uint64,
+) {
+	switch {
+	case !item.MeOwner && haveStamp:
+		item.StrikePrice = stamp.terms.StrikePrice
+		item.Premium = stamp.terms.Premium
+		item.SettlementDate = stamp.terms.SettlementDate
+	case item.MeOwner && o.Kind == "local" && h.ownerLatestCounter != nil:
+		terms, terr := h.ownerLatestCounter(o.LocalID, actorPrincipalType, actorPrincipalID)
+		if terr != nil {
+			log.Printf("WARN ListUnifiedOptionOffers: owner-latest-counter for offer %d failed (leaving terms empty): %v", o.LocalID, terr)
+			return
+		}
+		if terms != nil {
+			item.StrikePrice = terms.StrikePrice
+			item.Premium = terms.Premium
+			item.SettlementDate = terms.SettlementDate
+		}
+	}
 }

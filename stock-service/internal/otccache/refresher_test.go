@@ -298,8 +298,11 @@ func TestRefresher_FetchPeer_BadJSON(t *testing.T) {
 }
 
 // TestRefresher_Refresh_WithReachablePeer wires a single peer (via ListPeerBanks)
-// and a fake interbank egress, and verifies both local and remote offers land
-// in cache with the reachability counters set.
+// and a fake interbank egress, and verifies that ONLY the local offer lands in the
+// stocks marketplace (SI-TX has no cross-bank stock buy/sell — peer stock is reachable
+// only via option negotiation, surfaced separately as /public-stock shells in the
+// OPTIONS feed). The peer poll still runs purely to confirm liveness, so PeersReached
+// must be 1 even though no peer offer is added to this cache.
 func TestRefresher_Refresh_WithReachablePeer(t *testing.T) {
 	egress := &fakePeerEgressClient{resp: &transactionpb.ProxyToPeerResponse{
 		StatusCode: http.StatusOK,
@@ -327,11 +330,15 @@ func TestRefresher_Refresh_WithReachablePeer(t *testing.T) {
 	r := NewRefresher(cache, &fakeOTCLister{rows: []model.Holding{holding}}, peerAdmin, egress, "111", time.Minute)
 	r.refresh(context.Background())
 	snap := cache.Get()
-	if len(snap.Offers) != 2 {
-		t.Fatalf("expected 2 offers (1 local, 1 remote), got %d", len(snap.Offers))
+	if len(snap.Offers) != 1 {
+		t.Fatalf("expected 1 offer (local only; peer stock offers are excluded from the stocks marketplace), got %d", len(snap.Offers))
 	}
+	if snap.Offers[0].Kind != "local" || snap.Offers[0].Ticker != "AAPL" {
+		t.Fatalf("expected the sole offer to be the local AAPL row, got %+v", snap.Offers[0])
+	}
+	// The peer was polled (for liveness) even though its offers are discarded.
 	if snap.PeersTotal != 1 || snap.PeersReached != 1 {
-		t.Errorf("peers total/reached = %d/%d", snap.PeersTotal, snap.PeersReached)
+		t.Errorf("peers total/reached = %d/%d, want 1/1", snap.PeersTotal, snap.PeersReached)
 	}
 }
 

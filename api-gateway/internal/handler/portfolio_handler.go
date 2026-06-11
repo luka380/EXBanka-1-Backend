@@ -357,9 +357,17 @@ func (h *PortfolioHandler) listUnifiedOTCOptions(c *gin.Context, ownerOnlySeller
 	identity, _ := c.MustGet("identity").(*middleware.ResolvedIdentity)
 	var identityOwnerType string
 	var identityOwnerID uint64
+	var actorUserID int64
+	var actorSystemType string
 	if identity != nil {
 		identityOwnerType = identity.OwnerType
 		identityOwnerID = derefU64(identity.OwnerID)
+		// Acting PRINCIPAL ("client"/"employee" + id) — drives the owner
+		// latest-counter term projection in the stock-service (D2). Unlike
+		// the owner type/id (which collapse employees to "bank"), this carries
+		// the concrete employee id so a bank owner resolves correctly.
+		actorUserID = int64(identity.PrincipalID)
+		actorSystemType = identity.PrincipalType
 	}
 	resp, err := h.otcClient.ListUnifiedOptionOffers(c.Request.Context(), &stockpb.ListUnifiedOptionOffersRequest{
 		Ticker:            c.Query("ticker"),
@@ -371,6 +379,8 @@ func (h *PortfolioHandler) listUnifiedOTCOptions(c *gin.Context, ownerOnlySeller
 		OwnerOnlySellerId: ownerOnlySellerID,
 		ActingOwnerType:   identityOwnerType,
 		ActingOwnerId:     identityOwnerID,
+		ActorUserId:       actorUserID,
+		ActorSystemType:   actorSystemType,
 	})
 	if err != nil {
 		handleGRPCError(c, err)
@@ -396,7 +406,6 @@ func (h *PortfolioHandler) listUnifiedOTCOptions(c *gin.Context, ownerOnlySeller
 			"premium_currency": o.GetPremiumCurrency(),
 			"settlement_date":  o.GetSettlementDate(),
 			"created_at":       o.GetCreatedAt(),
-			"has_preset_terms": o.GetHasPresetTerms(),
 		}
 		// Part A 2026-05-16 best-bid/best-ask surface. Empty strings
 		// ⇒ no active competition (or remote peer doesn't publish).

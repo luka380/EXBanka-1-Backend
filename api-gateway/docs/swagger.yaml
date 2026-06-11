@@ -402,13 +402,7 @@ definitions:
         type: string
       on_behalf_of_client_id:
         type: integer
-      premium:
-        type: string
       quantity:
-        type: string
-      settlement_date:
-        type: string
-      strike_price:
         type: string
       ticker:
         type: string
@@ -1053,6 +1047,11 @@ definitions:
     required:
     - fixed_rate
     - variable_base
+    type: object
+  handler.updateOTCOptionRequest:
+    properties:
+      quantity:
+        type: string
     type: object
   handler.updatePaymentRecipientRequest:
     properties:
@@ -8188,33 +8187,6 @@ paths:
         SI-TX)'
       tags:
       - PeerOTC
-  /api/v3/cross-bank-protocol/public-option-offers:
-    get:
-      description: Phase 6 cross-bank discovery. Returns this bank's OPEN, undirected
-        option listings as PeerPublicOptionOffer rows in SI-TX shape. Auth via X-Api-Key
-        (PeerAuth); X-Bank-Code is stamped into peer_bank_code so privately-targeted
-        listings are filtered per-caller.
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            additionalProperties: true
-            type: object
-        "401":
-          description: Unauthorized
-          schema:
-            additionalProperties: true
-            type: object
-        "501":
-          description: OTCOfferReader not wired
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Peer-facing list of OPEN OTC option listings on this bank
-      tags:
-      - PeerOTC
   /api/v3/cross-bank-protocol/public-stock:
     get:
       description: Inbound from a peer bank. Returns this bank's holdings flagged
@@ -8934,8 +8906,12 @@ paths:
     post:
       consumes:
       - application/json
+      description: Posts an open OTC option offer. Terms (strike_price, premium, settlement_date)
+        are NOT set at creation — they are agreed during negotiation. Only one open
+        offer per (owner, ticker, direction) is allowed; a duplicate returns 409.
       parameters:
-      - description: offer details (ticker-keyed; account_id is the initiator's account)
+      - description: offer details (ticker-keyed, open terms; account_id is the initiator's
+          account)
         in: body
         name: body
         required: true
@@ -8956,6 +8932,11 @@ paths:
             type: object
         "403":
           description: Forbidden
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Conflict
           schema:
             additionalProperties: true
             type: object
@@ -9000,6 +8981,61 @@ paths:
       security:
       - BearerAuth: []
       summary: Cancel (withdraw) your own OTC option listing
+      tags:
+      - OTCOptions
+    put:
+      consumes:
+      - application/json
+      description: Sets the TOTAL quantity of an open option offer the caller owns
+        (up or down). Option offers are termless inventory; since only one open offer
+        per (owner, ticker, direction) is allowed, the owner edits the total instead
+        of posting a second offer. The new quantity must be > 0, not below the shares
+        already committed to formed/forming contracts on the offer, and not above
+        the owner's holding for the ticker. Owner-only; the offer must be local and
+        open.
+      parameters:
+      - description: offer id
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: new total quantity
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handler.updateOTCOptionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Edit the total quantity of one of the caller's OTC option offers
       tags:
       - OTCOptions
   /api/v3/me/otc/options/{id}/negotiations/{nid}:

@@ -118,10 +118,7 @@ func (a *stockListingResolverAdapter) GetListingTickerAndName(listingID uint64) 
 }
 
 // optionCurrencyResolverAdapter implements otccache.OptionCurrencyResolver
-// AND handler.OptionCurrencyResolver by looking up the stock's listing →
-// exchange → currency. The two interfaces share the same single-method
-// shape (CurrencyForStock(stockID) (string, error)) so one adapter
-// satisfies both.
+// by looking up the stock's listing → exchange → currency.
 type optionCurrencyResolverAdapter struct {
 	listings  *repository.ListingRepository
 	stocks    *repository.StockRepository

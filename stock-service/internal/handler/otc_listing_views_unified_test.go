@@ -28,9 +28,6 @@ func seedLocalListing(t *testing.T, db *gorm.DB, offerID, posterID uint64) {
 		StockID:                     1,
 		Ticker:                      "ACME",
 		Quantity:                    decimal.NewFromInt(10),
-		StrikePrice:                 decimal.NewFromInt(150),
-		Premium:                     decimal.NewFromInt(20),
-		SettlementDate:              time.Now().AddDate(0, 0, 30),
 		Status:                      "open",
 		LastModifiedByPrincipalType: "client",
 		LastModifiedByPrincipalID:   posterID,
@@ -59,9 +56,6 @@ func seedBankListing(t *testing.T, db *gorm.DB, offerID uint64, native string) {
 		StockID:                     1,
 		Ticker:                      "ACME",
 		Quantity:                    decimal.NewFromInt(10),
-		StrikePrice:                 decimal.NewFromInt(150),
-		Premium:                     decimal.NewFromInt(20),
-		SettlementDate:              time.Now().AddDate(0, 0, 30),
 		Status:                      "open",
 		LastModifiedByPrincipalType: "employee",
 		LastModifiedByPrincipalID:   1,
@@ -348,8 +342,7 @@ func TestListingNegotiations_BankOwnedOffer_PeerBid(t *testing.T) {
 // seedBankListingNoNative inserts a BANK-owned LOCAL OTCOffer with NO native_id
 // — the production reality: a local offer's native_id column stays empty, and
 // its cross-bank "native id" (the lot key a peer bidder echoes back) is the
-// offer's SURROGATE id as a string (GetPublicOptionOffers publishes
-// OfferId.Id = strconv(o.ID)).
+// offer's SURROGATE id as a string (strconv(o.ID)).
 func seedBankListingNoNative(t *testing.T, db *gorm.DB, offerID uint64) {
 	t.Helper()
 	o := &model.OTCOffer{
@@ -362,9 +355,6 @@ func seedBankListingNoNative(t *testing.T, db *gorm.DB, offerID uint64) {
 		StockID:                     1,
 		Ticker:                      "ACME",
 		Quantity:                    decimal.NewFromInt(10),
-		StrikePrice:                 decimal.NewFromInt(150),
-		Premium:                     decimal.NewFromInt(20),
-		SettlementDate:              time.Now().AddDate(0, 0, 30),
 		Status:                      "open",
 		LastModifiedByPrincipalType: "employee",
 		LastModifiedByPrincipalID:   1,
@@ -379,9 +369,9 @@ func seedBankListingNoNative(t *testing.T, db *gorm.DB, offerID uint64) {
 
 // TestListingNegotiations_BankOwnedOffer_PeerBid_SurrogateIdKey reproduces the
 // LIVE cross-bank bug: a BANK-owned LOCAL offer has no native_id, so a peer's
-// inbound chain carries RemoteParentNativeID = the offer's SURROGATE id string
-// (what GetPublicOptionOffers publishes). The on-listing bank merge must
-// correlate against that surrogate id, NOT the empty native_id column.
+// inbound chain carries RemoteParentNativeID = the offer's SURROGATE id string.
+// The on-listing bank merge must correlate against that surrogate id, NOT the
+// empty native_id column.
 func TestListingNegotiations_BankOwnedOffer_PeerBid_SurrogateIdKey(t *testing.T) {
 	const ownRouting int64 = 111
 	model.SetOwnRouting("111")

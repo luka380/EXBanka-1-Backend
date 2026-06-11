@@ -96,9 +96,6 @@ type SagaRecovery struct {
 	// nil, exercise steps fall back to logged-for-review. Wired in main.go to
 	// the OTCOfferService. See RecoverExerciseSaga.
 	exerciseRecoverer ExerciseSagaRecoverer
-	// acceptRecoverer auto-resolves stuck OTC accept sagas (forward-resume to a
-	// minted contract, or rollback). Optional: nil → accept steps log-for-review.
-	acceptRecoverer AcceptSagaRecoverer
 	// fundRecoverer auto-resolves stuck fund invest/redeem sagas. Optional: nil
 	// → fund steps log-for-review.
 	fundRecoverer FundSagaRecoverer
@@ -140,12 +137,6 @@ type ExerciseSagaRecoverer interface {
 	RecoverExerciseSaga(ctx context.Context, sagaID string, contractID uint64) error
 }
 
-// AcceptSagaRecoverer drives a crash-stranded OTC accept saga to a terminal
-// state with no human intervention. Implemented by *OTCOfferService.
-type AcceptSagaRecoverer interface {
-	RecoverAcceptSaga(ctx context.Context, sagaID string, offerID uint64) error
-}
-
 // FundSagaRecoverer drives a crash-stranded fund invest/redeem saga to a
 // terminal state with no human intervention. Implemented by *FundService.
 type FundSagaRecoverer interface {
@@ -162,12 +153,6 @@ type PlacementSagaRecoverer interface {
 // *SagaRecovery for chaining at construction time in main.go.
 func (r *SagaRecovery) WithExerciseRecoverer(rec ExerciseSagaRecoverer) *SagaRecovery {
 	r.exerciseRecoverer = rec
-	return r
-}
-
-// WithAcceptRecoverer wires the OTC accept auto-resolver.
-func (r *SagaRecovery) WithAcceptRecoverer(rec AcceptSagaRecoverer) *SagaRecovery {
-	r.acceptRecoverer = rec
 	return r
 }
 
@@ -367,9 +352,14 @@ func (r *SagaRecovery) reconcileStep(ctx context.Context, step model.SagaLog) er
 		saga.StepCreditBankFee:
 		return r.reconcileFund(ctx, step)
 
-	// --- OTC accept saga steps (assembled by buildAcceptSaga). Auto-resolved by
-	// re-driving the whole saga to a terminal state (forward-resume to a minted
-	// ACTIVE contract, or rollback if it was already aborting). No human review.
+	// --- OTC contract-formation saga steps. The legacy single-chain accept
+	// saga (and its auto-recovery) was deleted in R12; the live formation path
+	// is MintContractFromAcceptedNegotiation (parallel-chains), which reuses the
+	// first four step kinds below. Those money steps are idempotency-keyed, so a
+	// crash-stranded row is safe to leave for human review rather than guessing
+	// at remediation. The trailing four kinds are legacy-only and are no longer
+	// produced, but are kept in this case so a stale row can never reach the
+	// panicking default. No auto-recovery is wired for this family anymore.
 	case saga.StepReserveAndContract,
 		saga.StepReservePremium,
 		saga.StepSettlePremiumBuyer,
@@ -378,7 +368,10 @@ func (r *SagaRecovery) reconcileStep(ctx context.Context, step model.SagaLog) er
 		saga.StepRecordSellerPremiumGain,
 		saga.StepRecordBuyerPremiumCost,
 		saga.StepPublishOTCAccepted:
-		return r.reconcileAccept(ctx, step)
+		log.Printf("WARN: stuck OTC contract-formation step %d (order=%d, step=%s) — "+
+			"no auto-recovery (negotiation accept path); needs human review",
+			step.ID, step.OrderID, step.StepName)
+		return nil
 
 	// --- OTC exercise saga steps (assembled by buildExerciseSaga). Every
 	// stuck exercise step is auto-resolved by re-driving the whole saga to a
@@ -466,32 +459,6 @@ func (r *SagaRecovery) reconcileExercise(ctx context.Context, step model.SagaLog
 	}
 	// The delegate drove the saga terminal. Transition this row out of the
 	// stuck set: compensation rows go to compensated, forward rows to completed.
-	finalStatus := model.SagaStatusCompleted
-	if step.IsCompensation {
-		finalStatus = model.SagaStatusCompensated
-	}
-	return r.sagaRepo.UpdateStatus(step.ID, step.Version, finalStatus, "auto-resolved by recovery (saga re-driven to terminal)")
-}
-
-// reconcileAccept auto-resolves a stuck OTC accept saga step by delegating to
-// the accept recoverer, which re-drives the whole saga (identified by
-// step.SagaID, offer = step.OrderID) to a terminal state. Mirrors
-// reconcileExercise. Falls back to log-and-leave when no recoverer is wired or
-// the row lacks identifiers.
-func (r *SagaRecovery) reconcileAccept(ctx context.Context, step model.SagaLog) error {
-	if r.acceptRecoverer == nil {
-		log.Printf("WARN: stuck OTC accept step %d (order=%d, step=%s) — no recoverer wired, needs review",
-			step.ID, step.OrderID, step.StepName)
-		return nil
-	}
-	if step.SagaID == "" {
-		log.Printf("WARN: stuck OTC accept step %d (step=%s) — missing saga_id, cannot rebuild",
-			step.ID, step.StepName)
-		return nil
-	}
-	if err := r.acceptRecoverer.RecoverAcceptSaga(ctx, step.SagaID, step.OrderID); err != nil {
-		return fmt.Errorf("recover accept saga %s (offer=%d): %w", step.SagaID, step.OrderID, err)
-	}
 	finalStatus := model.SagaStatusCompleted
 	if step.IsCompensation {
 		finalStatus = model.SagaStatusCompensated
