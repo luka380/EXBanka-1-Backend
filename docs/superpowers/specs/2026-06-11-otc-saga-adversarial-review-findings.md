@@ -21,6 +21,7 @@ mirror with `parent_offer_id = 0` and a non-numeric / absent `RemoteParentNative
 | F2 | HIGH | **No over-commit guard on the termless accept.** A second still-`ongoing` sibling bid could be accepted into a second contract (one listing → N contracts). | Pre-accept `LocalSellOfferOpenForSeller` gate on the outbound path (`a7a8ab0d`). |
 | F3 | CRITICAL | **Inbound accept asymmetry.** The INBOUND `PeerOTCGRPCHandler.AcceptNegotiation` (peer buyer accepts our seller's counter) skipped its orphan guard for termless bids (non-numeric parent id) AND never consumed the listing → over-commit + contract/premium on a CANCELLED listing. | Mirror the guard + consume on the inbound path when `sellerRouting == ownRouting` (`2ff505ce`). |
 | F4 | CRITICAL | **Saga recovery hid stuck compensations.** `saga.Compensate` returned `nil` even when a `Backward` was left `compensating`; the reconciler force-marked the row terminal → money in limbo permanently hidden, never dead-lettered, compensating rows spawned each tick. | `Compensate` returns `ErrCompensationStuck`; recoverers propagate → dead-letter. `RecordCompensation` made idempotent (reuse the row) to bound the spawn (`0d45aff3`). |
+| F5 | HIGH | **Seller couldn't see cross-bank bids on their own listing** (was O5; live-reproduced). The per-listing view + timeline correlated remote bids by the local offer's surrogate id, but a cross-bank bid carries no parentOfferId (`nil`, e.g. Banka-4) or our `"ps:"` shell id — never the surrogate — so EVERY remote bid was dropped. | `remoteBidderChainsOnLocalListing` now correlates by **(seller, ticker)** (the query already scopes to the seller; one open offer per owner+ticker ⇒ ticker identifies the listing). Covers both `ListNegotiationsByListing` + `GetOfferTimeline`; dead `localOfferCrossBankNativeID` removed. |
 
 Also verified WORKING from live cross-bank data (no fix needed): **premium** is
 credited to the seller (ledger "Peer OTC option premium and contract acceptance"
@@ -79,12 +80,13 @@ guards rely on is unenforced for bank sellers.
 - **Fix sketch:** index `COALESCE(initiator_owner_id, 0)` + `initiator_owner_type`
   (drop the `IS NOT NULL`); map its violation in `Create`.
 
-### O5 — Seller can't see cross-bank bids on their own listing — **MEDIUM** (visibility, not money)
-`remoteBidderChainsOnLocalListing` / `localOfferCrossBankNativeID`
-(`otc_negotiation_handler.go:842-871`) correlate remote bids by the numeric
-surrogate id, but inbound bids stored `"ps:…"` / nil. So `ListNegotiationsByListing`
-and `GetOfferTimeline` show the owner **zero** cross-bank bids — they can only act
-via the notification's negotiation id. Same `"ps:"`-vs-numeric mismatch as O1.
+### O5 — Seller can't see cross-bank bids on their own listing — **FIXED** (see F5)
+Was: `remoteBidderChainsOnLocalListing` correlated remote bids by the numeric
+surrogate id, but inbound bids stored `"ps:…"` / nil, so the seller saw zero
+cross-bank bids. Now correlates by **(seller, ticker)** — covers both the
+per-listing view and the timeline. (O1's cancel-cascade still keys on the numeric
+id, but its money risk is closed by the accept guards; only stale-state cleanup
+remains.)
 
 ### O6 — Exercise saga recovery path can forward-resume the buyer-share credit — **MEDIUM** (speculative)
 The pivot was removed with the justification "compensation runs synchronously
