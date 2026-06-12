@@ -9,46 +9,68 @@ import (
 
 func vfU64(v uint64) *uint64 { return &v }
 
-// Bidder, the OTHER side last-moved (not last_action_mine), chain live → it's my
-// turn: Accept + Counter available, Withdraw available, Reject not (bidder).
+// Bidder receiving the OTHER side's latest offer (e.g. owner countered): it is
+// the bidder's turn — Accept, Counter, AND Reject are all available, plus
+// Withdraw (own chain). Matches "user can accept owner's offer or reject it".
 func TestStampNegotiationViewerFlags_BidderAwaiting(t *testing.T) {
 	item := &stockpb.OTCNegotiationResponse{Status: "countered"}
 	stampNegotiationViewerFlags(item, "bidder", false)
 	if item.GetViewerRole() != "bidder" {
 		t.Errorf("viewer_role = %q, want bidder", item.GetViewerRole())
 	}
-	if !item.GetAwaitingViewer() || !item.GetCanAccept() || !item.GetCanCounter() {
-		t.Error("awaiting + can_accept + can_counter must be true when the other side moved last")
+	if !item.GetAwaitingViewer() || !item.GetCanAccept() || !item.GetCanCounter() || !item.GetCanReject() {
+		t.Error("receiver: awaiting + can_accept + can_counter + can_reject must all be true")
 	}
 	if !item.GetCanWithdraw() {
 		t.Error("bidder can withdraw while live")
 	}
-	if item.GetCanReject() || item.GetLastActionMine() {
-		t.Error("bidder: can_reject + last_action_mine must be false")
+	if item.GetLastActionMine() {
+		t.Error("bidder: last_action_mine must be false when the other side moved last")
 	}
 }
 
-// Bidder, I made the last move → not my turn: no Accept/Counter, but still Withdraw.
-func TestStampNegotiationViewerFlags_BidderWaitingForPeer(t *testing.T) {
+// Bidder who JUST bid (last_action_mine): not their turn to accept/reject, but
+// they CAN still place a new counter (which supersedes the old bid) and can
+// withdraw. Matches "during that time client can only place new counters".
+func TestStampNegotiationViewerFlags_BidderJustBid(t *testing.T) {
 	item := &stockpb.OTCNegotiationResponse{Status: "open"}
 	stampNegotiationViewerFlags(item, "bidder", true)
-	if item.GetAwaitingViewer() || item.GetCanAccept() || item.GetCanCounter() {
-		t.Error("after my own move it is NOT my turn; accept/counter must be false")
+	if item.GetAwaitingViewer() || item.GetCanAccept() || item.GetCanReject() {
+		t.Error("after my own move I cannot accept/reject my own standing offer")
+	}
+	if !item.GetCanCounter() {
+		t.Error("the maker can still place a NEW counter while live (counter is not turn-based)")
 	}
 	if !item.GetCanWithdraw() || !item.GetLastActionMine() {
 		t.Error("can_withdraw + last_action_mine must be true")
 	}
 }
 
-// Poster, bidder moved last → can Accept/Counter and Reject; never Withdraw.
-func TestStampNegotiationViewerFlags_Poster(t *testing.T) {
+// Poster receiving a client's bid → Accept/Counter/Reject; never Withdraw.
+func TestStampNegotiationViewerFlags_PosterReceivingBid(t *testing.T) {
 	item := &stockpb.OTCNegotiationResponse{Status: "open"}
 	stampNegotiationViewerFlags(item, "poster", false)
 	if !item.GetCanAccept() || !item.GetCanCounter() || !item.GetCanReject() {
 		t.Error("poster awaiting: accept/counter/reject must be true")
 	}
 	if item.GetCanWithdraw() {
-		t.Error("poster cannot withdraw")
+		t.Error("poster cannot withdraw (they cancel the listing instead)")
+	}
+}
+
+// Poster who JUST countered (last_action_mine): cannot accept their own offer,
+// no reject of their own offer, but may counter again; never withdraws.
+func TestStampNegotiationViewerFlags_PosterJustCountered(t *testing.T) {
+	item := &stockpb.OTCNegotiationResponse{Status: "countered"}
+	stampNegotiationViewerFlags(item, "poster", true)
+	if item.GetCanAccept() || item.GetCanReject() || item.GetAwaitingViewer() {
+		t.Error("the maker cannot accept/reject their own standing offer; not awaiting")
+	}
+	if !item.GetCanCounter() {
+		t.Error("poster can still place a new counter while live")
+	}
+	if item.GetCanWithdraw() {
+		t.Error("poster never withdraws a chain")
 	}
 }
 

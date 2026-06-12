@@ -8535,10 +8535,10 @@ rows that successfully minted a contract), every item now carries:
 | `viewer_role` | string | The caller's side on this chain: `"bidder"` or `"poster"` (omitted/`""` when the caller is neither — e.g. an employee browsing a client's listing read-only). |
 | `last_action_mine` | bool | The caller authored the chain's latest revision (it is currently the counterparty's turn). |
 | `awaiting_viewer` | bool | It is the caller's turn — the chain is live (`open`/`countered`) AND the OTHER side made the last move. |
-| `can_accept` | bool | The caller may accept the current terms (`== awaiting_viewer`). |
-| `can_counter` | bool | The caller may post a counter (`== awaiting_viewer`; turn-based). |
-| `can_reject` | bool | The caller (the **poster**) may reject the bid while the chain is live. |
-| `can_withdraw` | bool | The caller (the **bidder**) may withdraw their own chain while it is live. |
+| `can_accept` | bool | The caller may accept the current terms. **Turn-based** (`== awaiting_viewer`): only the party who did NOT make the latest offer may accept it, and only the latest offer. You can never accept your own standing offer. |
+| `can_counter` | bool | The caller may post a counter. **NOT turn-based** (`== chain is live`): either party may counter at any time while the chain is `open`/`countered`; a new counter supersedes prior offers (they become non-acceptable). So the side that just bid/countered can still place a new counter while awaiting a reply. |
+| `can_reject` | bool | The caller may reject (decline) the latest offer. **Turn-based** (`== awaiting_viewer`): surfaced to the receiver of the latest offer (either role). The maker instead supersedes with a counter, or — if the bidder — withdraws. |
+| `can_withdraw` | bool | The caller (the **bidder**) may withdraw their own chain while it is live. The poster cancels the whole listing instead, so this is never set for the poster. |
 
 The same `viewer_role` / `last_action_mine` / `awaiting_viewer` / `can_*` block is added to `GET /api/v3/otc/options/:id/negotiations` (poster's view of bids on a listing).
 

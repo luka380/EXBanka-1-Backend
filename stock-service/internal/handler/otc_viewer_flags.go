@@ -79,15 +79,31 @@ func stampNegotiationViewerFlags(item *stockpb.OTCNegotiationResponse, viewerRol
 	}
 	item.LastActionMine = lastActionMine
 	live := item.GetStatus() == "open" || item.GetStatus() == "countered"
+	// awaiting_viewer: the OTHER side made the latest offer, so it is the viewer's
+	// turn to respond. The party who just moved is NOT awaiting (they wait for a
+	// reply), even though they may still revise their own offer (see can_counter).
 	item.AwaitingViewer = live && !lastActionMine
-	// Accept / Counter are turn-based: available only when the OTHER side made the
-	// last move (matches the server's "acceptor opposite to last proposer" rule and
-	// the cross-bank counter turn-guard).
+	// Accept is TURN-BASED: only the party who did NOT make the latest offer may
+	// accept it, and only the latest offer (the negotiation's current terms).
+	// Mirrors AcceptNegotiation's "caller must be opposite to the last-action
+	// owner" guard — you can never accept your own standing offer.
 	item.CanAccept = item.AwaitingViewer
-	item.CanCounter = item.AwaitingViewer
-	// Decline actions are turn-independent: the poster may reject a bid on their
-	// listing; the bidder may withdraw their own chain — any time it is still live.
-	item.CanReject = live && viewerRole == "poster"
+	// Reject is the receiver's decline of the latest offer (same turn as accept):
+	// "user can accept owner's offer or reject it". The maker does not reject their
+	// own standing offer — they supersede it with a counter, or (if the bidder)
+	// withdraw. Server-side RejectNegotiation also tolerates the maker, but the
+	// surfaced button is the receiver's.
+	item.CanReject = item.AwaitingViewer
+	// Counter is NOT turn-based: EITHER party may place a new counter/bid at any
+	// time while the chain is live, which supersedes prior offers (they become
+	// non-acceptable). Mirrors CounterNegotiation, which only checks chain
+	// membership, not whose turn it is — so the party who just bid "can only place
+	// new counters" while awaiting a reply, and the receiver can counter instead
+	// of accepting.
+	item.CanCounter = live
+	// Withdraw cancels the bidder's OWN chain at any time while live
+	// (CancelNegotiation is bidder-only); the poster cancels the whole listing
+	// instead, so it is never offered as a per-chain "withdraw".
 	item.CanWithdraw = live && viewerRole == "bidder"
 }
 
