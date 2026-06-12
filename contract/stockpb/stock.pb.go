@@ -3356,9 +3356,11 @@ type CreateOrderRequest struct {
 	// for non-forex orders.
 	BaseAccountId *uint64 `protobuf:"varint,15,opt,name=base_account_id,json=baseAccountId,proto3,oneof" json:"base_account_id,omitempty"`
 	// on_behalf_of_fund_id, when non-zero, places the order against the fund's
-	// RSD account; owner becomes the bank sentinel and fills credit
-	// fund_holdings instead of the user's holdings. Caller must be the fund's
-	// manager (or an admin). account_id must equal the fund's RSD account id.
+	// RSD account; owner becomes the bank sentinel. A BUY fill credits
+	// fund_holdings and a SELL draws down fund_holdings (the fund's portfolio),
+	// instead of the user's holdings. Caller must be the fund's manager (or an
+	// admin). account_id is OPTIONAL: if 0 it auto-resolves to the fund's RSD
+	// account; if non-zero it must equal the fund's RSD account id.
 	OnBehalfOfFundId uint64 `protobuf:"varint,16,opt,name=on_behalf_of_fund_id,json=onBehalfOfFundId,proto3" json:"on_behalf_of_fund_id,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache

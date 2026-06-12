@@ -5283,6 +5283,8 @@ GET /api/v3/securities/candles?listing_id=42&interval=1h&from=2026-04-01T00:00:0
 
 Create a new stock / futures / forex / option order. Ownership is derived from the JWT — the `account_id` (and `base_account_id`, when provided) must belong to the JWT caller. Mismatches return `403 forbidden`.
 
+An **employee** may also pass `on_behalf_of_fund_id` here to place the order against an investment fund they manage. For fund orders the caller-account ownership check is skipped and `account_id` is **optional** (auto-resolves to the fund's RSD account); a **buy** credits `fund_holdings`, a **sell** draws down `fund_holdings`. A non-employee passing `on_behalf_of_fund_id` is rejected with `403 forbidden`.
+
 **Authentication:** Any JWT (AnyAuthMiddleware)
 
 **Request Body:**
@@ -5299,7 +5301,8 @@ Create a new stock / futures / forex / option order. Ownership is derived from t
 | `stop_value` | string | Conditional | Required for `stop` or `stop_limit` orders |
 | `all_or_none` | boolean | No | Default: false |
 | `margin` | boolean | No | Default: false |
-| `account_id` | uint64 | Yes (buy) | Account to debit; must belong to the JWT caller |
+| `account_id` | uint64 | Conditional | Account to debit; must belong to the JWT caller. Required for buy. **Optional for fund orders** (`on_behalf_of_fund_id` set) — auto-resolves to the fund's RSD account. |
+| `on_behalf_of_fund_id` | uint64 | No | Employee-only. Place the order against an investment fund the caller manages. `account_id` auto-resolves; fills target `fund_holdings`. |
 | `base_account_id` | uint64 | Yes (forex) | Required when `security_type=forex`. Account that will be credited with the base currency on fill. MUST differ from `account_id`; MUST be owned by the JWT caller. Ignored for non-forex orders. |
 
 **Example Request (buy market order):**
@@ -5478,7 +5481,7 @@ Reject a pending order that requires supervisor approval. Renamed from `/decline
 Place a stock/futures/forex/option order on behalf of **either** a named client **or** an investment fund. Supply exactly one of `client_id` or `on_behalf_of_fund_id`:
 
 - **On behalf of a client** (`client_id`): the gateway verifies that `account_id` (and `base_account_id`, when present) belongs to `client_id` before forwarding to stock-service.
-- **On behalf of a fund** (`on_behalf_of_fund_id`): `account_id` is the fund's RSD account, not a client account — the client-ownership check is skipped at the gateway. stock-service re-validates that the acting employee is the fund's manager and binds the account to the fund. The fill lands in `fund_holdings`, mirroring `POST /api/v3/me/orders` with `on_behalf_of_fund_id`.
+- **On behalf of a fund** (`on_behalf_of_fund_id`): the order targets the fund's RSD account, not a client account — the client-ownership check is skipped at the gateway. `account_id` is **OPTIONAL**: omit it and it auto-resolves to the fund's RSD account; if supplied it must equal that account. stock-service re-validates that the acting employee is the fund's manager and binds the account to the fund. A **buy** fill lands in `fund_holdings`; a **sell** draws down `fund_holdings` (the fund's portfolio) and credits proceeds to the fund's RSD account — mirroring `POST /api/v3/me/orders` with `on_behalf_of_fund_id`.
 
 The order is recorded with `acting_employee_id` set to the caller's employee ID.
 
@@ -5490,10 +5493,10 @@ The order is recorded with `acting_employee_id` set to the caller's employee ID.
 |---|---|---|---|
 | `client_id` | uint64 | Conditional | Client for whom the order is placed. Required unless `on_behalf_of_fund_id` is set. Mutually exclusive with `on_behalf_of_fund_id`. |
 | `on_behalf_of_fund_id` | uint64 | Conditional | Investment fund for which the order is placed. Required unless `client_id` is set. Mutually exclusive with `client_id`. Acting employee must be the fund's manager. |
-| `account_id` | uint64 | Yes | Account to debit; for client orders must belong to `client_id`, for fund orders must be the fund's RSD account |
+| `account_id` | uint64 | Conditional | Account to debit/credit. For client orders: **required**, must belong to `client_id`. For fund orders: **optional** — auto-resolves to the fund's RSD account when omitted; if supplied must equal it. |
 | `security_type` | string | Optional | `stock`, `futures`, `forex`, or `option`. Required for forex-specific gateway validation. |
-| `listing_id` | uint64 | Yes (buy) | Listing ID (required for buy orders) |
-| `holding_id` | uint64 | Yes (sell) | Holding ID (required for sell orders) |
+| `listing_id` | uint64 | Yes | Listing ID (the execution venue) — required for both buy and sell |
+| `holding_id` | uint64 | No | Optional. Holdings aggregate per (owner, security); the sell venue is named by `listing_id`. |
 | `direction` | string | Yes | `buy` or `sell` (forex orders MUST be `buy`) |
 | `order_type` | string | Yes | `market`, `limit`, `stop`, or `stop_limit` |
 | `quantity` | int64 | Yes | Must be positive |
@@ -5515,17 +5518,17 @@ The order is recorded with `acting_employee_id` set to the caller's employee ID.
 }
 ```
 
-**Example Request (on behalf of a fund):**
+**Example Request (on behalf of a fund — account_id auto-resolves, sell from the fund's portfolio):**
 ```json
 {
   "on_behalf_of_fund_id": 9,
-  "account_id": 100,
   "listing_id": 42,
-  "direction": "buy",
+  "direction": "sell",
   "order_type": "market",
   "quantity": 10
 }
 ```
+`account_id` is omitted and auto-resolves to fund #9's RSD account. The 10 shares are drawn from the fund's `fund_holdings` position and the proceeds credit the fund's RSD account.
 
 **Response 201:** Order object.
 
@@ -7160,7 +7163,7 @@ Register a new peer bank.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `bank_code` | string | Yes | 3-digit prefix (e.g. "222") |
-| `routing_number` | int64 | Yes | Numeric form of bank_code |
+| `routing_number` | int64 | Yes | The peer's routing number. MUST equal the numeric value of `bank_code` (e.g. `bank_code` `"222"` ⇒ `routing_number` `222`); a non-numeric `bank_code` or a mismatch is rejected (see the invariant note below). |
 | `base_url` | string | Yes | Peer's `/api/v3` base URL |
 | `api_token` | string | Yes | Plaintext API token issued by peer; bcrypt-hashed before persist |
 | `hmac_inbound_key` | string | No | HMAC key to verify inbound HMAC-mode requests from this peer |
@@ -7179,9 +7182,11 @@ Register a new peer bank.
 ```
 
 **Response 201:** Peer bank object (`api_token_preview` returned, never the full token).
-**Response 400:** Validation error (missing required field, OR `bank_code`/`routing_number` equals this bank's own — peer-collision rejected; SP-2a).
+**Response 400:** Validation error — a missing required field; OR `bank_code`/`routing_number` equals this bank's own (peer-collision rejected, SP-2a); OR `bank_code` is not the numeric `routing_number` (non-numeric, or numerically different — routing-invariant, 4.4.7).
 
-> **Peer-collision guard (SP-2a):** `POST /api/v3/peer-banks` returns `400 validation_error` when `bank_code` or `routing_number` matches this bank's own configuration. This is enforced at the gRPC service layer (transaction-service `CreatePeerBank` returns `InvalidArgument` → gateway maps to 400). The invariant ensures `routing_number == OwnRouting()` reliably distinguishes local rows from remote (folded-in) rows in the unified OTC tables.
+> **Peer-collision guard (SP-2a):** `POST /api/v3/peer-banks` returns `400 validation_error` when `bank_code` or `routing_number` matches this bank's own configuration. This is enforced at the gRPC service layer (interbank-service `CreatePeerBank` returns `InvalidArgument` → gateway maps to 400). The invariant ensures `routing_number == OwnRouting()` reliably distinguishes local rows from remote (folded-in) rows in the unified OTC tables.
+
+> **bank_code = routing_number invariant (4.4.7):** `CreatePeerBank` also returns `400 validation_error` when `bank_code` is not numeric or does not numerically equal `routing_number`. Inbound peer authentication resolves a caller to its `bank_code`, and the cross-bank OTC paths derive the caller's routing from it (`peerRoutingForCode`); the two MUST agree, or the peer could authenticate yet its derived routing would never match the routing stored on a negotiation/contract mirror — every inbound `GET`/`PUT`/`accept` for it would `404`. Enforcing the invariant at registration makes the derivation provably exact for every registered peer.
 
 ---
 
