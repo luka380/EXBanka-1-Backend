@@ -8216,9 +8216,9 @@ Open a new negotiation chain by placing the initial bid on an open listing. `:id
 | `quantity` | string (decimal) | Initial bid quantity. Must be **> 0**. |
 | `strike_price` | string (decimal) | Initial bid strike. Must be **> 0**. |
 | `premium` | string (decimal) | Initial bid premium. Must be **>= 0** (zero allowed; negative rejected with 400). |
-| `settlement_date` | string | RFC3339 or YYYY-MM-DD |
+| `settlement_date` | string | RFC3339 or YYYY-MM-DD. **Must not be before today (UTC)** — a past settlement date is rejected with 400. |
 
-The gateway validates `quantity`/`strike_price` as strictly positive and `premium` as non-negative decimals before forwarding (a malformed or non-positive amount ⇒ 400). The same checks apply to the `counter` route below.
+The gateway validates `quantity`/`strike_price` as strictly positive, `premium` as non-negative decimals, and `settlement_date` as a parseable date **not before today** before forwarding (a malformed/non-positive amount or a past settlement date ⇒ 400). The same checks apply to the `counter` route below.
 
 **Response 201:** `{ "negotiation": OTCNegotiationResponse }`. Status `open` (local) / `ongoing` (remote, peer status vocabulary). `kind` is `local` or `remote`.
 
@@ -8240,7 +8240,7 @@ The gateway validates `quantity`/`strike_price` as strictly positive and `premiu
 
 Counter the current terms on one of the caller's chains. Either party (the chain's bidder OR the listing's poster) may counter. Handles local and remote chains uniformly (see the dispatch note above).
 
-**Request Body:** new `{ quantity, strike_price, premium, settlement_date }`.
+**Request Body:** new `{ quantity, strike_price, premium, settlement_date }`. `settlement_date` must not be before today (UTC) — a past date is rejected with 400.
 
 **Response 200:** updated `OTCNegotiationResponse`. Status flips to `countered`. Snapshot terms updated; a new COUNTER revision is appended to the chain's history.
 

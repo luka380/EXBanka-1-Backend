@@ -82,6 +82,22 @@ func parseTimestampArg(name, v string) (parsed time.Time, err error) {
 	return time.Time{}, status.Errorf(codes.InvalidArgument, "%s must be RFC3339 or YYYY-MM-DD", name)
 }
 
+// parseSettlementDateArg parses an option settlement date and rejects one
+// earlier than today (UTC) — a settlement in the past is never valid. Defense
+// in depth behind the gateway's notBeforeToday check, and it also guards the
+// remote-outbound bid path, which reuses the value parsed here.
+func parseSettlementDateArg(name, v string) (time.Time, error) {
+	t, err := parseTimestampArg(name, v)
+	if err != nil {
+		return time.Time{}, err
+	}
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	if t.UTC().Before(today) {
+		return time.Time{}, status.Errorf(codes.InvalidArgument, "%s cannot be before today", name)
+	}
+	return t, nil
+}
+
 func negToProto(n *model.OTCNegotiation) *stockpb.OTCNegotiationResponse {
 	if n == nil {
 		return nil
@@ -153,7 +169,7 @@ func (h *OTCOptionsHandler) OpenNegotiation(ctx context.Context, in *stockpb.Ope
 	if err != nil {
 		return nil, err
 	}
-	settle, err := parseTimestampArg("settlement_date", in.GetSettlementDate())
+	settle, err := parseSettlementDateArg("settlement_date", in.GetSettlementDate())
 	if err != nil {
 		return nil, err
 	}
@@ -214,7 +230,7 @@ func (h *OTCOptionsHandler) CounterNegotiation(ctx context.Context, in *stockpb.
 	if err != nil {
 		return nil, err
 	}
-	settle, err := parseTimestampArg("settlement_date", in.GetSettlementDate())
+	settle, err := parseSettlementDateArg("settlement_date", in.GetSettlementDate())
 	if err != nil {
 		return nil, err
 	}
