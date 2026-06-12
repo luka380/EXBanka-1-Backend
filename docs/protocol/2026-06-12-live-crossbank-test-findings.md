@@ -290,6 +290,23 @@ sentinel (`owner_id = 2_000_000_000`, account `…0099`). Neither maps to a clie
 model has **no `owner_type` field** (owned by `owner_id` only), so the empty `owner_type` in API
 responses is vestigial, not a missing owner.
 
+### Hardening (4.4.7) — spec §3.2 inbound negotiation lookup made provably routing-safe
+Partner (exbank3) reported `404` on `GET/PUT /negotiations/333/{id}` and `UNACCEPTABLE_ASSET` on
+accept. Investigation showed our code DOES store/serve under the seller-minted id and DOES process
+OPTION legs — both symptoms were environmental (peer-registration reset after the 4.4.6 redeploy +
+the multi-deployment/DB split; the negotiation simply wasn't in the DB they queried). The full
+bid→accept→exercise loop against their AAPL offer worked end-to-end, proving compliance. To rule out
+the one *latent* fragility regardless (our inbound lookup keyed on `peerRoutingForCode(bank_code)`
+rather than strictly the URL id), we hardened it: the four inbound peer handlers
+(`Get/Update/Delete/AcceptNegotiation`) now resolve the mirror by the **globally-unique native id**
+in the URL (`resolveInboundRemoteNeg`) — spec-faithful, routing-resolution-independent — then
+explicitly **authorise the caller as the counterparty** (caller routing must equal the mirror's
+stored routing), and drive all downstream CAS/update ops off the **stored** routing. Complemented by
+a registration invariant: a peer's `bank_code` must equal its numeric `routing_number`
+(`CreatePeerBank`), so `peerRoutingForCode` is provably exact for every registered peer. Regression
+tests: `peer_otc_inbound_security_test.go` (non-counterparty rejected) +
+`peer_bank_admin_grpc_handler_test.go` (bank_code≠routing rejected).
+
 ## Net conclusion
 **Our bank is now correct on every cross-bank OTC path it owns** — buyer bid/withdraw/counter/
 accept(in+out, including concurrent)/exercise and seller publish/receive-bid/accept, against BOTH
